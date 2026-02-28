@@ -34,38 +34,37 @@ from src.services.zilean import (
 def _make_zilean_entry(
     info_hash: str = "a" * 40,
     raw_title: str = "Movie.2024.1080p.WEB-DL.x264-GROUP",
-    size: int = 4_500_000_000,
+    size: str = "4500000000",
     category: str = "movies",
     imdb_id: str = "tt1234567",
-    season: int | None = None,
-    episode: int | None = None,
+    seasons: list[int] | None = None,
+    episodes: list[int] | None = None,
     year: int = 2024,
     resolution: str = "1080p",
     codec: str = "x264",
     quality: str = "WEB-DL",
-    group: str = "GROUP",
+    group: str | None = "GROUP",
 ) -> dict[str, Any]:
-    """Build a single Zilean DMM result entry."""
+    """Build a single Zilean DMM result entry matching the live API schema."""
     return {
-        "infoHash": info_hash,
-        "rawTitle": raw_title,
+        "info_hash": info_hash,
+        "raw_title": raw_title,
+        "parsed_title": "Movie",
+        "normalized_title": "movie",
         "size": size,
         "category": category,
-        "imdbId": imdb_id,
-        "season": season,
-        "episode": episode,
+        "imdb_id": imdb_id,
+        "seasons": seasons or [],
+        "episodes": episodes or [],
         "year": year,
-        "language": None,
-        "parseResponse": {
-            "title": "Movie",
-            "year": year,
-            "resolution": resolution,
-            "codec": codec,
-            "quality": quality,
-            "group": group,
-            "season": season,
-            "episode": episode,
-        },
+        "resolution": resolution,
+        "codec": codec,
+        "quality": quality,
+        "group": group,
+        "languages": [],
+        "complete": False,
+        "trash": False,
+        "adult": False,
     }
 
 
@@ -269,7 +268,7 @@ async def test_search_sends_correct_query_params(client: ZileanClient) -> None:
 @pytest.mark.asyncio
 async def test_search_with_season_episode(client: ZileanClient) -> None:
     """search includes Season and Episode query params when provided."""
-    entry = _make_zilean_entry(season=2, episode=5)
+    entry = _make_zilean_entry(seasons=[2], episodes=[5])
     transport = _patch_client(client, [_make_response(200, [entry])])
 
     await client.search("Show Name", season=2, episode=5)
@@ -334,11 +333,11 @@ async def test_search_disabled(disabled_client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_parse_result_full_fields(client: ZileanClient) -> None:
-    """All fields from parseResponse are mapped correctly to ZileanResult."""
+    """All top-level metadata fields are mapped correctly to ZileanResult."""
     entry = _make_zilean_entry(
         info_hash="b" * 40,
         raw_title="Great.Movie.2024.1080p.WEB-DL.x264-GRP",
-        size=3_800_000_000,
+        size="3800000000",
         resolution="1080p",
         codec="x264",
         quality="WEB-DL",
@@ -358,8 +357,8 @@ async def test_parse_result_full_fields(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_parse_result_size_bytes(client: ZileanClient) -> None:
-    """The 'size' field from the response maps directly to size_bytes."""
-    entry = _make_zilean_entry(size=4_500_000_000)
+    """The 'size' string from the response is parsed to size_bytes int."""
+    entry = _make_zilean_entry(size="4500000000")
     _patch_client(client, [_make_response(200, [entry])])
 
     results = await client.search("Movie")
@@ -369,9 +368,21 @@ async def test_parse_result_size_bytes(client: ZileanClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_parse_result_size_large(client: ZileanClient) -> None:
+    """Large size strings (>4GB) parse correctly."""
+    entry = _make_zilean_entry(size="8232397607")
+    _patch_client(client, [_make_response(200, [entry])])
+
+    results = await client.search("Movie")
+
+    assert len(results) == 1
+    assert results[0].size_bytes == 8232397607
+
+
+@pytest.mark.asyncio
 async def test_parse_result_season_episode(client: ZileanClient) -> None:
-    """Top-level season and episode fields are mapped to ZileanResult correctly."""
-    entry = _make_zilean_entry(season=3, episode=7)
+    """seasons/episodes arrays are extracted to scalar season/episode."""
+    entry = _make_zilean_entry(seasons=[3], episodes=[7])
     _patch_client(client, [_make_response(200, [entry])])
 
     results = await client.search("Show Name S03E07")
@@ -383,52 +394,57 @@ async def test_parse_result_season_episode(client: ZileanClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_parse_result_missing_parse_response(client: ZileanClient) -> None:
-    """When parseResponse is null, the client falls back to PTN parsing of rawTitle."""
+async def test_parse_result_empty_seasons_episodes(client: ZileanClient) -> None:
+    """Empty seasons/episodes arrays yield None for both fields."""
+    entry = _make_zilean_entry(seasons=[], episodes=[])
+    _patch_client(client, [_make_response(200, [entry])])
+
+    results = await client.search("Movie")
+
+    assert len(results) == 1
+    assert results[0].season is None
+    assert results[0].episode is None
+
+
+@pytest.mark.asyncio
+async def test_parse_result_missing_metadata_falls_back_to_ptn(client: ZileanClient) -> None:
+    """When top-level metadata fields are empty, PTN parses the raw_title."""
     entry: dict[str, Any] = {
-        "infoHash": "c" * 40,
-        "rawTitle": "Movie.2024.1080p.WEB-DL.x264-GROUP",
-        "size": 4_000_000_000,
+        "info_hash": "c" * 40,
+        "raw_title": "Movie.2024.1080p.WEB-DL.x264-GROUP",
+        "size": "4000000000",
         "category": "movies",
-        "imdbId": "tt1234567",
-        "season": None,
-        "episode": None,
+        "seasons": [],
+        "episodes": [],
         "year": 2024,
-        "language": None,
-        "parseResponse": None,
+        "resolution": None,
+        "codec": None,
+        "quality": None,
+        "group": None,
     }
     _patch_client(client, [_make_response(200, [entry])])
 
     results = await client.search("Movie")
 
-    # Should not crash; a result should still be returned
     assert len(results) == 1
     assert results[0].info_hash == "c" * 40
 
 
 @pytest.mark.asyncio
 async def test_parse_result_no_info_hash(client: ZileanClient) -> None:
-    """Entries that are missing infoHash are skipped entirely."""
+    """Entries that are missing info_hash are skipped entirely."""
     entry_no_hash: dict[str, Any] = {
-        # infoHash intentionally absent
-        "rawTitle": "Movie.2024.1080p.WEB-DL.x264-GROUP",
-        "size": 4_000_000_000,
+        # info_hash intentionally absent
+        "raw_title": "Movie.2024.1080p.WEB-DL.x264-GROUP",
+        "size": "4000000000",
         "category": "movies",
-        "imdbId": "tt1234567",
-        "season": None,
-        "episode": None,
+        "seasons": [],
+        "episodes": [],
         "year": 2024,
-        "language": None,
-        "parseResponse": {
-            "title": "Movie",
-            "year": 2024,
-            "resolution": "1080p",
-            "codec": "x264",
-            "quality": "WEB-DL",
-            "group": "GROUP",
-            "season": None,
-            "episode": None,
-        },
+        "resolution": "1080p",
+        "codec": "x264",
+        "quality": "WEB-DL",
+        "group": "GROUP",
     }
     entry_good = _make_zilean_entry(info_hash="d" * 40)
     _patch_client(client, [_make_response(200, [entry_no_hash, entry_good])])
@@ -442,27 +458,19 @@ async def test_parse_result_no_info_hash(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_parse_result_empty_raw_title(client: ZileanClient) -> None:
-    """Entries with an empty rawTitle are skipped."""
+    """Entries with an empty raw_title are skipped."""
     entry: dict[str, Any] = {
-        "infoHash": "e" * 40,
-        "rawTitle": "",  # empty
-        "size": 4_000_000_000,
+        "info_hash": "e" * 40,
+        "raw_title": "",  # empty
+        "size": "4000000000",
         "category": "movies",
-        "imdbId": "tt1234567",
-        "season": None,
-        "episode": None,
+        "seasons": [],
+        "episodes": [],
         "year": 2024,
-        "language": None,
-        "parseResponse": {
-            "title": "",
-            "year": 2024,
-            "resolution": "1080p",
-            "codec": "x264",
-            "quality": "WEB-DL",
-            "group": "GROUP",
-            "season": None,
-            "episode": None,
-        },
+        "resolution": "1080p",
+        "codec": "x264",
+        "quality": "WEB-DL",
+        "group": "GROUP",
     }
     _patch_client(client, [_make_response(200, [entry])])
 
@@ -473,7 +481,7 @@ async def test_parse_result_empty_raw_title(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_parse_result_info_hash_normalized(client: ZileanClient) -> None:
-    """infoHash is stored as lowercase regardless of the casing in the response."""
+    """info_hash is stored as lowercase regardless of the casing in the response."""
     entry = _make_zilean_entry(info_hash="A1B2C3" + "0" * 34)
     _patch_client(client, [_make_response(200, [entry])])
 
@@ -491,11 +499,11 @@ async def test_parse_result_info_hash_normalized(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_season_pack_detected(client: ZileanClient) -> None:
-    """When season is set and episode is null, is_season_pack is True."""
+    """When seasons is set and episodes is empty, is_season_pack is True."""
     entry = _make_zilean_entry(
         raw_title="Show.Name.S02.1080p.WEB-DL.x264-GROUP",
-        season=2,
-        episode=None,
+        seasons=[2],
+        episodes=[],
     )
     _patch_client(client, [_make_response(200, [entry])])
 
@@ -503,15 +511,17 @@ async def test_season_pack_detected(client: ZileanClient) -> None:
 
     assert len(results) == 1
     assert results[0].is_season_pack is True
+    assert results[0].season == 2
+    assert results[0].episode is None
 
 
 @pytest.mark.asyncio
 async def test_single_episode_not_season_pack(client: ZileanClient) -> None:
-    """When both season and episode are set, is_season_pack is False."""
+    """When both seasons and episodes are set, is_season_pack is False."""
     entry = _make_zilean_entry(
         raw_title="Show.Name.S02E05.1080p.WEB-DL.x264-GROUP",
-        season=2,
-        episode=5,
+        seasons=[2],
+        episodes=[5],
     )
     _patch_client(client, [_make_response(200, [entry])])
 
@@ -738,27 +748,19 @@ async def test_multiple_results_all_parsed(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_mixed_valid_invalid_results(client: ZileanClient) -> None:
-    """Invalid entries (missing infoHash) are skipped; valid ones are preserved."""
+    """Invalid entries (missing info_hash) are skipped; valid ones are preserved."""
     entry_missing_hash: dict[str, Any] = {
-        # infoHash intentionally absent
-        "rawTitle": "Bad.Movie.2024.1080p.WEB-DL.x264-GROUP",
-        "size": 1_000_000_000,
+        # info_hash intentionally absent
+        "raw_title": "Bad.Movie.2024.1080p.WEB-DL.x264-GROUP",
+        "size": "1000000000",
         "category": "movies",
-        "imdbId": "tt0000001",
-        "season": None,
-        "episode": None,
+        "seasons": [],
+        "episodes": [],
         "year": 2024,
-        "language": None,
-        "parseResponse": {
-            "title": "Bad Movie",
-            "year": 2024,
-            "resolution": "1080p",
-            "codec": "x264",
-            "quality": "WEB-DL",
-            "group": "GROUP",
-            "season": None,
-            "episode": None,
-        },
+        "resolution": "1080p",
+        "codec": "x264",
+        "quality": "WEB-DL",
+        "group": "GROUP",
     }
     entry_valid_1 = _make_zilean_entry(info_hash="f" * 40, raw_title="Good.Movie.A.2024.1080p.WEB-DL.x264-GROUP")
     entry_valid_2 = _make_zilean_entry(info_hash="1" * 40, raw_title="Good.Movie.B.2024.1080p.WEB-DL.x264-GROUP")
@@ -809,27 +811,19 @@ async def test_search_without_optional_params(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_null_info_hash_entry_skipped(client: ZileanClient) -> None:
-    """Entries with infoHash explicitly set to null/None are skipped."""
+    """Entries with info_hash explicitly set to null/None are skipped."""
     entry: dict[str, Any] = {
-        "infoHash": None,
-        "rawTitle": "Movie.2024.1080p.WEB-DL.x264-GROUP",
-        "size": 4_000_000_000,
+        "info_hash": None,
+        "raw_title": "Movie.2024.1080p.WEB-DL.x264-GROUP",
+        "size": "4000000000",
         "category": "movies",
-        "imdbId": "tt1234567",
-        "season": None,
-        "episode": None,
+        "seasons": [],
+        "episodes": [],
         "year": 2024,
-        "language": None,
-        "parseResponse": {
-            "title": "Movie",
-            "year": 2024,
-            "resolution": "1080p",
-            "codec": "x264",
-            "quality": "WEB-DL",
-            "group": "GROUP",
-            "season": None,
-            "episode": None,
-        },
+        "resolution": "1080p",
+        "codec": "x264",
+        "quality": "WEB-DL",
+        "group": "GROUP",
     }
     _patch_client(client, [_make_response(200, [entry])])
 
@@ -850,10 +844,8 @@ async def test_http_503_returns_empty_list(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_empty_info_hash_string_skipped(client: ZileanClient) -> None:
-    """Entries with an empty string infoHash are skipped."""
+    """Entries with an empty string info_hash are skipped."""
     entry = _make_zilean_entry(info_hash="")
-    # Manually set info_hash to empty string (helper would pass it through)
-    entry["infoHash"] = ""
     _patch_client(client, [_make_response(200, [entry])])
 
     results = await client.search("Movie")
@@ -863,11 +855,11 @@ async def test_empty_info_hash_string_skipped(client: ZileanClient) -> None:
 
 @pytest.mark.asyncio
 async def test_season_none_episode_none_not_season_pack(client: ZileanClient) -> None:
-    """A movie entry (both season and episode null) is not flagged as a season pack."""
+    """A movie entry (empty seasons and episodes) is not flagged as a season pack."""
     entry = _make_zilean_entry(
         raw_title="Movie.2024.1080p.WEB-DL.x264-GROUP",
-        season=None,
-        episode=None,
+        seasons=[],
+        episodes=[],
     )
     _patch_client(client, [_make_response(200, [entry])])
 
@@ -879,15 +871,15 @@ async def test_season_none_episode_none_not_season_pack(client: ZileanClient) ->
 
 @pytest.mark.asyncio
 async def test_parse_result_zero_size(client: ZileanClient) -> None:
-    """An entry with size=0 is parsed without crashing; size_bytes may be 0 or None."""
-    entry = _make_zilean_entry(size=0)
+    """An entry with size="0" is parsed without crashing; size_bytes is None."""
+    entry = _make_zilean_entry(size="0")
     _patch_client(client, [_make_response(200, [entry])])
 
     results = await client.search("Movie")
 
     # Should not crash
     assert len(results) == 1
-    assert results[0].size_bytes == 0 or results[0].size_bytes is None
+    assert results[0].size_bytes is None
 
 
 @pytest.mark.asyncio

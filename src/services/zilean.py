@@ -8,10 +8,11 @@ Real-world quirks documented here:
   release groups.  Zero results is expected for fresh content, not an error.
 - The response is a flat JSON array, NOT wrapped in a ``{"streams": [...]}``
   envelope like Torrentio.
-- Pre-parsed metadata is available in the ``parseResponse`` sub-object (resolution,
-  codec, quality, group).  PTN is only used as a fallback when ``parseResponse``
-  is absent or empty.
-- ``size`` is already in bytes at the top level — no emoji parsing needed.
+- Fields use snake_case: ``info_hash``, ``raw_title``, ``seasons`` (int array),
+  ``episodes`` (int array).  Parsed metadata (resolution, codec, quality,
+  group) lives at the top level.
+- ``size`` is returned as a string (bytes).  PTN is only used as a fallback
+  when the top-level metadata fields are absent.
 - Zilean naturally returns a compact result set (local DB, filtered); no
   ``max_results`` cap is applied here.
 - The service is typically very fast (<50ms) because it queries a local SQLite/
@@ -90,7 +91,7 @@ class ZileanResult(BaseModel):
     """A single parsed result from the Zilean DMM API."""
 
     info_hash: str
-    title: str  # rawTitle from Zilean
+    title: str  # raw_title from Zilean
     resolution: str | None = None
     codec: str | None = None
     quality: str | None = None  # WEB-DL, BluRay, WEBRip, HDTV, …
@@ -266,6 +267,14 @@ class ZileanClient:
             )
             return []
 
+        logger.debug(
+            "zilean.search: query=%r elapsed=%dms raw_count=%d first_keys=%s",
+            query,
+            elapsed_ms,
+            len(raw_list),
+            list(raw_list[0].keys())[:10] if raw_list else "[]",
+        )
+
         results: list[ZileanResult] = []
         for entry in raw_list:
             parsed = self._parse_entry(entry)
@@ -273,11 +282,10 @@ class ZileanClient:
                 results.append(parsed)
 
         logger.debug(
-            "zilean.search: query=%r elapsed=%dms raw=%d parsed=%d",
+            "zilean.search: query=%r parsed=%d/%d",
             query,
-            elapsed_ms,
-            len(raw_list),
             len(results),
+            len(raw_list),
         )
         return results
 
@@ -288,9 +296,9 @@ class ZileanClient:
     def _parse_entry(self, entry: dict[str, Any]) -> ZileanResult | None:
         """Parse a single entry from the Zilean /dmm/filtered response array.
 
-        Prioritises the pre-parsed fields in ``parseResponse`` over PTN for
-        resolution, codec, quality, and release group.  PTN is only used as a
-        fallback when ``parseResponse`` is absent or empty.
+        Reads top-level snake_case fields (``info_hash``, ``raw_title``,
+        ``seasons``, ``episodes``, ``resolution``, etc.).  Falls back to PTN
+        for metadata when the top-level fields are absent or empty.
 
         Args:
             entry: A single element from the Zilean response array.
@@ -299,51 +307,54 @@ class ZileanClient:
             A populated ZileanResult, or None if the entry should be skipped.
         """
         # --- Required fields ---
-        info_hash = entry.get("infoHash")
+        info_hash = entry.get("info_hash")
         if not info_hash or not isinstance(info_hash, str):
-            logger.debug("zilean._parse_entry: skipping entry with missing infoHash")
+            logger.debug("zilean._parse_entry: skipping entry with missing info_hash")
             return None
 
-        raw_title = entry.get("rawTitle", "")
+        raw_title = entry.get("raw_title", "")
         if not raw_title or not isinstance(raw_title, str):
             logger.debug(
-                "zilean._parse_entry: skipping entry hash=%s with missing rawTitle",
+                "zilean._parse_entry: skipping entry hash=%s with missing raw_title",
                 info_hash,
             )
             return None
 
-        # --- Size (already in bytes) ---
+        # --- Size (returned as a string) ---
         size_raw = entry.get("size")
-        size_bytes: int | None = int(size_raw) if isinstance(size_raw, (int, float)) and size_raw > 0 else None
+        size_bytes: int | None = None
+        if size_raw is not None:
+            try:
+                size_val = int(size_raw)
+                size_bytes = size_val if size_val > 0 else None
+            except (ValueError, TypeError):
+                pass
 
-        # --- Season / episode from top-level fields ---
-        season_raw = entry.get("season")
-        episode_raw = entry.get("episode")
-        season: int | None = int(season_raw) if isinstance(season_raw, int) else None
-        episode: int | None = int(episode_raw) if isinstance(episode_raw, int) else None
+        # --- Season / episode (arrays: "seasons": [2], "episodes": [5]) ---
+        season: int | None = None
+        episode: int | None = None
 
-        # --- Metadata: prefer parseResponse, fall back to PTN ---
-        parse_response: dict[str, Any] = entry.get("parseResponse") or {}
+        seasons_arr = entry.get("seasons")
+        if isinstance(seasons_arr, list) and seasons_arr:
+            season = int(seasons_arr[0])
 
-        resolution: str | None = None
-        codec: str | None = None
-        quality: str | None = None
-        release_group: str | None = None
+        episodes_arr = entry.get("episodes")
+        if isinstance(episodes_arr, list) and episodes_arr:
+            episode = int(episodes_arr[0])
 
-        if parse_response:
-            resolution = parse_response.get("resolution") or None
-            codec = parse_response.get("codec") or None
-            quality = parse_response.get("quality") or None
-            release_group = parse_response.get("group") or None
+        # --- Metadata from top-level fields, PTN as fallback ---
+        resolution: str | None = entry.get("resolution") or None
+        codec: str | None = entry.get("codec") or None
+        quality: str | None = entry.get("quality") or None
+        release_group: str | None = entry.get("group") or None
 
-        # Fall back to PTN if parseResponse gave us nothing useful
         if not any([resolution, codec, quality, release_group]):
             ptn_data: dict[str, Any] = {}
             try:
                 ptn_data = PTN.parse(raw_title) or {}
             except Exception as exc:
                 logger.debug(
-                    "zilean._parse_entry: PTN failed for rawTitle=%r (%s)",
+                    "zilean._parse_entry: PTN failed for raw_title=%r (%s)",
                     raw_title,
                     exc,
                 )
@@ -352,8 +363,6 @@ class ZileanClient:
             quality = quality or ptn_data.get("quality")
             release_group = release_group or ptn_data.get("group")
 
-            # Also pull season/episode from PTN when Zilean's top-level fields
-            # are absent (some entries omit them even though the title contains them).
             if season is None:
                 season = ptn_data.get("season")
             if episode is None:
@@ -397,7 +406,7 @@ class ZileanClient:
         included — it is assumed when no other language is present.
 
         Args:
-            raw_title: The ``rawTitle`` string from a Zilean entry.
+            raw_title: The raw_title string from a Zilean entry.
 
         Returns:
             A deduplicated list of language names found, e.g. ``["French"]``.
