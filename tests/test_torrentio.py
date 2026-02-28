@@ -37,7 +37,7 @@ def _make_stream(
     """Build a single Torrentio stream entry."""
     return {
         "name": f"Torrentio\n{resolution}",
-        "title": f"{title}\n\U0001f465 {seeders} \U0001f4be {size} \u2699\ufe0f {source}",
+        "title": f"{title}\n\U0001f464 {seeders} \U0001f4be {size} \u2699\ufe0f {source}",
         "infoHash": info_hash,
         "fileIdx": file_idx,
         "behaviorHints": {
@@ -471,7 +471,7 @@ async def test_parse_stream_no_info_hash(client: TorrentioClient) -> None:
     """Streams that lack an infoHash are skipped entirely."""
     stream_no_hash: dict[str, Any] = {
         "name": "Torrentio\n1080p",
-        "title": "Movie.2024.1080p.WEB-DL\n\U0001f465 10 \U0001f4be 2.0 GB \u2699\ufe0f TPB",
+        "title": "Movie.2024.1080p.WEB-DL\n\U0001f464 10 \U0001f4be 2.0 GB \u2699\ufe0f TPB",
         # no infoHash key
     }
     stream_good = _make_stream(info_hash="c" * 40)
@@ -490,7 +490,7 @@ async def test_parse_stream_empty_info_hash(client: TorrentioClient) -> None:
     """Streams with an empty string infoHash are skipped."""
     stream: dict[str, Any] = {
         "name": "Torrentio\n1080p",
-        "title": "Movie.2024.1080p\n\U0001f465 5 \U0001f4be 1.0 GB \u2699\ufe0f TPB",
+        "title": "Movie.2024.1080p\n\U0001f464 5 \U0001f4be 1.0 GB \u2699\ufe0f TPB",
         "infoHash": "",
     }
     payload = _make_torrentio_response([stream])
@@ -551,7 +551,7 @@ async def test_parse_size_invalid(client: TorrentioClient) -> None:
     """An unparseable size string results in size_bytes being None."""
     stream: dict[str, Any] = {
         "name": "Torrentio\n1080p",
-        "title": "Movie.2024.1080p\n\U0001f465 5 \U0001f4be ??? \u2699\ufe0f TPB",
+        "title": "Movie.2024.1080p\n\U0001f464 5 \U0001f4be ??? \u2699\ufe0f TPB",
         "infoHash": "d" * 40,
     }
     _patch_client(client, [_make_response(200, _make_torrentio_response([stream]))])
@@ -801,7 +801,7 @@ async def test_resolution_extracted_from_name_field(client: TorrentioClient) -> 
     """Resolution is read from the 'name' field (e.g. 'Torrentio\\n4K')."""
     stream: dict[str, Any] = {
         "name": "Torrentio\n4K",
-        "title": "Movie.2024.2160p.WEB-DL\n\U0001f465 5 \U0001f4be 30 GB \u2699\ufe0f TPB",
+        "title": "Movie.2024.2160p.WEB-DL\n\U0001f464 5 \U0001f4be 30 GB \u2699\ufe0f TPB",
         "infoHash": "e" * 40,
     }
     _patch_client(client, [_make_response(200, _make_torrentio_response([stream]))])
@@ -911,3 +911,79 @@ async def test_zero_seeders_handled(client: TorrentioClient) -> None:
     assert len(results) == 1
     # 0 seeders is valid — could be stored as 0 or None depending on implementation
     assert results[0].seeders is None or results[0].seeders == 0
+
+
+# ---------------------------------------------------------------------------
+# infoHash fallback — lowercase key and behaviorHints extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lowercase_infohash_key(client: TorrentioClient) -> None:
+    """Streams with lowercase 'infohash' key are parsed (Torrentio fork compat)."""
+    stream: dict[str, Any] = {
+        "name": "Torrentio\n1080p",
+        "title": "Movie.2024.1080p.WEB-DL\n\U0001f464 5 \U0001f4be 1.0 GB \u2699\ufe0f TPB",
+        "infohash": "a" * 40,  # lowercase key
+    }
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000030")
+
+    assert len(results) == 1
+    assert results[0].info_hash == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_infohash_from_behavior_hints(client: TorrentioClient) -> None:
+    """Hash extracted from behaviorHints.bingeGroup when infoHash key is absent."""
+    the_hash = "ab" * 20
+    stream: dict[str, Any] = {
+        "name": "Torrentio\n1080p",
+        "title": "Movie.2024.1080p.WEB-DL\n\U0001f464 5 \U0001f4be 1.0 GB \u2699\ufe0f TPB",
+        "behaviorHints": {
+            "bingeGroup": f"torrentio|{the_hash}",
+            "filename": "Movie.2024.1080p.WEB-DL.mkv",
+        },
+    }
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000031")
+
+    assert len(results) == 1
+    assert results[0].info_hash == the_hash
+
+
+@pytest.mark.asyncio
+async def test_realworld_multiline_title(client: TorrentioClient) -> None:
+    """Real-world 4-line title format (torrent name, filename, emoji, extra) is parsed."""
+    stream: dict[str, Any] = {
+        "name": "Torrentio\n4k DV",
+        "title": (
+            "Show.S02.COMPLETE.2160p.WEB-DL.DV.H265-GROUP\n"
+            "Show.S02E06.2160p.WEB-DL.DV.H265-GROUP.mp4\n"
+            "\U0001f464 42 \U0001f4be 8.77 GB \u2699\ufe0f ThePirateBay\n"
+            "Multi Audio"
+        ),
+        "infoHash": "f" * 40,
+        "fileIdx": 6,
+        "behaviorHints": {
+            "bingeGroup": f"torrentio|{'f' * 40}",
+            "filename": "Show.S02E06.2160p.WEB-DL.DV.H265-GROUP.mp4",
+        },
+    }
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000032")
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.info_hash == "f" * 40
+    assert r.seeders == 42
+    assert r.source_tracker == "ThePirateBay"
+    assert r.size_bytes is not None
+    # Release name is first line (torrent name), not the filename
+    assert "COMPLETE" in r.title

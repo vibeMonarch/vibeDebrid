@@ -12,9 +12,12 @@ Real-world quirks documented here:
 - The ``opts`` config value is inserted as a path segment between base_url and
   ``/stream``, e.g. ``{base_url}/sort=seeders|qualityfilter=4k/stream/...``.
 - ``infoHash`` is always lowercase hex in practice, but we normalise it anyway.
-- The ``title`` field contains two logical sections separated by ``\\n``:
-    line 0 — the raw release name (what PTN should parse)
-    line 1 — emoji-encoded metadata: seeders 👤, size 💾, tracker ⚙️
+- The ``title`` field contains multiple lines separated by ``\\n``:
+    line 0 — the raw release name / torrent name (what PTN should parse)
+    line 1 — (optional) the specific filename within the torrent
+    line 2 — emoji-encoded metadata: seeders 👤, size 💾, tracker ⚙️
+    line 3 — (optional) extra info such as "Multi Audio"
+  We split on the first ``\\n`` only, so the emoji regexes search the remainder.
 """
 
 from __future__ import annotations
@@ -39,8 +42,9 @@ logger = logging.getLogger(__name__)
 # 💾 4.2 GB  /  💾 850 MB  /  💾 1.2 TB
 _SIZE_RE = re.compile(r"\U0001f4be\s*([\d.]+)\s*(GB|MB|TB)", re.IGNORECASE)
 
-# 👤 823
-_SEEDERS_RE = re.compile(r"\U0001f465\s*(\d+)")
+# 👤 823  — Torrentio uses U+1F464 (bust in silhouette, single person).
+# We also accept U+1F465 (busts in silhouette) for compatibility.
+_SEEDERS_RE = re.compile(r"[\U0001f464\U0001f465]\s*(\d+)")
 
 # ⚙️ BIT-HDTV  (everything after the gear to end-of-string)
 _SOURCE_RE = re.compile(r"\u2699\ufe0f\s*(.+?)(?:\s*$)", re.MULTILINE)
@@ -383,8 +387,14 @@ class TorrentioClient:
             A populated TorrentioResult, or None if the entry should be skipped.
         """
         # --- Required fields ---
-        info_hash = stream.get("infoHash")
+        # Primary: standard Stremio protocol field (camelCase).
+        # Fallback: some Torrentio forks / proxies use all-lowercase keys.
+        info_hash = stream.get("infoHash") or stream.get("infohash")
         if not info_hash or not isinstance(info_hash, str):
+            # Last resort: extract hash from behaviorHints.bingeGroup
+            # (format "torrentio|<40-hex-char-hash>")
+            info_hash = self._extract_hash_from_hints(stream)
+        if not info_hash:
             logger.debug("_parse_stream: skipping entry with missing infoHash")
             return None
 
@@ -470,6 +480,26 @@ class TorrentioClient:
     # ------------------------------------------------------------------
     # Metadata extraction helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_hash_from_hints(stream: dict[str, Any]) -> str | None:
+        """Extract info hash from behaviorHints.bingeGroup as a last resort.
+
+        The bingeGroup format is ``"torrentio|<40-hex-char-hash>"``.
+        Returns the lowercase hex hash, or None if not extractable.
+        """
+        hints = stream.get("behaviorHints")
+        if not isinstance(hints, dict):
+            return None
+        binge = hints.get("bingeGroup")
+        if not isinstance(binge, str):
+            return None
+        parts = binge.split("|")
+        for part in parts:
+            cleaned = part.strip().lower()
+            if len(cleaned) == 40 and all(c in "0123456789abcdef" for c in cleaned):
+                return cleaned
+        return None
 
     def _parse_size(self, meta_line: str) -> int | None:
         """Parse the 💾 size annotation from a Torrentio metadata line.
