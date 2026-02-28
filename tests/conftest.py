@@ -20,6 +20,7 @@ from src.models.media_item import MediaItem, MediaType, QueueState
 import src.models.torrent  # noqa: F401
 import src.models.scrape_result  # noqa: F401
 import src.models.symlink  # noqa: F401
+import src.models.mount_index  # noqa: F401
 
 
 @pytest.fixture

@@ -4,6 +4,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -19,6 +20,8 @@ from src.core.scrape_pipeline import scrape_pipeline
 from src.core.mount_scanner import mount_scanner
 from src.core.symlink_manager import symlink_manager
 from src.models.media_item import MediaItem, QueueState
+from src.models.torrent import RdTorrent, TorrentStatus
+from src.services.real_debrid import rd_client
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +67,22 @@ async def _job_mount_scan() -> None:
 
 
 async def _job_queue_processor() -> None:
-    """Scheduled job: advance queue items through the state machine and scrape WANTED items."""
+    """Scheduled job: advance queue items through the full state machine.
+
+    Processes items in this order:
+    1. UNRELEASED/SLEEPING/DORMANT timer-based transitions (via queue_manager.process_queue)
+    2. WANTED → SCRAPING → pipeline
+    3. ADDING → check RD torrent status → CHECKING when downloaded
+    4. CHECKING → mount lookup → symlink creation → COMPLETE
+    5. COMPLETE (older than 1 hour) → DONE
+    """
     logger.info("Scheduled job starting: queue_processor")
     session = async_session()
     try:
         stats = await queue_manager.process_queue(session)
         logger.info("Queue transitions applied: %s", stats)
 
-        # Fetch all WANTED items and run the scrape pipeline for each
+        # --- Stage 1: WANTED → SCRAPING → pipeline ---
         result = await session.execute(
             select(MediaItem).where(MediaItem.state == QueueState.WANTED)
         )
@@ -86,8 +97,6 @@ async def _job_queue_processor() -> None:
                 logger.exception(
                     "Scrape pipeline failed for item id=%d title=%s", item.id, item.title
                 )
-                # Transition to SLEEPING so the item is retried later
-                # rather than stuck in SCRAPING forever
                 try:
                     await queue_manager.transition(session, item.id, QueueState.SLEEPING)
                 except Exception:
@@ -95,6 +104,100 @@ async def _job_queue_processor() -> None:
                         "Failed to transition item id=%d to SLEEPING after pipeline error",
                         item.id,
                     )
+
+        # --- Stage 2: ADDING → check RD status → CHECKING ---
+        result = await session.execute(
+            select(MediaItem).where(MediaItem.state == QueueState.ADDING)
+        )
+        adding_items = result.scalars().all()
+        logger.info("ADDING items to check: %d", len(adding_items))
+
+        for item in adding_items:
+            try:
+                # Find the active RD torrent for this item
+                torrent_result = await session.execute(
+                    select(RdTorrent).where(
+                        RdTorrent.media_item_id == item.id,
+                        RdTorrent.status == TorrentStatus.ACTIVE,
+                    )
+                )
+                torrent = torrent_result.scalar_one_or_none()
+                if torrent is None or torrent.rd_id is None:
+                    logger.warning(
+                        "ADDING item id=%d has no active RD torrent, skipping",
+                        item.id,
+                    )
+                    continue
+
+                rd_info = await rd_client.get_torrent_info(torrent.rd_id)
+                rd_status = rd_info.get("status", "")
+                logger.info(
+                    "ADDING item id=%d rd_id=%s rd_status=%s",
+                    item.id, torrent.rd_id, rd_status,
+                )
+
+                if rd_status == "downloaded":
+                    await queue_manager.transition(session, item.id, QueueState.CHECKING)
+            except Exception:
+                logger.exception(
+                    "Failed to check RD status for ADDING item id=%d title=%s",
+                    item.id, item.title,
+                )
+
+        # --- Stage 3: CHECKING → mount lookup → symlink → COMPLETE ---
+        result = await session.execute(
+            select(MediaItem).where(MediaItem.state == QueueState.CHECKING)
+        )
+        checking_items = result.scalars().all()
+        logger.info("CHECKING items to verify: %d", len(checking_items))
+
+        for item in checking_items:
+            try:
+                matches = await mount_scanner.lookup(
+                    session,
+                    title=item.title,
+                    season=item.season,
+                    episode=item.episode,
+                )
+                if not matches:
+                    logger.info(
+                        "CHECKING item id=%d title=%r not found in mount yet, will retry next cycle",
+                        item.id, item.title,
+                    )
+                    continue
+
+                # Use the first (most recent) match
+                source_path = matches[0].filepath
+                logger.info(
+                    "CHECKING item id=%d found in mount: %s", item.id, source_path,
+                )
+
+                await symlink_manager.create_symlink(session, item, source_path)
+                await queue_manager.transition(session, item.id, QueueState.COMPLETE)
+            except Exception:
+                logger.exception(
+                    "Failed to process CHECKING item id=%d title=%s",
+                    item.id, item.title,
+                )
+
+        # --- Stage 4: COMPLETE (older than 1 hour) → DONE ---
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        result = await session.execute(
+            select(MediaItem).where(
+                MediaItem.state == QueueState.COMPLETE,
+                MediaItem.state_changed_at <= one_hour_ago,
+            )
+        )
+        complete_items = result.scalars().all()
+        logger.info("COMPLETE items ready for DONE: %d", len(complete_items))
+
+        for item in complete_items:
+            try:
+                await queue_manager.transition(session, item.id, QueueState.DONE)
+            except Exception:
+                logger.exception(
+                    "Failed to transition COMPLETE item id=%d to DONE", item.id,
+                )
 
         await session.commit()
         logger.info("Scheduled job complete: queue_processor")
