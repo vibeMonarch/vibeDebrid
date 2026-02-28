@@ -294,6 +294,40 @@ class DedupEngine:
         """
         normalised_hash = info_hash.lower().strip() if info_hash else None
 
+        # Check for existing torrent with the same info_hash to avoid
+        # UNIQUE constraint violations when re-adding a known torrent.
+        existing: RdTorrent | None = None
+        if normalised_hash:
+            result = await session.execute(
+                select(RdTorrent).where(RdTorrent.info_hash == normalised_hash)
+            )
+            existing = result.scalar_one_or_none()
+
+        if existing is not None:
+            # Update the existing record instead of inserting a duplicate.
+            if rd_id is not None:
+                existing.rd_id = rd_id
+            if media_item_id is not None:
+                existing.media_item_id = media_item_id
+            if filename is not None:
+                existing.filename = filename
+            if filesize is not None:
+                existing.filesize = filesize
+            if resolution is not None:
+                existing.resolution = resolution
+            if cached is not None:
+                existing.cached = cached
+            existing.status = TorrentStatus.ACTIVE
+            await session.flush()
+            logger.info(
+                "dedup.register_torrent: updated existing rd_id=%s info_hash=%s "
+                "media_item_id=%s",
+                existing.rd_id,
+                normalised_hash,
+                media_item_id,
+            )
+            return existing
+
         torrent = RdTorrent(
             rd_id=rd_id,
             info_hash=normalised_hash,

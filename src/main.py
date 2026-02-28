@@ -90,19 +90,24 @@ async def _job_queue_processor() -> None:
         logger.info("WANTED items to scrape: %d", len(wanted_items))
 
         for item in wanted_items:
+            # Cache attributes before try block so error handlers don't
+            # trigger lazy loads on a potentially poisoned session.
+            item_id = item.id
+            item_title = item.title
             try:
-                await queue_manager.transition(session, item.id, QueueState.SCRAPING)
+                await queue_manager.transition(session, item_id, QueueState.SCRAPING)
                 await scrape_pipeline.run(session, item)
             except Exception:
                 logger.exception(
-                    "Scrape pipeline failed for item id=%d title=%s", item.id, item.title
+                    "Scrape pipeline failed for item id=%d title=%s", item_id, item_title
                 )
                 try:
-                    await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                    await session.rollback()
+                    await queue_manager.transition(session, item_id, QueueState.SLEEPING)
                 except Exception:
                     logger.exception(
                         "Failed to transition item id=%d to SLEEPING after pipeline error",
-                        item.id,
+                        item_id,
                     )
 
         # --- Stage 2: ADDING → check RD status → CHECKING ---

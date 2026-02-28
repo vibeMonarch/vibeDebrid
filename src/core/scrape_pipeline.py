@@ -822,7 +822,9 @@ class ScrapePipeline:
                 info_hash,
                 exc,
             )
-            # Do not abort — torrent is already in RD so we still transition to ADDING
+            # Rollback the failed flush so the session is usable for subsequent ops.
+            # The torrent is already in RD so we still transition to ADDING.
+            await session.rollback()
 
         # --- Transition to ADDING ---
         await queue_manager.transition(session, item.id, QueueState.ADDING)
