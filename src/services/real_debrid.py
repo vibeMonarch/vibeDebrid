@@ -254,7 +254,7 @@ class RealDebridClient:
         )
         return {}
 
-    async def list_torrents(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    async def list_torrents(self, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
         """Return torrents currently in the RD account.
 
         GET /torrents with pagination params. Used by the dedup engine to
@@ -262,7 +262,7 @@ class RealDebridClient:
 
         Args:
             limit: Maximum number of results to return (RD cap: 2500).
-            offset: Zero-based page offset.
+            page: 1-based page number.
 
         Returns:
             List of torrent summary dicts from RD.
@@ -272,10 +272,12 @@ class RealDebridClient:
             RealDebridError: On other API failures.
         """
         async with self._build_client() as client:
-            response = await client.get("/torrents", params={"limit": limit, "offset": offset})
+            response = await client.get("/torrents", params={"limit": limit, "page": page})
             self._raise_for_status(response)
+            if response.status_code == 204 or not response.text:
+                return []
             data: list[dict[str, Any]] = response.json()
-        logger.debug("list_torrents: returned %d items (offset=%d)", len(data), offset)
+        logger.debug("list_torrents: returned %d items (page=%d)", len(data), page)
         return data
 
     async def get_torrent_info(self, torrent_id: str) -> dict[str, Any]:

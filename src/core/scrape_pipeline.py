@@ -594,6 +594,13 @@ class ScrapePipeline:
         t0 = time.monotonic()
         results: list[TorrentioResult] = []
 
+        if not item.imdb_id:
+            logger.debug(
+                "scrape_pipeline: skipping Torrentio for item id=%d — no imdb_id",
+                item.id,
+            )
+            return results, 0
+
         if item.media_type == MediaType.MOVIE:
             query_params = json.dumps(
                 {"imdb_id": item.imdb_id, "type": "movie"}

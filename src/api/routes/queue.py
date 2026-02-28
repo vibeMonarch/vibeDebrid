@@ -25,7 +25,7 @@ router = APIRouter()
 
 class MediaItemResponse(BaseModel):
     id: int
-    imdb_id: str
+    imdb_id: str | None = None
     tmdb_id: str | None = None
     title: str
     year: int | None = None

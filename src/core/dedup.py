@@ -83,7 +83,7 @@ class DuplicateGroup(BaseModel):
         torrents: List of DuplicateEntry objects comprising the group.
     """
 
-    imdb_id: str
+    imdb_id: str | None = None
     title: str
     season: int | None = None
     episode: int | None = None
@@ -185,7 +185,7 @@ class DedupEngine:
     async def check_content_duplicate(
         self,
         session: AsyncSession,
-        imdb_id: str,
+        imdb_id: str | None,
         season: int | None,
         episode: int | None,
         resolution: str | None,
@@ -213,6 +213,9 @@ class DedupEngine:
         Returns:
             The first matching ACTIVE RdTorrent, or None when no match exists.
         """
+        if imdb_id is None:
+            return None
+
         stmt = (
             select(RdTorrent)
             .join(MediaItem, RdTorrent.media_item_id == MediaItem.id)

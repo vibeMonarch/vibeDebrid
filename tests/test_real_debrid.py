@@ -198,7 +198,7 @@ async def test_list_torrents_success(client: RealDebridClient) -> None:
 
 @pytest.mark.asyncio
 async def test_list_torrents_pagination_params(client: RealDebridClient) -> None:
-    """list_torrents passes limit and offset to the API."""
+    """list_torrents passes limit and page to the API."""
     captured_requests: list[httpx.Request] = []
 
     class _CapturingTransport(httpx.AsyncBaseTransport):
@@ -217,12 +217,23 @@ async def test_list_torrents_pagination_params(client: RealDebridClient) -> None
         return c
 
     with patch.object(client, "_build_client", side_effect=_patched_build):
-        await client.list_torrents(limit=25, offset=50)
+        await client.list_torrents(limit=25, page=3)
 
     assert len(captured_requests) == 1
     url = captured_requests[0].url
     assert url.params["limit"] == "25"
-    assert url.params["offset"] == "50"
+    assert url.params["page"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_list_torrents_204_returns_empty(client: RealDebridClient) -> None:
+    """list_torrents returns empty list on HTTP 204 No Content."""
+    responses = [_make_response(204, None)]
+
+    with _patch_client(client, responses):
+        result = await client.list_torrents()
+
+    assert result == []
 
 
 # ---------------------------------------------------------------------------

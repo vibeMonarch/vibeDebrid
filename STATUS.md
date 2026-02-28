@@ -46,25 +46,27 @@
 - Duplicates: RD account scan + resolve (delete unwanted torrents)
 - 76 API route tests added
 
-**Total: 602 tests, all passing**
-
-## Next Steps (In Order)
-
-### Step 1: Web UI
+### Phase 6: Web UI
 - Frontend-dev agent builds Jinja2 + htmx + Tailwind templates
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-### Step 2: Trakt + Plex Integration
+**Total: 602 tests, all passing**
+
+## Next Steps (In Order)
+
+
+
+### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - src/services/plex.py — watchlist, library scan trigger
 - Wire into scheduler with config intervals
 
 
-### Step 3: Upgrade Manager
+### Step 2: Upgrade Manager
 - src/core/upgrade_manager.py — monitor for higher quality versions within window
 
-### Step 4: Docker
+### Step 3: Docker
 - Dockerfile + docker-compose.yml alongside existing Zurg/rclone stack
 
 ## Key Files to Read
