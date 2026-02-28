@@ -171,9 +171,8 @@
             <th class="px-4 py-3 font-semibold text-gray-300 w-28 text-right">Actions</th>
           </tr>
         </thead>
-        <tbody>
-          <template x-for="item in items" :key="item.id">
-            <template>
+        <template x-for="item in items" :key="item.id">
+          <tbody>
               <!-- Main row -->
               <tr class="border-b border-vd-border/50 hover:bg-white/5 transition-colors cursor-pointer"
                   :class="{ 'bg-white/5': expandedId === item.id }"
@@ -336,9 +335,8 @@
                   </div>
                 </td>
               </tr>
-            </template>
-          </template>
-        </tbody>
+          </tbody>
+        </template>
       </table>
     </div>
   </div>
