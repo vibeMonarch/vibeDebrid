@@ -36,6 +36,16 @@
   }
   .tooltip-wrapper:hover .tooltip-box,
   .tooltip-wrapper:focus-within .tooltip-box { display: block; }
+
+  /* Cache-checking spinner */
+  .cache-spinner {
+    animation: spin 1s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
 </style>
 {% endblock %}
 
@@ -219,7 +229,7 @@
     <div class="flex items-center justify-between flex-wrap gap-2">
       <p id="results-summary" class="text-sm text-vd-muted"></p>
       <div class="flex items-center gap-2 text-xs text-vd-muted">
-        <span>Sorted: cached first, then by score</span>
+        <span>Sorted by score</span>
       </div>
     </div>
 
@@ -293,6 +303,9 @@
 
   // ─── Search form submission ──────────────────────────────────────────────────
 
+  // Store the current search payload so add buttons can reference it.
+  let _lastSearchPayload = null;
+
   async function handleSearch(event) {
     event.preventDefault();
 
@@ -323,6 +336,7 @@
       quality_profile: document.getElementById('quality_profile').value,
     };
 
+    _lastSearchPayload = payload;
     setSearchLoading(true);
 
     try {
@@ -339,7 +353,11 @@
       }
 
       const data = await resp.json();
-      renderResults(data, payload);
+      renderResults(data);
+
+      // Kick off async cache checking for the top 10 results (non-blocking).
+      const hashes = (data.results || []).slice(0, 10).map(r => r.info_hash).filter(Boolean);
+      checkCachedProgressive(hashes);
 
     } catch (err) {
       showResultsError(err.message || 'An unexpected error occurred.');
@@ -360,9 +378,61 @@
     label.textContent = loading ? 'Searching…' : 'Search';
   }
 
+  // ─── Progressive cache checking ────────────────────────────────────────────
+
+  // Incremented each search to cancel stale cache-check loops.
+  let _cacheCheckGeneration = 0;
+
+  async function checkCachedProgressive(hashes) {
+    const gen = ++_cacheCheckGeneration;
+
+    for (const hash of hashes) {
+      // Abort if a new search was started.
+      if (gen !== _cacheCheckGeneration) return;
+
+      try {
+        const resp = await fetch('/api/check-cached', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ info_hash: hash }),
+        });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        if (gen !== _cacheCheckGeneration) return;
+        updateCacheBadge(data.info_hash, data.cached);
+      } catch (_) {
+        // Silently skip — badge stays as "Checking…"
+      }
+    }
+  }
+
+  function updateCacheBadge(infoHash, cached) {
+    const card = document.getElementById('result-' + infoHash);
+    if (!card) return;
+
+    // Update all cache-badge containers in this card (desktop + mobile).
+    card.querySelectorAll('.cache-badge').forEach(el => {
+      if (cached) {
+        el.innerHTML = `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-green-900/60 border border-green-700/50 text-green-300">
+            <span>&#10003;</span>Cached
+          </span>`;
+      } else {
+        el.innerHTML = `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-red-900/60 border border-red-700/50 text-red-300">
+            <span>&#10007;</span>Not Cached
+          </span>`;
+      }
+    });
+
+    // Update left border accent.
+    if (cached) {
+      card.classList.remove('result-uncached');
+      card.classList.add('result-cached');
+    }
+  }
+
   // ─── Render results ─────────────────────────────────────────────────────────
 
-  function renderResults(data, searchPayload) {
+  function renderResults(data) {
     const section  = document.getElementById('results-section');
     const list     = document.getElementById('results-list');
     const summary  = document.getElementById('results-summary');
@@ -373,9 +443,8 @@
     errorDiv.classList.add('hidden');
     list.innerHTML = '';
 
+    // Sort by score descending (cache status updates progressively later).
     const results = (data.results || []).slice().sort((a, b) => {
-      // Cached first, then score descending
-      if (a.cached !== b.cached) return a.cached ? -1 : 1;
       return (b.score || 0) - (a.score || 0);
     });
 
@@ -393,16 +462,30 @@
     empty.classList.add('hidden');
     list.classList.remove('hidden');
 
-    results.forEach(item => {
-      const card = buildResultCard(item, searchPayload);
+    results.forEach((item, idx) => {
+      const card = buildResultCard(item, idx);
       list.appendChild(card);
     });
   }
 
-  function buildResultCard(item, searchPayload) {
+  function cacheBadgeHtml(item, idx) {
+    // Top 10 results will be checked — show a spinner.
+    // The rest show N/A.
+    if (idx < 10) {
+      return `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
+          <svg class="w-3 h-3 cache-spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Checking&hellip;
+        </span>`;
+    }
+    return `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
+        N/A
+      </span>`;
+  }
+
+  function buildResultCard(item, idx) {
     const wrapper = document.createElement('div');
     wrapper.id = `result-${item.info_hash}`;
-    wrapper.className = `bg-vd-card border border-vd-border rounded-xl overflow-hidden ${item.cached ? 'result-cached' : 'result-uncached'}`;
+    wrapper.className = 'bg-vd-card border border-vd-border rounded-xl overflow-hidden result-uncached';
 
     const score          = item.score || 0;
     const scoreBarClass  = scoreColorClass(score);
@@ -421,6 +504,8 @@
       '1080p': 'bg-blue-700 text-blue-100',
       '720p':  'bg-sky-700 text-sky-100',
     }[item.resolution] || 'bg-gray-700 text-gray-200';
+
+    const badgeHtml = cacheBadgeHtml(item, idx);
 
     wrapper.innerHTML = `
       <!-- Desktop table-like row -->
@@ -451,16 +536,7 @@
         </div>
 
         <!-- Cached badge -->
-        <div class="flex justify-center">
-          ${item.cached
-            ? `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-green-900/60 border border-green-700/50 text-green-300">
-                 <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>Cached
-               </span>`
-            : `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
-                 <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Not Cached
-               </span>`
-          }
-        </div>
+        <div class="flex justify-center cache-badge">${badgeHtml}</div>
 
         <!-- Score -->
         <div class="w-20 tooltip-wrapper" tabindex="0" aria-label="Score breakdown: ${escapeHtml(breakdownStr)}">
@@ -484,7 +560,7 @@
             class="add-btn inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg
                    bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                    focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-1 focus:ring-offset-vd-card"
-            onclick="handleAdd(this, '${escapeHtml(item.info_hash)}', ${JSON.stringify(JSON.stringify(buildAddPayload(item, searchPayload)))})"
+            data-hash="${escapeHtml(item.info_hash)}"
           >
             <svg class="add-icon w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -508,14 +584,7 @@
             ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${escapeHtml(item.codec)}</span>` : ''}
             ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${escapeHtml(item.quality)}</span>` : ''}
             ${item.is_season_pack ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Season Pack</span>` : ''}
-            ${item.cached
-              ? `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-900/60 border border-green-700/50 text-green-300">
-                   <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>Cached
-                 </span>`
-              : `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
-                   <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Not Cached
-                 </span>`
-            }
+            <span class="cache-badge">${badgeHtml}</span>
           </div>
         </div>
 
@@ -542,7 +611,7 @@
           class="add-btn w-full inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-lg
                  bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                  focus:outline-none focus:ring-2 focus:ring-vd-accent"
-          onclick="handleAdd(this, '${escapeHtml(item.info_hash)}', ${JSON.stringify(JSON.stringify(buildAddPayload(item, searchPayload)))})"
+          data-hash="${escapeHtml(item.info_hash)}"
         >
           <svg class="add-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -559,28 +628,30 @@
     return wrapper;
   }
 
-  function buildAddPayload(item, searchPayload) {
-    return {
-      magnet_or_hash:  item.info_hash,
-      title:           searchPayload.query,
-      imdb_id:         searchPayload.imdb_id || null,
-      media_type:      searchPayload.media_type,
+  // ─── Add via event delegation ──────────────────────────────────────────────
+
+  document.getElementById('results-list').addEventListener('click', function(e) {
+    const btn = e.target.closest('.add-btn');
+    if (!btn || btn.disabled) return;
+
+    const infoHash = btn.dataset.hash;
+    if (!infoHash || !_lastSearchPayload) return;
+
+    const payload = {
+      magnet_or_hash:  infoHash,
+      title:           _lastSearchPayload.query,
+      imdb_id:         _lastSearchPayload.imdb_id || null,
+      media_type:      _lastSearchPayload.media_type,
       year:            null,
-      season:          searchPayload.season || null,
-      episode:         searchPayload.episode || null,
-      quality_profile: searchPayload.quality_profile,
+      season:          _lastSearchPayload.season || null,
+      episode:         _lastSearchPayload.episode || null,
+      quality_profile: _lastSearchPayload.quality_profile,
     };
-  }
 
-  // ─── Add a result to Real-Debrid ────────────────────────────────────────────
+    handleAdd(btn, infoHash, payload);
+  });
 
-  async function handleAdd(btn, infoHash, payloadJson) {
-    if (btn.disabled) return;
-
-    const payload = JSON.parse(payloadJson);
-    // Always use the info_hash from the result, not from the search form
-    payload.magnet_or_hash = infoHash;
-
+  async function handleAdd(btn, infoHash, payload) {
     // Find all add buttons in this card and disable them
     const card = document.getElementById(`result-${infoHash}`);
     const allAddBtns = card ? card.querySelectorAll('.add-btn') : [btn];

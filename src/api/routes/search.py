@@ -50,7 +50,7 @@ class SearchResultItem(BaseModel):
     size_bytes: int | None = None
     seeders: int | None = None
     is_season_pack: bool = False
-    cached: bool = False
+    cached: bool | None = None  # True=cached, False=not cached, None=unchecked
     score: float = 0.0
     score_breakdown: dict[str, float] = {}
 
@@ -63,12 +63,25 @@ class SearchResponse(BaseModel):
     total_filtered: int
 
 
+class CheckCachedRequest(BaseModel):
+    """Request body for POST /api/check-cached."""
+
+    info_hash: str
+
+
+class CheckCachedResponse(BaseModel):
+    """Response body for POST /api/check-cached."""
+
+    info_hash: str
+    cached: bool
+
+
 class AddRequest(BaseModel):
     """Request body for POST /api/add."""
 
     magnet_or_hash: str
     title: str
-    imdb_id: str
+    imdb_id: str | None = None
     media_type: str = "movie"
     year: int | None = None
     season: int | None = None
@@ -169,34 +182,20 @@ async def search(body: SearchRequest) -> SearchResponse:
         )
         return SearchResponse(results=[], total_raw=0, total_filtered=0)
 
-    # Derive cached status from Torrentio's ⚡ indicator.  When the Torrentio
-    # opts URL includes an RD API key, Torrentio marks cached streams in the
-    # stream name/title — no extra RD API call needed.
-    cached_set: set[str] = {
-        r.info_hash
-        for r in combined
-        if r.info_hash and getattr(r, "cached", False)
-    }
-    logger.debug(
-        "search: %d/%d results marked as cached by scrapers",
-        len(cached_set),
-        len(combined),
-    )
-
-    # Filter and rank via the three-tier filter engine.
+    # Filter and rank.  Cache status is checked separately via /api/check-cached
+    # so results appear instantly.
     ranked = filter_engine.filter_and_rank(
         combined,  # type: ignore[arg-type]
         profile_name=body.quality_profile,
-        cached_hashes=cached_set,
+        cached_hashes=set(),
     )
     total_filtered = len(ranked)
 
     logger.info(
-        "search: query=%r raw=%d filtered=%d cached=%d",
+        "search: query=%r raw=%d filtered=%d",
         body.query,
         total_raw,
         total_filtered,
-        len(cached_set),
     )
 
     results = [
@@ -209,7 +208,7 @@ async def search(body: SearchRequest) -> SearchResponse:
             size_bytes=fr.result.size_bytes,
             seeders=fr.result.seeders,
             is_season_pack=fr.result.is_season_pack,
-            cached=fr.result.info_hash in cached_set,
+            cached=None,  # checked async by frontend via /api/check-cached
             score=fr.score,
             score_breakdown=fr.score_breakdown,
         )
@@ -221,6 +220,24 @@ async def search(body: SearchRequest) -> SearchResponse:
         total_raw=total_raw,
         total_filtered=total_filtered,
     )
+
+
+@router.post("/check-cached")
+async def check_cached(body: CheckCachedRequest) -> CheckCachedResponse:
+    """Check if a single torrent hash is cached on Real-Debrid.
+
+    Uses the add-magnet/check-status/delete probe. Called by the frontend
+    per-hash after search results are displayed, so the UI can update
+    cache badges progressively without blocking the initial search.
+
+    Args:
+        body: Request with a single info_hash to check.
+
+    Returns:
+        The hash and its cached status.
+    """
+    cached = await rd_client.check_cached(body.info_hash)
+    return CheckCachedResponse(info_hash=body.info_hash, cached=cached)
 
 
 @router.post("/add")

@@ -10,6 +10,9 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Statuses that indicate a torrent's content is already cached on RD servers.
+_CACHED_STATUSES = frozenset({"downloaded", "waiting_files_selection"})
+
 # ---------------------------------------------------------------------------
 # Custom exceptions
 # ---------------------------------------------------------------------------
@@ -346,6 +349,90 @@ class RealDebridClient:
                 return
 
             self._raise_for_status(response)
+
+    async def check_cached(self, info_hash: str) -> bool:
+        """Check whether a single torrent is cached on RD servers.
+
+        Adds the magnet, inspects the torrent status, then deletes it.
+        A torrent whose status is ``"downloaded"`` or
+        ``"waiting_files_selection"`` immediately after add is cached.
+
+        This is expensive (3 API calls per hash).  Prefer
+        ``check_cached_batch`` for checking multiple hashes.
+
+        Args:
+            info_hash: 40-character hex info hash.
+
+        Returns:
+            True if the torrent is cached, False otherwise (including on any
+            API error).
+        """
+        magnet_uri = f"magnet:?xt=urn:btih:{info_hash}"
+        rd_id: str | None = None
+        try:
+            add_resp = await self.add_magnet(magnet_uri)
+            rd_id = str(add_resp.get("id", ""))
+            if not rd_id:
+                logger.warning("check_cached: add_magnet returned empty id for hash=%s", info_hash)
+                return False
+
+            info = await self.get_torrent_info(rd_id)
+            status = info.get("status", "")
+            cached = status in _CACHED_STATUSES
+            logger.debug(
+                "check_cached: hash=%s rd_id=%s status=%s cached=%s",
+                info_hash, rd_id, status, cached,
+            )
+            return cached
+        except Exception as exc:
+            logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
+            return False
+        finally:
+            if rd_id:
+                try:
+                    await self.delete_torrent(rd_id)
+                except Exception as exc:
+                    logger.warning(
+                        "check_cached: cleanup delete failed for rd_id=%s: %s",
+                        rd_id, exc,
+                    )
+
+    async def check_cached_batch(
+        self,
+        hashes: list[str],
+        max_checks: int = 10,
+    ) -> set[str]:
+        """Check up to *max_checks* hashes for RD cache status.
+
+        Hashes are checked sequentially to avoid tripping RD's rate limit.
+        Stops early if a rate-limit error is encountered.
+
+        Args:
+            hashes: Info hashes to check, ordered by priority (best first).
+            max_checks: Maximum number of hashes to probe.
+
+        Returns:
+            Set of info hashes confirmed as cached.
+        """
+        cached: set[str] = set()
+        to_check = hashes[:max_checks]
+        for idx, h in enumerate(to_check):
+            try:
+                if await self.check_cached(h):
+                    cached.add(h)
+            except RealDebridRateLimitError:
+                logger.warning(
+                    "check_cached_batch: rate limited after %d/%d checks, stopping early",
+                    idx, len(to_check),
+                )
+                break
+        logger.info(
+            "check_cached_batch: checked %d/%d hashes, %d cached",
+            min(len(to_check), idx + 1) if to_check else 0,
+            len(hashes),
+            len(cached),
+        )
+        return cached
 
     async def delete_torrent(self, torrent_id: str) -> None:
         """Remove a torrent from the RD account.

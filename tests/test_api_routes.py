@@ -980,22 +980,21 @@ class TestSearch:
         assert result["resolution"] == "1080p"
         assert result["score"] == 75.0
 
-    async def test_search_marks_cached_from_torrentio(
+    async def test_search_returns_cached_null(
         self, http_no_db: AsyncClient
     ) -> None:
-        """Results with cached=True from Torrentio are marked cached in the response."""
+        """Search always returns cached=None; cache is checked via /api/check-cached."""
         from src.services.torrentio import TorrentioResult
         from src.core.filter_engine import FilteredResult
 
-        cached_hash = "b" * 40
         mock_result = TorrentioResult(
-            info_hash=cached_hash,
-            title="Cached.Movie.1080p.mkv",
+            info_hash="b" * 40,
+            title="Some.Movie.1080p.mkv",
             resolution="1080p",
             size_bytes=3_000_000_000,
             seeders=200,
             languages=[],
-            cached=True,
+            cached=False,
         )
         mock_filtered = FilteredResult(result=mock_result, score=80.0)
 
@@ -1018,14 +1017,14 @@ class TestSearch:
             resp = await http_no_db.post(
                 "/api/search",
                 json={
-                    "query": "Cached Movie",
+                    "query": "Some Movie",
                     "imdb_id": "tt0000002",
                     "media_type": "movie",
                 },
             )
 
         assert resp.status_code == 200
-        assert resp.json()["results"][0]["cached"] is True
+        assert resp.json()["results"][0]["cached"] is None
 
     async def test_search_torrentio_failure_does_not_crash(
         self, http_no_db: AsyncClient
@@ -1073,52 +1072,43 @@ class TestSearch:
         assert data["total_raw"] == 1
         assert data["results"][0]["info_hash"] == "c" * 40
 
-    async def test_search_uncached_result_has_cached_false(
+    async def test_check_cached_returns_true(
         self, http_no_db: AsyncClient
     ) -> None:
-        """Results without cached=True from scrapers have cached=False in the response."""
-        from src.services.torrentio import TorrentioResult
-        from src.core.filter_engine import FilteredResult
-
-        mock_result = TorrentioResult(
-            info_hash="d" * 40,
-            title="No.Cache.Movie.1080p.mkv",
-            resolution="1080p",
-            size_bytes=2_000_000_000,
-            seeders=50,
-            languages=[],
-            cached=False,
-        )
-        mock_filtered = FilteredResult(result=mock_result, score=55.0)
-
-        with (
-            patch(
-                "src.api.routes.search.torrentio_client.scrape_movie",
-                new_callable=AsyncMock,
-                return_value=[mock_result],
-            ),
-            patch(
-                "src.api.routes.search.zilean_client.search",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "src.api.routes.search.filter_engine.filter_and_rank",
-                return_value=[mock_filtered],
-            ),
+        """POST /api/check-cached returns cached=True when RD confirms cache."""
+        with patch(
+            "src.api.routes.search.rd_client.check_cached",
+            new_callable=AsyncMock,
+            return_value=True,
         ):
             resp = await http_no_db.post(
-                "/api/search",
-                json={
-                    "query": "No Cache Movie",
-                    "imdb_id": "tt0000004",
-                    "media_type": "movie",
-                },
+                "/api/check-cached",
+                json={"info_hash": "d" * 40},
             )
 
         assert resp.status_code == 200
-        assert resp.json()["total_raw"] == 1
-        assert resp.json()["results"][0]["cached"] is False
+        data = resp.json()
+        assert data["info_hash"] == "d" * 40
+        assert data["cached"] is True
+
+    async def test_check_cached_returns_false(
+        self, http_no_db: AsyncClient
+    ) -> None:
+        """POST /api/check-cached returns cached=False when torrent is not cached."""
+        with patch(
+            "src.api.routes.search.rd_client.check_cached",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            resp = await http_no_db.post(
+                "/api/check-cached",
+                json={"info_hash": "e" * 40},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["info_hash"] == "e" * 40
+        assert data["cached"] is False
 
     async def test_search_episode_uses_scrape_episode(
         self, http_no_db: AsyncClient

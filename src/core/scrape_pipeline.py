@@ -38,7 +38,7 @@ from src.core.mount_scanner import mount_scanner
 from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
-from src.services.real_debrid import RealDebridError, rd_client
+from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrentio import TorrentioResult, torrentio_client
 from src.services.zilean import ZileanResult, zilean_client
 
@@ -223,26 +223,32 @@ class ScrapePipeline:
                 filtered_results_count=0,
             )
 
-        # Derive cached status from Torrentio's ⚡ indicator (set when the
-        # opts URL includes an RD API key).  No extra RD API call needed.
-        cached_set: set[str] = {
-            r.info_hash
-            for r in combined
-            if r.info_hash and getattr(r, "cached", False)
-        }
-        logger.debug(
-            "scrape_pipeline: %d/%d results marked as cached by scrapers "
-            "for item id=%d",
-            len(cached_set),
-            len(combined),
-            item.id,
-        )
-
-        # Apply filter engine (single pass — get_best calls filter_and_rank internally)
+        # Filter and rank first, then probe RD cache on the top candidates.
         ranked = filter_engine.filter_and_rank(
             combined,  # type: ignore[arg-type]
             profile_name=item.quality_profile,
-            cached_hashes=cached_set,
+            cached_hashes=set(),
+        )
+
+        # Probe RD cache for the top 10 filtered results.
+        top_hashes = [
+            fr.result.info_hash for fr in ranked[:10] if fr.result.info_hash
+        ]
+        cached_set: set[str] = set()
+        if top_hashes:
+            try:
+                cached_set = await rd_client.check_cached_batch(top_hashes)
+            except Exception as exc:
+                logger.warning(
+                    "scrape_pipeline: check_cached_batch failed for item id=%d: %s",
+                    item.id,
+                    exc,
+                )
+        logger.debug(
+            "scrape_pipeline: %d/%d top results cached for item id=%d",
+            len(cached_set),
+            len(top_hashes),
+            item.id,
         )
         filtered_count = len(ranked)
         best: FilteredResult | None = ranked[0] if ranked else None

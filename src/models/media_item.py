@@ -38,7 +38,7 @@ class MediaItem(Base):
     __tablename__ = "media_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    imdb_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    imdb_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tmdb_id: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)

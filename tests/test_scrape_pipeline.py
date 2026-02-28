@@ -160,6 +160,7 @@ _PATCH_TARGETS = {
     "torrentio_episode": "src.core.scrape_pipeline.torrentio_client.scrape_episode",
     "rd_add": "src.core.scrape_pipeline.rd_client.add_magnet",
     "rd_select": "src.core.scrape_pipeline.rd_client.select_files",
+    "rd_check_cached_batch": "src.core.scrape_pipeline.rd_client.check_cached_batch",
     "filter_rank": "src.core.scrape_pipeline.filter_engine.filter_and_rank",
     "queue_transition": "src.core.scrape_pipeline.queue_manager.transition",
 }
@@ -177,6 +178,7 @@ class _Mocks:
     torrentio_episode: AsyncMock
     rd_add: AsyncMock
     rd_select: AsyncMock
+    rd_check_cached_batch: AsyncMock
     filter_rank: MagicMock
     queue_transition: AsyncMock
 
@@ -234,6 +236,9 @@ async def _all_mocks(
 
     mocks.rd_select = started["rd_select"]
     mocks.rd_select.return_value = None
+
+    mocks.rd_check_cached_batch = started["rd_check_cached_batch"]
+    mocks.rd_check_cached_batch.return_value = set()
 
     mocks.filter_rank = started["filter_rank"]
     mocks.filter_rank.return_value = []
@@ -604,29 +609,31 @@ class TestFilteringAndRdCache:
 
         assert result.action == "no_results"
 
-    async def test_cached_results_passed_to_filter(
+    async def test_check_cached_batch_called_with_top_hashes(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """Torrentio results with cached=True have their hashes forwarded to filter_engine."""
+        """check_cached_batch is called with info hashes from the top filtered results."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         fake_hash = "c" * 40
         torrentio_result = _make_torrentio_result(info_hash=fake_hash, cached=True)
+        filtered = _make_filtered_result(torrentio_result)
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.rd_check_cached_batch.return_value = {fake_hash}
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
-        # filter_and_rank must have been called with cached_hashes containing the hash
-        m.filter_rank.assert_called_once()
-        call_kwargs = m.filter_rank.call_args[1]
-        cached_hashes = call_kwargs.get("cached_hashes") or set()
-        assert fake_hash in cached_hashes
+        # check_cached_batch should have been called with the top hash
+        m.rd_check_cached_batch.assert_called_once()
+        call_args = m.rd_check_cached_batch.call_args[0]
+        assert fake_hash in call_args[0]
 
-    async def test_uncached_results_not_in_cached_set(
+    async def test_filter_always_receives_empty_cached_set(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """Torrentio results with cached=False are not in the cached_hashes set."""
+        """filter_and_rank is always called with an empty cached_hashes set (cache is checked after filtering)."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         torrentio_result = _make_torrentio_result(cached=False)
 

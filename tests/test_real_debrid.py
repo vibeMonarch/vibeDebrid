@@ -16,6 +16,7 @@ from src.services.real_debrid import (
     RealDebridAuthError,
     RealDebridClient,
     RealDebridError,
+    RealDebridRateLimitError,
 )
 
 
@@ -385,3 +386,193 @@ async def test_malformed_json_error_body(client: RealDebridClient) -> None:
             await client.get_user()
 
     assert exc_info.value.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Shared stateful mock transport for multi-call methods
+# ---------------------------------------------------------------------------
+
+
+class _SharedTransport(httpx.AsyncBaseTransport):
+    """Transport that returns pre-built responses in order across all clients."""
+
+    def __init__(self, responses: list[httpx.Response]) -> None:
+        self._responses = list(responses)
+        self._index = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        resp = self._responses[self._index]
+        self._index += 1
+        resp.request = request
+        return resp
+
+
+def _patch_client_shared(client: RealDebridClient, transport: _SharedTransport):
+    """Patch so every _build_client call shares the same transport."""
+    original_build = client._build_client
+
+    def _patched(timeout=15.0):
+        c = original_build(timeout)
+        c._transport = transport
+        c._async_transport = transport
+        return c
+
+    return patch.object(client, "_build_client", side_effect=_patched)
+
+
+# ---------------------------------------------------------------------------
+# check_cached
+# ---------------------------------------------------------------------------
+
+_SAMPLE_HASH = "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_check_cached_downloaded(client: RealDebridClient) -> None:
+    """check_cached returns True when torrent status is 'downloaded'."""
+    transport = _SharedTransport([
+        _make_response(201, {"id": "RD1", "uri": "https://rd.example/RD1"}),
+        _make_response(200, {"id": "RD1", "status": "downloaded", "hash": _SAMPLE_HASH}),
+        _make_response(204, b""),  # delete
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached(_SAMPLE_HASH)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_cached_waiting_files_selection(client: RealDebridClient) -> None:
+    """check_cached returns True when torrent status is 'waiting_files_selection'."""
+    transport = _SharedTransport([
+        _make_response(201, {"id": "RD2", "uri": "https://rd.example/RD2"}),
+        _make_response(200, {"id": "RD2", "status": "waiting_files_selection", "hash": _SAMPLE_HASH}),
+        _make_response(204, b""),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached(_SAMPLE_HASH)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_cached_not_cached(client: RealDebridClient) -> None:
+    """check_cached returns False when torrent status is 'magnet_conversion'."""
+    transport = _SharedTransport([
+        _make_response(201, {"id": "RD3", "uri": "https://rd.example/RD3"}),
+        _make_response(200, {"id": "RD3", "status": "magnet_conversion", "hash": _SAMPLE_HASH}),
+        _make_response(204, b""),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached(_SAMPLE_HASH)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_check_cached_add_magnet_fails(client: RealDebridClient) -> None:
+    """check_cached returns False when add_magnet fails."""
+    transport = _SharedTransport([
+        _make_response(503, {"error": "Service Unavailable"}),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached(_SAMPLE_HASH)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_check_cached_get_info_fails(client: RealDebridClient) -> None:
+    """check_cached returns False when get_torrent_info fails, still cleans up."""
+    transport = _SharedTransport([
+        _make_response(201, {"id": "RD4", "uri": "https://rd.example/RD4"}),
+        _make_response(500, {"error": "Internal error"}),
+        _make_response(204, b""),  # delete should still be called
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached(_SAMPLE_HASH)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_check_cached_empty_id(client: RealDebridClient) -> None:
+    """check_cached returns False when add_magnet returns empty id."""
+    transport = _SharedTransport([
+        _make_response(201, {"id": "", "uri": ""}),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached(_SAMPLE_HASH)
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# check_cached_batch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_cached_batch_returns_cached(client: RealDebridClient) -> None:
+    """check_cached_batch returns the set of cached hashes."""
+    hash_a = "a" * 40
+    hash_b = "b" * 40
+    hash_c = "c" * 40
+
+    transport = _SharedTransport([
+        # hash_a: cached
+        _make_response(201, {"id": "RD_A", "uri": ""}),
+        _make_response(200, {"id": "RD_A", "status": "downloaded"}),
+        _make_response(204, b""),
+        # hash_b: not cached
+        _make_response(201, {"id": "RD_B", "uri": ""}),
+        _make_response(200, {"id": "RD_B", "status": "magnet_conversion"}),
+        _make_response(204, b""),
+        # hash_c: cached
+        _make_response(201, {"id": "RD_C", "uri": ""}),
+        _make_response(200, {"id": "RD_C", "status": "waiting_files_selection"}),
+        _make_response(204, b""),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached_batch([hash_a, hash_b, hash_c])
+    assert result == {hash_a, hash_c}
+
+
+@pytest.mark.asyncio
+async def test_check_cached_batch_max_checks(client: RealDebridClient) -> None:
+    """check_cached_batch respects max_checks limit."""
+    hashes = [f"{chr(ord('a') + i)}" * 40 for i in range(5)]
+
+    transport = _SharedTransport([
+        # Only 2 checks — the rest should not be attempted
+        _make_response(201, {"id": "RD1", "uri": ""}),
+        _make_response(200, {"id": "RD1", "status": "downloaded"}),
+        _make_response(204, b""),
+        _make_response(201, {"id": "RD2", "uri": ""}),
+        _make_response(200, {"id": "RD2", "status": "downloaded"}),
+        _make_response(204, b""),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached_batch(hashes, max_checks=2)
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_check_cached_batch_empty_input(client: RealDebridClient) -> None:
+    """check_cached_batch returns empty set for empty input."""
+    result = await client.check_cached_batch([])
+    assert result == set()
+
+
+@pytest.mark.asyncio
+async def test_check_cached_batch_rate_limit_stops_early(client: RealDebridClient) -> None:
+    """check_cached_batch stops early on rate limit error."""
+    hash_a = "a" * 40
+    hash_b = "b" * 40
+
+    transport = _SharedTransport([
+        # hash_a: cached
+        _make_response(201, {"id": "RD_A", "uri": ""}),
+        _make_response(200, {"id": "RD_A", "status": "downloaded"}),
+        _make_response(204, b""),
+        # hash_b: rate limited on add_magnet
+        _make_response(429, {"error": "Too many requests"}),
+    ])
+    with _patch_client_shared(client, transport):
+        result = await client.check_cached_batch([hash_a, hash_b])
+    # hash_a was cached, hash_b was not checked due to rate limit
+    assert result == {hash_a}
