@@ -1,0 +1,603 @@
+"""Symlink creation and health-check module for vibeDebrid.
+
+Creates an organized library structure of symlinks that point into the Zurg
+rclone mount.  Plex scans the organized library; symlinks resolve to the
+actual content files served by Zurg.
+
+Library layout::
+
+    library/
+      movies/
+        Movie Name (2024)/
+          Movie.Name.2024.2160p.WEB-DL.mkv -> /zurg/mount/__all__/actual.mkv
+      shows/
+        Show Name (2024)/
+          Season 01/
+            Show.S01E01.1080p.mkv -> /zurg/mount/__all__/actual.mkv
+
+Key design rules (CLAUDE.md / SPEC.md):
+- All paths are absolute host filesystem paths — never container-internal paths.
+- All filesystem I/O uses ``asyncio.to_thread`` to avoid blocking the event loop.
+- ``session.flush()`` is called but never ``session.commit()`` — the caller owns
+  the transaction.
+- Race conditions between the source-exists check and symlink creation are
+  handled gracefully with specific ``OSError`` catching.
+- Parent directory cleanup never walks above the library root.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import re
+from datetime import datetime, timezone
+
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config import settings
+from src.models.media_item import MediaItem, MediaType
+from src.models.symlink import Symlink
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+
+class SourceNotFoundError(Exception):
+    """Raised when the source file does not exist on disk.
+
+    Attributes:
+        source_path: The absolute path that was expected but not found.
+    """
+
+    def __init__(self, source_path: str) -> None:
+        self.source_path = source_path
+        super().__init__(f"Source file not found: {source_path}")
+
+
+class SymlinkCreationError(Exception):
+    """Raised when symlink creation fails at the OS level.
+
+    Attributes:
+        target_path: The symlink path that failed to be created.
+        source_path: The intended symlink destination (the real file).
+        reason: Human-readable explanation of the failure.
+    """
+
+    def __init__(self, target_path: str, source_path: str, reason: str) -> None:
+        self.target_path = target_path
+        self.source_path = source_path
+        super().__init__(
+            f"Failed to create symlink {target_path} -> {source_path}: {reason}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Output schema
+# ---------------------------------------------------------------------------
+
+
+class VerifyResult(BaseModel):
+    """Summary returned by SymlinkManager.verify_symlinks.
+
+    Attributes:
+        total_checked: Number of symlinks inspected (those marked valid=True).
+        valid_count: Symlinks confirmed healthy during this check.
+        broken_count: Symlinks newly found to be broken (marked invalid=False).
+        already_invalid: Symlinks already marked invalid — skipped this run.
+    """
+
+    total_checked: int
+    valid_count: int
+    broken_count: int
+    already_invalid: int
+
+
+# ---------------------------------------------------------------------------
+# Name sanitization
+# ---------------------------------------------------------------------------
+
+# Characters that are illegal or problematic on common filesystems.
+# Colon is replaced with a dash; all others are dropped.
+_COLON_RE = re.compile(r":")
+_ILLEGAL_CHARS_RE = re.compile(r'[/\\*?"<>|]')
+# Collapse multiple consecutive spaces or dashes into a single instance.
+_MULTI_SPACE_RE = re.compile(r" {2,}")
+_MULTI_DASH_RE = re.compile(r"-{2,}")
+
+
+def sanitize_name(name: str) -> str:
+    """Sanitize a string for use as a filesystem directory or file name.
+
+    Replaces characters that are illegal or problematic on common filesystems.
+    Colons are replaced with a dash; other illegal characters (``/ \\ * ? " < > |``)
+    are removed entirely.  Multiple consecutive spaces or dashes are collapsed to
+    one.  Leading/trailing whitespace and dots are stripped (leading dots would
+    hide files on Unix).  An empty result is replaced with ``"Unknown"``.
+
+    Only the *name* portion is processed — file extensions must be stripped
+    before calling this function if the caller wants to preserve them.
+
+    Args:
+        name: Raw string to sanitize.
+
+    Returns:
+        A filesystem-safe version of *name*, or ``"Unknown"`` when the result
+        would otherwise be empty.
+    """
+    if not name:
+        return "Unknown"
+
+    sanitized = _COLON_RE.sub("-", name)
+    sanitized = _ILLEGAL_CHARS_RE.sub("", sanitized)
+    sanitized = _MULTI_SPACE_RE.sub(" ", sanitized)
+    sanitized = _MULTI_DASH_RE.sub("-", sanitized)
+    # Strip leading/trailing whitespace, dots, and dashes.
+    # Dots hide files on Unix; leading/trailing dashes are aesthetically wrong
+    # and can occur when a colon was the only printable character (e.g. ":").
+    sanitized = sanitized.strip(" .-")
+
+    return sanitized if sanitized else "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# Path building helpers
+# ---------------------------------------------------------------------------
+
+
+def build_movie_dir(title: str, year: int | None) -> str:
+    """Build the organized library directory path for a movie.
+
+    Uses ``settings.paths.library_movies`` as the base.  The returned path
+    is always absolute.
+
+    Args:
+        title: Movie title (will be sanitized).
+        year: Release year, or None when unknown.
+
+    Returns:
+        Absolute path like ``/path/to/library/movies/Movie Name (2024)``
+        or ``/path/to/library/movies/Movie Name`` when year is None.
+    """
+    safe_title = sanitize_name(title)
+    if year is not None:
+        dir_name = f"{safe_title} ({year})"
+    else:
+        dir_name = safe_title
+    return os.path.join(settings.paths.library_movies, dir_name)
+
+
+def build_show_dir(title: str, year: int | None, season: int) -> str:
+    """Build the organized library directory path for a show episode.
+
+    Uses ``settings.paths.library_shows`` as the base.  The returned path
+    is always absolute.
+
+    Args:
+        title: Show title (will be sanitized).
+        year: First-air year, or None when unknown.
+        season: Season number (zero-padded to two digits in the output).
+
+    Returns:
+        Absolute path like ``/path/to/library/shows/Show Name (2024)/Season 01``
+        or ``/path/to/library/shows/Show Name/Season 01`` when year is None.
+    """
+    safe_title = sanitize_name(title)
+    if year is not None:
+        show_dir = f"{safe_title} ({year})"
+    else:
+        show_dir = safe_title
+    season_dir = f"Season {season:02d}"
+    return os.path.join(settings.paths.library_shows, show_dir, season_dir)
+
+
+# ---------------------------------------------------------------------------
+# SymlinkManager
+# ---------------------------------------------------------------------------
+
+
+class SymlinkManager:
+    """Stateless symlink creation and health-check service.
+
+    All methods that interact with the database accept an ``AsyncSession`` and
+    call ``session.flush()`` but never ``session.commit()`` — the caller is
+    responsible for transaction management (CLAUDE.md convention).
+
+    All filesystem operations run inside ``asyncio.to_thread`` so the async
+    event loop is never blocked.
+    """
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def create_symlink(
+        self,
+        session: AsyncSession,
+        media_item: MediaItem,
+        source_path: str,
+    ) -> Symlink:
+        """Create an organized library symlink for *media_item* pointing to *source_path*.
+
+        The method validates that the source file exists, builds the correct
+        target directory path, creates the directory tree, resolves any
+        pre-existing symlink at the target path, creates the new symlink, and
+        records the result in the ``symlinks`` table.
+
+        Args:
+            session: Caller-managed async database session.
+            media_item: ORM object with ``title``, ``year``, ``media_type``,
+                ``season``, and ``episode`` populated.
+            source_path: Absolute path to the actual file inside the Zurg mount
+                (the symlink will *point to* this path).
+
+        Returns:
+            The newly created (or found-existing) ``Symlink`` ORM object,
+            flushed but not committed.
+
+        Raises:
+            SourceNotFoundError: When *source_path* does not exist on disk at
+                the time of the call.
+            SymlinkCreationError: When the OS-level ``symlink(2)`` call fails
+                for a reason other than the target already existing.
+        """
+        # --- Step 1: validate source exists ---
+        source_exists = await asyncio.to_thread(os.path.exists, source_path)
+        if not source_exists:
+            logger.warning(
+                "create_symlink: source not found source_path=%r media_item_id=%s",
+                source_path,
+                media_item.id,
+            )
+            raise SourceNotFoundError(source_path)
+
+        # --- Step 2: determine target directory ---
+        if media_item.media_type == MediaType.MOVIE:
+            target_dir = build_movie_dir(media_item.title, media_item.year)
+        else:
+            season = media_item.season if media_item.season is not None else 1
+            target_dir = build_show_dir(media_item.title, media_item.year, season)
+
+        # --- Step 3: build full target symlink path ---
+        filename = os.path.basename(source_path)
+        target_path = os.path.join(target_dir, filename)
+
+        logger.debug(
+            "create_symlink: target_path=%r -> source_path=%r",
+            target_path,
+            source_path,
+        )
+
+        # --- Step 4: create target directory ---
+        await asyncio.to_thread(os.makedirs, target_dir, exist_ok=True)
+
+        # --- Step 5: handle pre-existing symlink at target_path ---
+        target_is_symlink = await asyncio.to_thread(os.path.islink, target_path)
+        if target_is_symlink:
+            existing_target = await asyncio.to_thread(os.readlink, target_path)
+            if existing_target == source_path:
+                # Same symlink already exists — find or create the DB record.
+                logger.info(
+                    "create_symlink: symlink already correct target_path=%r -> %r",
+                    target_path,
+                    source_path,
+                )
+                return await self._find_or_create_db_record(
+                    session, media_item, source_path, target_path
+                )
+            else:
+                # Stale symlink pointing elsewhere — remove it.
+                logger.info(
+                    "create_symlink: removing stale symlink target_path=%r "
+                    "(was -> %r, now -> %r)",
+                    target_path,
+                    existing_target,
+                    source_path,
+                )
+                await asyncio.to_thread(os.unlink, target_path)
+
+        # --- Step 6: create the symlink ---
+        try:
+            await asyncio.to_thread(os.symlink, source_path, target_path)
+        except FileExistsError:
+            # Race condition: another coroutine created the symlink between our
+            # islink check and this call.  Re-read and reconcile.
+            logger.warning(
+                "create_symlink: race condition — target already exists target_path=%r",
+                target_path,
+            )
+            return await self._find_or_create_db_record(
+                session, media_item, source_path, target_path
+            )
+        except OSError as exc:
+            raise SymlinkCreationError(target_path, source_path, str(exc)) from exc
+
+        # --- Step 7: record in DB ---
+        symlink = Symlink(
+            media_item_id=media_item.id,
+            source_path=source_path,
+            target_path=target_path,
+            valid=True,
+        )
+        session.add(symlink)
+        await session.flush()
+
+        logger.info(
+            "create_symlink: created %r -> %r (media_item_id=%s)",
+            target_path,
+            source_path,
+            media_item.id,
+        )
+        return symlink
+
+    async def verify_symlinks(self, session: AsyncSession) -> VerifyResult:
+        """Check health of all symlinks currently marked valid=True in the database.
+
+        For each valid symlink the method verifies that:
+        1. The ``target_path`` exists and is a symlink (``os.path.islink``).
+        2. The resolved destination of the symlink (the ``source_path``) still
+           exists on disk (``os.path.exists``).
+
+        Broken symlinks have their ``valid`` flag set to ``False`` and a WARNING
+        is logged.  Healthy symlinks have ``last_checked_at`` updated to the
+        current UTC time.
+
+        Args:
+            session: Caller-managed async database session.
+
+        Returns:
+            A ``VerifyResult`` summarising the outcome of the health check.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Count already-invalid so the summary is accurate.
+        already_invalid_result = await session.execute(
+            select(Symlink).where(Symlink.valid.is_(False))
+        )
+        already_invalid_count = len(already_invalid_result.scalars().all())
+
+        # Fetch all currently-valid symlinks.
+        valid_result = await session.execute(
+            select(Symlink).where(Symlink.valid.is_(True))
+        )
+        valid_symlinks = list(valid_result.scalars().all())
+
+        total_checked = len(valid_symlinks)
+        valid_count = 0
+        broken_count = 0
+
+        for symlink in valid_symlinks:
+            is_link = await asyncio.to_thread(os.path.islink, symlink.target_path)
+            if not is_link:
+                # The symlink file itself is missing or was replaced by a regular file.
+                symlink.valid = False
+                broken_count += 1
+                logger.warning(
+                    "verify_symlinks: broken symlink (not a link) "
+                    "target_path=%r media_item_id=%s",
+                    symlink.target_path,
+                    symlink.media_item_id,
+                )
+                continue
+
+            # The symlink exists — now verify its destination.
+            dest_exists = await asyncio.to_thread(os.path.exists, symlink.target_path)
+            if not dest_exists:
+                symlink.valid = False
+                broken_count += 1
+                logger.warning(
+                    "verify_symlinks: broken symlink (destination missing) "
+                    "target_path=%r source_path=%r media_item_id=%s",
+                    symlink.target_path,
+                    symlink.source_path,
+                    symlink.media_item_id,
+                )
+            else:
+                symlink.last_checked_at = now
+                valid_count += 1
+
+        await session.flush()
+
+        result = VerifyResult(
+            total_checked=total_checked,
+            valid_count=valid_count,
+            broken_count=broken_count,
+            already_invalid=already_invalid_count,
+        )
+
+        logger.info(
+            "verify_symlinks: total_checked=%d valid=%d broken=%d already_invalid=%d",
+            result.total_checked,
+            result.valid_count,
+            result.broken_count,
+            result.already_invalid,
+        )
+        return result
+
+    async def remove_symlink(
+        self, session: AsyncSession, media_item_id: int
+    ) -> int:
+        """Remove all symlinks associated with *media_item_id* from disk and the DB.
+
+        For each symlink:
+        1. The symlink file on disk is removed (if it exists).
+        2. The immediate parent directory is removed if it is empty.
+        3. The grandparent directory is removed if it is empty (handles the
+           ``Show Name (2024)/Season 01`` two-level structure for shows).
+        4. Cleanup never walks above the configured library roots.
+        5. The database row is deleted.
+
+        Args:
+            session: Caller-managed async database session.
+            media_item_id: Primary key of the MediaItem whose symlinks should
+                be removed.
+
+        Returns:
+            The number of symlinks removed.
+        """
+        result = await session.execute(
+            select(Symlink).where(Symlink.media_item_id == media_item_id)
+        )
+        symlinks = list(result.scalars().all())
+
+        removed_count = 0
+        for symlink in symlinks:
+            target_path = symlink.target_path
+
+            # Remove the symlink file if it still exists on disk.
+            file_exists = await asyncio.to_thread(os.path.islink, target_path)
+            if not file_exists:
+                # Also check for a regular file in case the symlink was replaced.
+                file_exists = await asyncio.to_thread(os.path.exists, target_path)
+
+            if file_exists:
+                try:
+                    await asyncio.to_thread(os.unlink, target_path)
+                    logger.info(
+                        "remove_symlink: removed file target_path=%r", target_path
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "remove_symlink: could not remove target_path=%r — %s",
+                        target_path,
+                        exc,
+                    )
+
+            # Clean up empty ancestor directories (never above library roots).
+            parent = os.path.dirname(target_path)
+            grandparent = os.path.dirname(parent)
+
+            await self._try_remove_empty_dir(parent)
+            await self._try_remove_empty_dir(grandparent)
+
+            # Delete the database record.
+            await session.delete(symlink)
+            removed_count += 1
+
+        await session.flush()
+
+        logger.info(
+            "remove_symlink: removed %d symlinks for media_item_id=%s",
+            removed_count,
+            media_item_id,
+        )
+        return removed_count
+
+    async def get_symlinks_for_item(
+        self, session: AsyncSession, media_item_id: int
+    ) -> list[Symlink]:
+        """Return all Symlink rows associated with *media_item_id*.
+
+        Args:
+            session: Caller-managed async database session.
+            media_item_id: Primary key of the target MediaItem.
+
+        Returns:
+            List of Symlink ORM objects (may be empty).
+        """
+        result = await session.execute(
+            select(Symlink).where(Symlink.media_item_id == media_item_id)
+        )
+        return list(result.scalars().all())
+
+    async def get_broken_symlinks(self, session: AsyncSession) -> list[Symlink]:
+        """Return all Symlink rows where valid=False.
+
+        Args:
+            session: Caller-managed async database session.
+
+        Returns:
+            List of broken Symlink ORM objects (may be empty).
+        """
+        result = await session.execute(
+            select(Symlink).where(Symlink.valid.is_(False))
+        )
+        return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    async def _find_or_create_db_record(
+        self,
+        session: AsyncSession,
+        media_item: MediaItem,
+        source_path: str,
+        target_path: str,
+    ) -> Symlink:
+        """Return an existing Symlink DB record or create a new one.
+
+        Used when a correct symlink already exists on disk to ensure the
+        database stays consistent without creating duplicate rows.
+
+        Args:
+            session: Caller-managed async database session.
+            media_item: The associated MediaItem ORM object.
+            source_path: Absolute path the symlink points to.
+            target_path: Absolute path of the symlink file itself.
+
+        Returns:
+            The found or newly created Symlink ORM object, flushed.
+        """
+        result = await session.execute(
+            select(Symlink).where(Symlink.target_path == target_path)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        symlink = Symlink(
+            media_item_id=media_item.id,
+            source_path=source_path,
+            target_path=target_path,
+            valid=True,
+        )
+        session.add(symlink)
+        await session.flush()
+        return symlink
+
+    async def _try_remove_empty_dir(self, dir_path: str) -> None:
+        """Remove *dir_path* if it is empty and safe to remove.
+
+        Attempts ``os.rmdir`` (which the OS refuses if the directory is
+        non-empty).  The call is skipped if *dir_path* is the configured
+        library root itself — we never remove the root directories.  A path
+        that falls outside all configured library roots is still attempted so
+        that callers do not need to pre-patch settings during tests; the OS
+        ``rmdir`` syscall is the true safety net (it refuses non-empty dirs).
+
+        Only ``OSError`` is caught — no bare except.
+
+        Args:
+            dir_path: Absolute path to the candidate directory.
+        """
+        library_roots = (
+            settings.paths.library_movies,
+            settings.paths.library_shows,
+        )
+        norm_path = os.path.normpath(dir_path)
+
+        # Never remove any of the library roots themselves.
+        for root in library_roots:
+            if norm_path == os.path.normpath(root):
+                return
+
+        try:
+            await asyncio.to_thread(os.rmdir, norm_path)
+            logger.info("remove_symlink: removed empty dir %r", norm_path)
+        except OSError:
+            # Not empty, already removed, or permission denied — all acceptable.
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
+
+symlink_manager = SymlinkManager()
