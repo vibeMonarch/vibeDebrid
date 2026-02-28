@@ -223,35 +223,20 @@ class ScrapePipeline:
                 filtered_results_count=0,
             )
 
-        # Collect unique hashes for RD cache availability check
-        all_hashes: list[str] = list(
-            {r.info_hash for r in combined if r.info_hash}
+        # Derive cached status from Torrentio's ⚡ indicator (set when the
+        # opts URL includes an RD API key).  No extra RD API call needed.
+        cached_set: set[str] = {
+            r.info_hash
+            for r in combined
+            if r.info_hash and getattr(r, "cached", False)
+        }
+        logger.debug(
+            "scrape_pipeline: %d/%d results marked as cached by scrapers "
+            "for item id=%d",
+            len(cached_set),
+            len(combined),
+            item.id,
         )
-        cached_set: set[str] = set()
-        try:
-            availability = await rd_client.check_instant_availability(all_hashes)
-            cached_set = set(availability.keys())
-            logger.debug(
-                "scrape_pipeline: RD cache check returned %d/%d cached hashes "
-                "for item id=%d",
-                len(cached_set),
-                len(all_hashes),
-                item.id,
-            )
-        except RealDebridError as exc:
-            logger.warning(
-                "scrape_pipeline: RD cache check failed for item id=%d, "
-                "continuing without cache info: %s",
-                item.id,
-                exc,
-            )
-        except Exception as exc:
-            logger.warning(
-                "scrape_pipeline: unexpected error during RD cache check for "
-                "item id=%d, continuing without cache info: %s",
-                item.id,
-                exc,
-            )
 
         # Apply filter engine (single pass — get_best calls filter_and_rank internally)
         ranked = filter_engine.filter_and_rank(

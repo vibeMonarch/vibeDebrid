@@ -158,7 +158,6 @@ _PATCH_TARGETS = {
     "zilean_search": "src.core.scrape_pipeline.zilean_client.search",
     "torrentio_movie": "src.core.scrape_pipeline.torrentio_client.scrape_movie",
     "torrentio_episode": "src.core.scrape_pipeline.torrentio_client.scrape_episode",
-    "rd_cache": "src.core.scrape_pipeline.rd_client.check_instant_availability",
     "rd_add": "src.core.scrape_pipeline.rd_client.add_magnet",
     "rd_select": "src.core.scrape_pipeline.rd_client.select_files",
     "filter_rank": "src.core.scrape_pipeline.filter_engine.filter_and_rank",
@@ -176,7 +175,6 @@ class _Mocks:
     zilean_search: AsyncMock
     torrentio_movie: AsyncMock
     torrentio_episode: AsyncMock
-    rd_cache: AsyncMock
     rd_add: AsyncMock
     rd_select: AsyncMock
     filter_rank: MagicMock
@@ -230,9 +228,6 @@ async def _all_mocks(
 
     mocks.torrentio_episode = started["torrentio_episode"]
     mocks.torrentio_episode.return_value = []
-
-    mocks.rd_cache = started["rd_cache"]
-    mocks.rd_cache.return_value = {}
 
     mocks.rd_add = started["rd_add"]
     mocks.rd_add.return_value = {"id": "RD123", "uri": "magnet:?xt=urn:btih:" + "a" * 40}
@@ -609,45 +604,41 @@ class TestFilteringAndRdCache:
 
         assert result.action == "no_results"
 
-    async def test_rd_cache_hashes_passed_to_filter(
+    async def test_cached_results_passed_to_filter(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """RD cache check result (cached hashes) is forwarded to filter_engine."""
+        """Torrentio results with cached=True have their hashes forwarded to filter_engine."""
         ScrapePipeline, PipelineResult = _import_pipeline()
-        torrentio_result = _make_torrentio_result(info_hash="c" * 40)
         fake_hash = "c" * 40
-        # RD instant availability: {hash: {"rd": [...]}}
-        cache_payload = {fake_hash: {"rd": [{"1": {"filename": "f.mkv", "filesize": 1024}}]}}
+        torrentio_result = _make_torrentio_result(info_hash=fake_hash, cached=True)
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.rd_cache.return_value = cache_payload
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
-        # filter_best must have been called with cached_hashes containing the hash
+        # filter_and_rank must have been called with cached_hashes containing the hash
         m.filter_rank.assert_called_once()
         call_kwargs = m.filter_rank.call_args[1]
         cached_hashes = call_kwargs.get("cached_hashes") or set()
         assert fake_hash in cached_hashes
 
-    async def test_rd_cache_fails_fallback_empty_cached_set(
+    async def test_uncached_results_not_in_cached_set(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """RD cache check raises → pipeline falls back to empty cached set."""
+        """Torrentio results with cached=False are not in the cached_hashes set."""
         ScrapePipeline, PipelineResult = _import_pipeline()
-        torrentio_result = _make_torrentio_result()
+        torrentio_result = _make_torrentio_result(cached=False)
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.rd_cache.side_effect = RuntimeError("rd api down")
             pipeline = ScrapePipeline()
-            result: PipelineResult = await pipeline.run(session, wanted_item)
+            await pipeline.run(session, wanted_item)
 
-        # Pipeline survived; filter_best was still called
         m.filter_rank.assert_called_once()
-        # action is no_results because filter returns None by default
-        assert result.action in ("no_results", "added_to_rd", "error")
+        call_kwargs = m.filter_rank.call_args[1]
+        cached_hashes = call_kwargs.get("cached_hashes") or set()
+        assert cached_hashes == set()
 
 
 # ---------------------------------------------------------------------------

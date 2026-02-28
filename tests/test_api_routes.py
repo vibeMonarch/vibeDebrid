@@ -958,11 +958,6 @@ class TestSearch:
                 return_value=[],
             ),
             patch(
-                "src.api.routes.search.rd_client.check_instant_availability",
-                new_callable=AsyncMock,
-                return_value={},
-            ),
-            patch(
                 "src.api.routes.search.filter_engine.filter_and_rank",
                 return_value=[mock_filtered],
             ),
@@ -985,10 +980,10 @@ class TestSearch:
         assert result["resolution"] == "1080p"
         assert result["score"] == 75.0
 
-    async def test_search_marks_cached_hashes(
+    async def test_search_marks_cached_from_torrentio(
         self, http_no_db: AsyncClient
     ) -> None:
-        """Results whose info_hash is in the RD cache have cached=True."""
+        """Results with cached=True from Torrentio are marked cached in the response."""
         from src.services.torrentio import TorrentioResult
         from src.core.filter_engine import FilteredResult
 
@@ -1000,6 +995,7 @@ class TestSearch:
             size_bytes=3_000_000_000,
             seeders=200,
             languages=[],
+            cached=True,
         )
         mock_filtered = FilteredResult(result=mock_result, score=80.0)
 
@@ -1013,11 +1009,6 @@ class TestSearch:
                 "src.api.routes.search.zilean_client.search",
                 new_callable=AsyncMock,
                 return_value=[],
-            ),
-            patch(
-                "src.api.routes.search.rd_client.check_instant_availability",
-                new_callable=AsyncMock,
-                return_value={cached_hash: {"rd": []}},
             ),
             patch(
                 "src.api.routes.search.filter_engine.filter_and_rank",
@@ -1064,11 +1055,6 @@ class TestSearch:
                 return_value=[zilean_result],
             ),
             patch(
-                "src.api.routes.search.rd_client.check_instant_availability",
-                new_callable=AsyncMock,
-                return_value={},
-            ),
-            patch(
                 "src.api.routes.search.filter_engine.filter_and_rank",
                 return_value=[mock_filtered],
             ),
@@ -1087,10 +1073,10 @@ class TestSearch:
         assert data["total_raw"] == 1
         assert data["results"][0]["info_hash"] == "c" * 40
 
-    async def test_search_rd_cache_check_failure_is_non_fatal(
+    async def test_search_uncached_result_has_cached_false(
         self, http_no_db: AsyncClient
     ) -> None:
-        """If RD cache check raises, results are still returned (without cache info)."""
+        """Results without cached=True from scrapers have cached=False in the response."""
         from src.services.torrentio import TorrentioResult
         from src.core.filter_engine import FilteredResult
 
@@ -1101,6 +1087,7 @@ class TestSearch:
             size_bytes=2_000_000_000,
             seeders=50,
             languages=[],
+            cached=False,
         )
         mock_filtered = FilteredResult(result=mock_result, score=55.0)
 
@@ -1114,11 +1101,6 @@ class TestSearch:
                 "src.api.routes.search.zilean_client.search",
                 new_callable=AsyncMock,
                 return_value=[],
-            ),
-            patch(
-                "src.api.routes.search.rd_client.check_instant_availability",
-                new_callable=AsyncMock,
-                side_effect=RealDebridError("rate limit"),
             ),
             patch(
                 "src.api.routes.search.filter_engine.filter_and_rank",
@@ -1136,7 +1118,6 @@ class TestSearch:
 
         assert resp.status_code == 200
         assert resp.json()["total_raw"] == 1
-        # cached must be False because no hashes were confirmed
         assert resp.json()["results"][0]["cached"] is False
 
     async def test_search_episode_uses_scrape_episode(

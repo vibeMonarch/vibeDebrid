@@ -59,6 +59,11 @@ _SEASON_ONLY_RE = re.compile(
 # Explicitly tagged "complete" season packs
 _COMPLETE_RE = re.compile(r"\b(?:complete|season\.?\d+)\b", re.IGNORECASE)
 
+# Cached-in-RD indicator.  When the Torrentio opts URL includes an RD API key,
+# cached streams are tagged with ⚡ in the ``name`` field (e.g. "⚡ Torrentio\n1080p")
+# or with "[RD+]" / "RD+" in the title/name.  We check both fields.
+_CACHED_RE = re.compile(r"\u26a1|RD\+|\[RD\+\]", re.IGNORECASE)
+
 # Known language tokens that appear in torrent names (non-exhaustive but covers
 # the common cases we encounter in Torrentio output).
 _LANGUAGE_TOKENS: dict[str, str] = {
@@ -115,6 +120,7 @@ class TorrentioResult(BaseModel):
     is_season_pack: bool = False
     file_idx: int | None = None
     languages: list[str] = []
+    cached: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +374,15 @@ class TorrentioClient:
         Returns:
             A populated TorrentioResult, or None if the entry should be skipped.
         """
+        # --- Cached-in-RD detection ---
+        # When the opts URL includes an RD API key, Torrentio marks cached
+        # streams with ⚡ in the name field or "[RD+]" in the title/name.
+        stream_name = stream.get("name", "")
+        raw_title_full = stream.get("title", "")
+        cached = bool(
+            _CACHED_RE.search(stream_name) or _CACHED_RE.search(raw_title_full)
+        )
+
         # --- Required fields ---
         # Primary: standard Stremio protocol field (camelCase).
         # Fallback: some Torrentio forks / proxies use all-lowercase keys.
@@ -380,7 +395,7 @@ class TorrentioClient:
             logger.debug("_parse_stream: skipping entry with missing infoHash")
             return None
 
-        raw_title = stream.get("title", "")
+        raw_title = raw_title_full
         if not raw_title or not isinstance(raw_title, str):
             logger.debug(
                 "_parse_stream: skipping entry hash=%s with missing title", info_hash
@@ -457,6 +472,7 @@ class TorrentioClient:
             is_season_pack=is_season_pack,
             file_idx=file_idx,
             languages=languages,
+            cached=cached,
         )
 
     # ------------------------------------------------------------------

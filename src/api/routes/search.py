@@ -169,21 +169,19 @@ async def search(body: SearchRequest) -> SearchResponse:
         )
         return SearchResponse(results=[], total_raw=0, total_filtered=0)
 
-    # Collect unique hashes and check RD instant availability.
-    all_hashes = list({r.info_hash for r in combined if r.info_hash})
-    cached_set: set[str] = set()
-    try:
-        availability = await rd_client.check_instant_availability(all_hashes)
-        cached_set = set(availability.keys())
-        logger.debug(
-            "search: RD cache check: %d/%d hashes cached",
-            len(cached_set),
-            len(all_hashes),
-        )
-    except Exception as exc:
-        # A failed cache check is non-fatal — results are still useful, just
-        # without cache status information.
-        logger.warning("search: RD instant availability check failed: %s", exc)
+    # Derive cached status from Torrentio's ⚡ indicator.  When the Torrentio
+    # opts URL includes an RD API key, Torrentio marks cached streams in the
+    # stream name/title — no extra RD API call needed.
+    cached_set: set[str] = {
+        r.info_hash
+        for r in combined
+        if r.info_hash and getattr(r, "cached", False)
+    }
+    logger.debug(
+        "search: %d/%d results marked as cached by scrapers",
+        len(cached_set),
+        len(combined),
+    )
 
     # Filter and rank via the three-tier filter engine.
     ranked = filter_engine.filter_and_rank(

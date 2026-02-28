@@ -16,7 +16,6 @@ from src.services.real_debrid import (
     RealDebridAuthError,
     RealDebridClient,
     RealDebridError,
-    RealDebridRateLimitError,
 )
 
 
@@ -157,77 +156,22 @@ async def test_add_magnet_server_error(client: RealDebridClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# check_instant_availability
+# check_instant_availability (DEPRECATED — returns empty dict)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_check_instant_availability_with_cached(client: RealDebridClient) -> None:
-    """check_instant_availability returns only hashes with non-empty rd variants."""
-    hash_a = "a" * 40
-    hash_b = "b" * 40
-    payload = {
-        hash_a: {"rd": [{"1": {"filename": "movie.mkv", "filesize": 1_000_000_000}}]},
-        hash_b: {"rd": []},  # empty — should be filtered out
-    }
-    responses = [_make_response(200, payload)]
-
-    with _patch_client(client, responses):
-        result = await client.check_instant_availability([hash_a, hash_b])
-
-    assert hash_a in result
-    assert hash_b not in result
+async def test_check_instant_availability_deprecated_returns_empty(client: RealDebridClient) -> None:
+    """check_instant_availability always returns an empty dict (endpoint deprecated)."""
+    result = await client.check_instant_availability(["a" * 40, "b" * 40])
+    assert result == {}
 
 
 @pytest.mark.asyncio
 async def test_check_instant_availability_empty_input(client: RealDebridClient) -> None:
-    """check_instant_availability returns an empty dict immediately for empty input."""
-    # No mock needed — should short-circuit before any HTTP call
+    """check_instant_availability returns an empty dict for empty input."""
     result = await client.check_instant_availability([])
     assert result == {}
-
-
-@pytest.mark.asyncio
-async def test_check_instant_availability_normalises_hashes(client: RealDebridClient) -> None:
-    """Uppercase input hashes are lowercased before sending and in the result."""
-    hash_upper = "ABCDEF1234" * 4  # 40 chars
-    hash_lower = hash_upper.lower()
-    payload = {
-        hash_lower: {"rd": [{"1": {"filename": "file.mkv", "filesize": 500_000_000}}]},
-    }
-    responses = [_make_response(200, payload)]
-
-    with _patch_client(client, responses):
-        result = await client.check_instant_availability([hash_upper])
-
-    assert hash_lower in result
-
-
-@pytest.mark.asyncio
-async def test_check_instant_availability_batches_large_input(client: RealDebridClient) -> None:
-    """Inputs of >100 hashes are split into multiple requests."""
-    hashes = [f"{i:040x}" for i in range(150)]  # 150 unique hashes
-    # First request: hashes[0:100], second: hashes[100:150]
-    responses = [
-        _make_response(200, {}),  # first batch — nothing cached
-        _make_response(200, {}),  # second batch — nothing cached
-    ]
-
-    with _patch_client(client, responses):
-        result = await client.check_instant_availability(hashes)
-
-    assert result == {}
-
-
-@pytest.mark.asyncio
-async def test_check_instant_availability_rate_limit(client: RealDebridClient) -> None:
-    """check_instant_availability raises RealDebridRateLimitError on 429."""
-    hashes = ["a" * 40]
-    responses = [_make_response(429, {"error": "Too Many Requests"})]
-
-    with _patch_client(client, responses):
-        with pytest.raises(RealDebridRateLimitError):
-            await client.check_instant_availability(hashes)
 
 
 # ---------------------------------------------------------------------------

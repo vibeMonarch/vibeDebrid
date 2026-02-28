@@ -968,3 +968,82 @@ async def test_realworld_multiline_title(client: TorrentioClient) -> None:
     assert r.size_bytes is not None
     # Release name is first line (torrent name), not the filename
     assert "COMPLETE" in r.title
+
+
+# ---------------------------------------------------------------------------
+# Cached-in-RD detection (⚡ indicator)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cached_detected_from_lightning_in_name(client: TorrentioClient) -> None:
+    """A stream with ⚡ in the name field is parsed with cached=True."""
+    stream: dict[str, Any] = {
+        "name": "\u26a1 Torrentio\n1080p",
+        "title": "Movie.2024.1080p.WEB-DL.x264-GROUP\n\U0001f464 10 \U0001f4be 2.0 GB \u2699\ufe0f TPB",
+        "infoHash": "a" * 40,
+    }
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000033")
+
+    assert len(results) == 1
+    assert results[0].cached is True
+
+
+@pytest.mark.asyncio
+async def test_cached_detected_from_lightning_in_title(client: TorrentioClient) -> None:
+    """A stream with ⚡ in the title field is parsed with cached=True."""
+    stream: dict[str, Any] = {
+        "name": "Torrentio\n1080p",
+        "title": "\u26a1 Movie.2024.1080p.WEB-DL.x264-GROUP\n\U0001f464 10 \U0001f4be 2.0 GB \u2699\ufe0f TPB",
+        "infoHash": "a" * 40,
+    }
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000034")
+
+    assert len(results) == 1
+    assert results[0].cached is True
+
+
+@pytest.mark.asyncio
+async def test_cached_detected_from_rd_plus_in_name(client: TorrentioClient) -> None:
+    """A stream with '[RD+]' in the name field is parsed with cached=True."""
+    stream: dict[str, Any] = {
+        "name": "[RD+] Torrentio\n1080p",
+        "title": "Movie.2024.1080p.WEB-DL.x264-GROUP\n\U0001f464 10 \U0001f4be 2.0 GB \u2699\ufe0f TPB",
+        "infoHash": "b" * 40,
+    }
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000035")
+
+    assert len(results) == 1
+    assert results[0].cached is True
+
+
+@pytest.mark.asyncio
+async def test_no_cached_indicator_means_cached_false(client: TorrentioClient) -> None:
+    """A normal stream without ⚡ or RD+ is parsed with cached=False."""
+    stream = _make_stream(info_hash="c" * 40)
+    payload = _make_torrentio_response([stream])
+    _patch_client(client, [_make_response(200, payload)])
+
+    results = await client.scrape_movie("tt0000036")
+
+    assert len(results) == 1
+    assert results[0].cached is False
+
+
+@pytest.mark.asyncio
+async def test_cached_field_defaults_to_false(client: TorrentioClient) -> None:
+    """TorrentioResult.cached defaults to False when constructed without it."""
+    result = TorrentioResult(
+        info_hash="a" * 40,
+        title="Movie.2024.1080p",
+    )
+    assert result.cached is False

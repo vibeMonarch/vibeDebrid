@@ -1,6 +1,5 @@
 """Async wrapper for the Real-Debrid REST API v1.0."""
 
-import asyncio
 import logging
 from typing import Any
 
@@ -93,19 +92,11 @@ class RdAddMagnetResponse(BaseModel):
     uri: str
 
 
-# RD instant availability shape:
-#   { "<hash>": { "rd": [ { "<file_id>": { "filename": "...", "filesize": N } } ] } }
-# We expose it as a raw dict because the nested structure varies per torrent.
-RdInstantAvailability = dict[str, Any]
-
-
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
-_MAX_HASHES_PER_REQUEST = 100
 _DEFAULT_TIMEOUT = 15.0
-_BATCH_TIMEOUT = 30.0
 
 
 class RealDebridClient:
@@ -240,65 +231,25 @@ class RealDebridClient:
         logger.info("add_magnet: added torrent id=%s", data.get("id"))
         return data
 
-    async def check_instant_availability(self, hashes: list[str]) -> RdInstantAvailability:
-        """Check RD cache availability for a batch of info hashes.
+    async def check_instant_availability(self, hashes: list[str]) -> dict[str, Any]:
+        """DEPRECATED: Real-Debrid disabled this endpoint (403, error_code=37).
 
-        GET /torrents/instantAvailability/{hash1}/{hash2}/...
-
-        Automatically splits requests into chunks of at most 100 hashes and
-        merges the results. Uses a 30-second timeout because large batches can
-        be slow.
-
-        Real-world quirk: RD lowercases hashes in the response keys, so this
-        method lowercases input hashes before sending and returns results keyed
-        by lowercase hash.
+        This method now returns an empty dict immediately. Cache status is
+        derived from Torrentio's ⚡ indicator instead (when the opts URL
+        includes an RD API key).
 
         Args:
-            hashes: List of torrent info hashes (40-char hex strings).
+            hashes: List of torrent info hashes (ignored).
 
         Returns:
-            Dict mapping lowercase hash to its availability structure.
-            Hashes with no cached files are omitted from the result.
-
-        Raises:
-            RealDebridAuthError: If the API key is invalid.
-            RealDebridError: On other API failures.
+            Always returns an empty dict.
         """
-        if not hashes:
-            return {}
-
-        normalized = [h.lower() for h in hashes]
-        chunks = [
-            normalized[i : i + _MAX_HASHES_PER_REQUEST]
-            for i in range(0, len(normalized), _MAX_HASHES_PER_REQUEST)
-        ]
-
-        merged: RdInstantAvailability = {}
-
-        async def _fetch_chunk(client: httpx.AsyncClient, chunk: list[str]) -> dict[str, Any]:
-            path = "/torrents/instantAvailability/" + "/".join(chunk)
-            response = await client.get(path)
-            self._raise_for_status(response)
-            return response.json()
-
-        async with self._build_client(timeout=_BATCH_TIMEOUT) as client:
-            chunk_results = await asyncio.gather(
-                *(_fetch_chunk(client, chunk) for chunk in chunks)
-            )
-            for chunk_data in chunk_results:
-                # Filter out hashes with empty/no cached variants so callers
-                # can treat presence in the dict as "is cached".
-                for hash_key, availability in chunk_data.items():
-                    rd_variants: list = availability.get("rd", []) if isinstance(availability, dict) else []
-                    if rd_variants:
-                        merged[hash_key] = availability
-
-        logger.debug(
-            "check_instant_availability: queried %d hashes, %d cached",
-            len(normalized),
-            len(merged),
+        logger.warning(
+            "check_instant_availability is deprecated — RD disabled the "
+            "/torrents/instantAvailability endpoint (403, error_code=37). "
+            "Cache status is now derived from Torrentio stream metadata."
         )
-        return merged
+        return {}
 
     async def list_torrents(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """Return torrents currently in the RD account.
