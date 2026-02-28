@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Bash(pip install*)",
+      "Bash(python -m pytest*)",
+      "Bash(python -m*)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(grep *)",
+      "Bash(docker *)",
+      "Bash(docker-compose *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)*",
+      "Bash(sudo *)"
+    ]
+  }
+}

@@ -1,0 +1,99 @@
+{
+    "real_debrid": {
+        "api_key": "YOUR_RD_API_KEY_HERE",
+        "api_url": "https://api.real-debrid.com/rest/1.0",
+        "prefer_cached": true,
+        "allow_uncached": false,
+        "max_uncached_size_gb": 50
+    },
+    "scrapers": {
+        "torrentio": {
+            "enabled": true,
+            "base_url": "https://torrentio.strem.fun",
+            "opts": "",
+            "timeout_seconds": 30,
+            "max_results": 100
+        },
+        "zilean": {
+            "enabled": true,
+            "base_url": "http://localhost:8182",
+            "timeout_seconds": 10
+        }
+    },
+    "paths": {
+        "zurg_mount": "/home/hakan/Projects/homeserver/Zurg/mnt/__all__",
+        "library_movies": "/home/hakan/Projects/homeserver/vibeDebrid/library/movies",
+        "library_shows": "/home/hakan/Projects/homeserver/vibeDebrid/library/shows"
+    },
+    "quality": {
+        "default_profile": "high",
+        "profiles": {
+            "high": {
+                "resolution_order": ["2160p", "1080p", "720p"],
+                "min_resolution": "720p",
+                "preferred_codec": ["x265", "hevc", "av1", "x264"],
+                "preferred_audio": ["atmos", "truehd", "dts-hd", "dts", "aac"],
+                "preferred_source": ["bluray", "web-dl", "webrip", "hdtv"],
+                "min_size_mb": 200,
+                "max_size_gb": 80
+            },
+            "standard": {
+                "resolution_order": ["1080p", "720p"],
+                "min_resolution": "720p",
+                "preferred_codec": ["x265", "x264"],
+                "preferred_audio": ["dts", "aac"],
+                "preferred_source": ["web-dl", "webrip", "bluray"],
+                "min_size_mb": 100,
+                "max_size_gb": 20
+            }
+        }
+    },
+    "filters": {
+        "blocked_release_groups": [],
+        "blocked_keywords": ["cam", "ts", "telesync", "telecine", "hdcam"],
+        "required_language": null,
+        "allow_multi_audio": true
+    },
+    "retry": {
+        "schedule_minutes": [30, 60, 120, 360, 720, 1440],
+        "dormant_recheck_days": 7,
+        "max_active_retries": 7,
+        "unreleased_check_hours": 6
+    },
+    "upgrade": {
+        "enabled": true,
+        "window_hours": 24,
+        "check_interval_minutes": 60
+    },
+    "mount_scanner": {
+        "scan_interval_minutes": 15,
+        "scan_on_startup": true
+    },
+    "trakt": {
+        "enabled": false,
+        "client_id": "",
+        "client_secret": "",
+        "access_token": "",
+        "refresh_token": "",
+        "poll_interval_minutes": 15,
+        "lists": ["watchlist"]
+    },
+    "plex": {
+        "enabled": false,
+        "url": "http://localhost:32400",
+        "token": "",
+        "movie_section_ids": [],
+        "show_section_ids": [],
+        "scan_after_symlink": true
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 5100
+    },
+    "backup": {
+        "enabled": true,
+        "interval_hours": 24,
+        "max_backups": 7,
+        "backup_dir": "./backups"
+    }
+}
