@@ -1,0 +1,570 @@
+"""Async scraper wrapper for the Torrentio Stremio addon API.
+
+Torrentio is NOT a traditional REST API — it is a Stremio addon that exposes
+stream metadata for movies and TV episodes.  No authentication is required.
+
+Real-world quirks documented here:
+- Episode-level queries return 0 results for running seasons (e.g. a show that
+  is mid-air on streaming services).  The fallback chain (episode → season →
+  show) is the primary bug fix over the previous CLI Debrid implementation.
+- Do NOT append ``limit=1`` or ``cachedonly`` to URLs — these were CLI Debrid
+  bugs that silently throttled and filtered results.
+- The ``opts`` config value is inserted as a path segment between base_url and
+  ``/stream``, e.g. ``{base_url}/sort=seeders|qualityfilter=4k/stream/...``.
+- ``infoHash`` is always lowercase hex in practice, but we normalise it anyway.
+- The ``title`` field contains two logical sections separated by ``\\n``:
+    line 0 — the raw release name (what PTN should parse)
+    line 1 — emoji-encoded metadata: seeders 👤, size 💾, tracker ⚙️
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import time
+from typing import Any
+
+import httpx
+import PTN
+from pydantic import BaseModel
+
+from src.config import settings
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Compiled regexes for metadata extraction from title line 1
+# ---------------------------------------------------------------------------
+
+# 💾 4.2 GB  /  💾 850 MB  /  💾 1.2 TB
+_SIZE_RE = re.compile(r"\U0001f4be\s*([\d.]+)\s*(GB|MB|TB)", re.IGNORECASE)
+
+# 👤 823
+_SEEDERS_RE = re.compile(r"\U0001f465\s*(\d+)")
+
+# ⚙️ BIT-HDTV  (everything after the gear to end-of-string)
+_SOURCE_RE = re.compile(r"\u2699\ufe0f\s*(.+?)(?:\s*$)", re.MULTILINE)
+
+# Season-only patterns in release names (S02, S2, Season.2) — no episode part.
+# Used for season-pack detection together with PTN's absence of an 'episode' key.
+_SEASON_ONLY_RE = re.compile(
+    r"(?:\b|_)S(\d{1,2})(?!\s*E\d)",  # S02 not followed by E##
+    re.IGNORECASE,
+)
+
+# Explicitly tagged "complete" season packs
+_COMPLETE_RE = re.compile(r"\b(?:complete|season\.?\d+)\b", re.IGNORECASE)
+
+# Known language tokens that appear in torrent names (non-exhaustive but covers
+# the common cases we encounter in Torrentio output).
+_LANGUAGE_TOKENS: dict[str, str] = {
+    "FRENCH": "French",
+    "TRUEFRENCH": "French",
+    "VOSTFR": "French",
+    "GERMAN": "German",
+    "DEUTSCH": "German",
+    "SPANISH": "Spanish",
+    "SPANISH.DUBBED": "Spanish",
+    "PORTUGUESE": "Portuguese",
+    "ITALIAN": "Italian",
+    "DUTCH": "Dutch",
+    "RUSSIAN": "Russian",
+    "JAPANESE": "Japanese",
+    "KOREAN": "Korean",
+    "CHINESE": "Chinese",
+    "MULTI": "Multi",
+    "MULTi": "Multi",
+}
+
+# ---------------------------------------------------------------------------
+# Custom exception
+# ---------------------------------------------------------------------------
+
+
+class TorrentioError(Exception):
+    """Raised when Torrentio returns an unexpected API-level error."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+# ---------------------------------------------------------------------------
+# Output schema
+# ---------------------------------------------------------------------------
+
+
+class TorrentioResult(BaseModel):
+    """A single parsed result from the Torrentio addon API."""
+
+    info_hash: str
+    title: str  # raw release name (first line of the Torrentio title field)
+    resolution: str | None = None
+    codec: str | None = None
+    quality: str | None = None  # BluRay, WEB-DL, WEBRip, HDTV, …
+    release_group: str | None = None
+    size_bytes: int | None = None
+    seeders: int | None = None
+    source_tracker: str | None = None
+    season: int | None = None
+    episode: int | None = None
+    is_season_pack: bool = False
+    file_idx: int | None = None
+    languages: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
+
+
+class TorrentioClient:
+    """Async scraper client for the Torrentio Stremio addon.
+
+    This client is intentionally stateless — no persistent HTTP session is kept
+    between calls so that config changes (base_url, opts) are picked up without
+    restart.  Each public method opens and closes its own httpx client.
+
+    All public methods swallow network/API failures, log them, and return an
+    empty list so that a Torrentio outage never crashes the queue manager.
+    """
+
+    # ------------------------------------------------------------------
+    # URL construction
+    # ------------------------------------------------------------------
+
+    def _build_base_url(self) -> str:
+        """Return the Torrentio base URL, injecting opts as a path segment.
+
+        If ``opts`` is set (e.g. ``"sort=seeders|qualityfilter=4k"``), the URL
+        becomes ``{base_url}/{opts}``.  Otherwise it is just ``{base_url}``.
+        """
+        cfg = settings.scrapers.torrentio
+        base = cfg.base_url.rstrip("/")
+        opts = cfg.opts.strip("/").strip()
+        if opts:
+            return f"{base}/{opts}"
+        return base
+
+    def _build_client(self) -> httpx.AsyncClient:
+        """Create a new httpx.AsyncClient pointed at the Torrentio addon."""
+        cfg = settings.scrapers.torrentio
+        return httpx.AsyncClient(
+            base_url=self._build_base_url(),
+            timeout=cfg.timeout_seconds,
+            headers={"User-Agent": "vibeDebrid/0.1"},
+            follow_redirects=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Public scraping methods
+    # ------------------------------------------------------------------
+
+    async def scrape_movie(self, imdb_id: str) -> list[TorrentioResult]:
+        """Scrape Torrentio for movie results.
+
+        Args:
+            imdb_id: The IMDB ID, e.g. ``"tt12345678"``.
+
+        Returns:
+            Parsed results up to ``max_results``, or an empty list on failure.
+        """
+        if not settings.scrapers.torrentio.enabled:
+            logger.debug("scrape_movie: Torrentio disabled, skipping")
+            return []
+
+        path = f"/stream/movie/{imdb_id}.json"
+        logger.debug("scrape_movie: imdb_id=%s path=%s", imdb_id, path)
+        return await self._query(path)
+
+    async def scrape_episode(
+        self, imdb_id: str, season: int, episode: int
+    ) -> list[TorrentioResult]:
+        """Scrape Torrentio for a specific episode with a three-level fallback.
+
+        The fallback chain fixes the primary bug from CLI Debrid where running
+        seasons returned 0 results at the episode level and were silently dropped.
+
+        Fallback order:
+          1. Episode query  → ``/stream/series/{imdb_id}:{season}:{episode}.json``
+          2. Season query   → ``/stream/series/{imdb_id}:{season}:1.json``
+             (episode 1 is used as the season anchor; results are season packs)
+          3. Show query     → ``/stream/series/{imdb_id}.json``
+
+        Args:
+            imdb_id: The IMDB ID, e.g. ``"tt12345678"``.
+            season:  Season number (1-based).
+            episode: Episode number (1-based).
+
+        Returns:
+            Parsed results up to ``max_results``, or an empty list on failure.
+        """
+        if not settings.scrapers.torrentio.enabled:
+            logger.debug("scrape_episode: Torrentio disabled, skipping")
+            return []
+
+        # Step 1 — episode-level query
+        ep_path = f"/stream/series/{imdb_id}:{season}:{episode}.json"
+        logger.debug(
+            "scrape_episode: step=1 (episode) imdb_id=%s S%02dE%02d",
+            imdb_id,
+            season,
+            episode,
+        )
+        results = await self._query(ep_path)
+        if results:
+            logger.debug(
+                "scrape_episode: step=1 succeeded with %d results S%02dE%02d",
+                len(results),
+                season,
+                episode,
+            )
+            return results
+
+        # Step 2 — season-level query (episode 1 as anchor to get the season list)
+        logger.info(
+            "scrape_episode: step=1 returned 0 results for %s S%02dE%02d, "
+            "trying season query",
+            imdb_id,
+            season,
+            episode,
+        )
+        season_path = f"/stream/series/{imdb_id}:{season}:1.json"
+        results = await self._query(season_path)
+        if results:
+            logger.info(
+                "scrape_episode: step=2 (season) succeeded with %d results "
+                "for %s S%02d",
+                len(results),
+                imdb_id,
+                season,
+            )
+            return results
+
+        # Step 3 — show-level query
+        logger.info(
+            "scrape_episode: step=2 returned 0 results for %s S%02d, "
+            "trying show-level query",
+            imdb_id,
+            season,
+        )
+        show_path = f"/stream/series/{imdb_id}.json"
+        results = await self._query(show_path)
+        if results:
+            logger.info(
+                "scrape_episode: step=3 (show) succeeded with %d results for %s",
+                len(results),
+                imdb_id,
+            )
+        else:
+            logger.warning(
+                "scrape_episode: all three fallback levels returned 0 results "
+                "for %s S%02dE%02d — content may not be available yet",
+                imdb_id,
+                season,
+                episode,
+            )
+        return results
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _query(self, path: str) -> list[TorrentioResult]:
+        """Execute a single Torrentio addon request and parse the stream list.
+
+        Args:
+            path: URL path relative to the (optionally opts-prefixed) base URL,
+                  e.g. ``"/stream/movie/tt12345678.json"``.
+
+        Returns:
+            List of parsed TorrentioResult objects, capped at ``max_results``.
+            Returns an empty list on any network or API error.
+        """
+        max_results = settings.scrapers.torrentio.max_results
+        t0 = time.monotonic()
+        try:
+            async with self._build_client() as client:
+                response = await client.get(path)
+        except httpx.ConnectError as exc:
+            logger.warning(
+                "torrentio._query: connection refused for path=%s (%s)", path, exc
+            )
+            return []
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "torrentio._query: request timed out for path=%s (%s)", path, exc
+            )
+            return []
+        except httpx.RequestError as exc:
+            logger.warning(
+                "torrentio._query: network error for path=%s (%s)", path, exc
+            )
+            return []
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        if response.status_code == 429:
+            logger.warning(
+                "torrentio._query: rate limited (429) for path=%s", path
+            )
+            return []
+
+        if response.status_code >= 500:
+            logger.error(
+                "torrentio._query: server error %d for path=%s body=%s",
+                response.status_code,
+                path,
+                response.text[:200],
+            )
+            return []
+
+        if not response.is_success:
+            logger.error(
+                "torrentio._query: unexpected status %d for path=%s",
+                response.status_code,
+                path,
+            )
+            return []
+
+        try:
+            data: dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.error(
+                "torrentio._query: malformed JSON for path=%s body=%s (%s)",
+                path,
+                response.text[:200],
+                exc,
+            )
+            return []
+
+        raw_streams = data.get("streams")
+        if not isinstance(raw_streams, list):
+            # Torrentio returns {"streams": []} for no results — a missing key
+            # or wrong type is unexpected and worth logging.
+            if raw_streams is not None:
+                logger.error(
+                    "torrentio._query: unexpected 'streams' type %s for path=%s",
+                    type(raw_streams).__name__,
+                    path,
+                )
+            logger.debug(
+                "torrentio._query: path=%s elapsed=%dms results=0", path, elapsed_ms
+            )
+            return []
+
+        results: list[TorrentioResult] = []
+        for stream in raw_streams:
+            parsed = self._parse_stream(stream)
+            if parsed is not None:
+                results.append(parsed)
+            if len(results) >= max_results:
+                break
+
+        logger.debug(
+            "torrentio._query: path=%s elapsed=%dms raw=%d parsed=%d",
+            path,
+            elapsed_ms,
+            len(raw_streams),
+            len(results),
+        )
+        return results
+
+    def _parse_stream(self, stream: dict[str, Any]) -> TorrentioResult | None:
+        """Parse a single stream entry from the Torrentio response.
+
+        Returns ``None`` if the entry is missing required fields or is otherwise
+        unparseable — callers should skip ``None`` values.
+
+        Args:
+            stream: A single element from the ``streams`` list in the response.
+
+        Returns:
+            A populated TorrentioResult, or None if the entry should be skipped.
+        """
+        # --- Required fields ---
+        info_hash = stream.get("infoHash")
+        if not info_hash or not isinstance(info_hash, str):
+            logger.debug("_parse_stream: skipping entry with missing infoHash")
+            return None
+
+        raw_title = stream.get("title", "")
+        if not raw_title or not isinstance(raw_title, str):
+            logger.debug(
+                "_parse_stream: skipping entry hash=%s with missing title", info_hash
+            )
+            return None
+
+        # --- Split release name from metadata line ---
+        lines = raw_title.split("\n", 1)
+        release_name = lines[0].strip()
+        meta_line = lines[1].strip() if len(lines) > 1 else ""
+
+        if not release_name:
+            logger.debug(
+                "_parse_stream: skipping entry hash=%s with empty release name",
+                info_hash,
+            )
+            return None
+
+        # --- Metadata from emoji-encoded line ---
+        size_bytes = self._parse_size(meta_line)
+        seeders = self._parse_seeders(meta_line)
+        source_tracker = self._parse_source(meta_line)
+
+        # --- Parse release name with PTN ---
+        ptn_data: dict[str, Any] = {}
+        try:
+            ptn_data = PTN.parse(release_name) or {}
+        except Exception as exc:
+            logger.debug(
+                "_parse_stream: PTN failed for release=%r (%s)", release_name, exc
+            )
+
+        resolution: str | None = ptn_data.get("resolution")
+        codec: str | None = ptn_data.get("codec")
+        quality: str | None = ptn_data.get("quality")
+        release_group: str | None = ptn_data.get("group")
+        ptn_season: int | None = ptn_data.get("season")
+        ptn_episode: int | None = ptn_data.get("episode")
+
+        # --- Season pack detection ---
+        # PTN does NOT emit a 'season' key when it cannot find an episode number
+        # — instead it folds e.g. "S02" into the title string.  A result is a
+        # season pack if PTN found no episode, AND either:
+        #   (a) the release name matches our season-only pattern, OR
+        #   (b) the release name contains "complete" / "season" keywords.
+        is_season_pack = False
+        if ptn_episode is None:
+            has_season_marker = bool(_SEASON_ONLY_RE.search(release_name))
+            has_complete_marker = bool(_COMPLETE_RE.search(release_name))
+            if has_season_marker or has_complete_marker:
+                is_season_pack = True
+
+        # --- Language detection ---
+        languages = self._parse_languages(release_name, ptn_data)
+
+        # --- fileIdx ---
+        file_idx_raw = stream.get("fileIdx")
+        file_idx: int | None = (
+            int(file_idx_raw) if isinstance(file_idx_raw, (int, float)) else None
+        )
+
+        return TorrentioResult(
+            info_hash=info_hash.lower(),
+            title=release_name,
+            resolution=resolution,
+            codec=codec,
+            quality=quality,
+            release_group=release_group,
+            size_bytes=size_bytes,
+            seeders=seeders,
+            source_tracker=source_tracker,
+            season=ptn_season,
+            episode=ptn_episode,
+            is_season_pack=is_season_pack,
+            file_idx=file_idx,
+            languages=languages,
+        )
+
+    # ------------------------------------------------------------------
+    # Metadata extraction helpers
+    # ------------------------------------------------------------------
+
+    def _parse_size(self, meta_line: str) -> int | None:
+        """Parse the 💾 size annotation from a Torrentio metadata line.
+
+        Args:
+            meta_line: The second line of a Torrentio stream title, e.g.
+                       ``"👤 823 💾 3.45 GB ⚙️ BIT-HDTV"``.
+
+        Returns:
+            Size in bytes, or None if not found or unparseable.
+        """
+        if not meta_line:
+            return None
+        match = _SIZE_RE.search(meta_line)
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+            unit = match.group(2).upper()
+        except (ValueError, IndexError):
+            return None
+
+        if unit == "MB":
+            return int(value * 1024 * 1024)
+        if unit == "GB":
+            return int(value * 1024 * 1024 * 1024)
+        if unit == "TB":
+            return int(value * 1024 * 1024 * 1024 * 1024)
+        return None  # unreachable given the regex, but satisfies type checker
+
+    def _parse_seeders(self, meta_line: str) -> int | None:
+        """Parse the 👤 seeder count from a Torrentio metadata line.
+
+        Args:
+            meta_line: The second line of a Torrentio stream title.
+
+        Returns:
+            Seeder count as an integer, or None if not found.
+        """
+        if not meta_line:
+            return None
+        match = _SEEDERS_RE.search(meta_line)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
+    def _parse_source(self, meta_line: str) -> str | None:
+        """Parse the ⚙️ tracker/source annotation from a Torrentio metadata line.
+
+        Args:
+            meta_line: The second line of a Torrentio stream title.
+
+        Returns:
+            The tracker/source name, or None if not found.
+        """
+        if not meta_line:
+            return None
+        match = _SOURCE_RE.search(meta_line)
+        if not match:
+            return None
+        return match.group(1).strip() or None
+
+    def _parse_languages(
+        self, release_name: str, ptn_data: dict[str, Any]
+    ) -> list[str]:
+        """Extract language tags from a release name and PTN output.
+
+        PTN does not reliably expose a 'language' key — language tokens often
+        end up in the PTN 'title', 'excess', or are simply not extracted.  We
+        scan the raw release name for known language tokens instead.
+
+        Args:
+            release_name: The first line of the Torrentio title field.
+            ptn_data:     The dict returned by ``PTN.parse(release_name)``.
+
+        Returns:
+            A deduplicated list of language names found, e.g. ``["French"]``.
+            English is not included — it is assumed when no other language is
+            present.
+        """
+        upper_name = release_name.upper()
+        found: list[str] = []
+        seen: set[str] = set()
+        for token, lang_name in _LANGUAGE_TOKENS.items():
+            if token.upper() in upper_name and lang_name not in seen:
+                found.append(lang_name)
+                seen.add(lang_name)
+        return found
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
+
+torrentio_client = TorrentioClient()
