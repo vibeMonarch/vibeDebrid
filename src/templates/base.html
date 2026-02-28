@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}vibeDebrid{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            vd: {
+              bg: '#0f172a',
+              card: '#1e293b',
+              border: '#334155',
+              accent: '#6366f1',
+              'accent-hover': '#818cf8',
+              success: '#22c55e',
+              warning: '#f59e0b',
+              danger: '#ef4444',
+              muted: '#94a3b8',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator { display: inline-block; }
+    .htmx-request.htmx-indicator { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 1s linear infinite; }
+    /* State badge colors */
+    .badge-unreleased { background-color: #64748b; }
+    .badge-wanted { background-color: #6366f1; }
+    .badge-scraping { background-color: #f59e0b; }
+    .badge-adding { background-color: #f97316; }
+    .badge-checking { background-color: #3b82f6; }
+    .badge-sleeping { background-color: #8b5cf6; }
+    .badge-dormant { background-color: #6b7280; }
+    .badge-complete { background-color: #22c55e; }
+    .badge-done { background-color: #10b981; }
+    /* Transition for expand/collapse */
+    [data-expand] { transition: max-height 0.2s ease-out; overflow: hidden; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body class="bg-vd-bg text-gray-200 min-h-screen flex">
+  <!-- Sidebar -->
+  <nav id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-vd-card border-r border-vd-border flex flex-col z-30 transform -translate-x-full lg:translate-x-0 transition-transform">
+    <div class="p-6 border-b border-vd-border">
+      <h1 class="text-xl font-bold text-white tracking-tight">vibeDebrid</h1>
+      <p class="text-xs text-vd-muted mt-1">Media Automation</p>
+    </div>
+    <div class="flex-1 py-4">
+      <a href="/" class="nav-link flex items-center gap-3 px-6 py-3 text-sm hover:bg-white/5 transition-colors {% if active_page == 'dashboard' %}bg-white/10 text-white border-r-2 border-vd-accent{% endif %}">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+        Dashboard
+      </a>
+      <a href="/queue" class="nav-link flex items-center gap-3 px-6 py-3 text-sm hover:bg-white/5 transition-colors {% if active_page == 'queue' %}bg-white/10 text-white border-r-2 border-vd-accent{% endif %}">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+        Queue
+      </a>
+      <a href="/search" class="nav-link flex items-center gap-3 px-6 py-3 text-sm hover:bg-white/5 transition-colors {% if active_page == 'search' %}bg-white/10 text-white border-r-2 border-vd-accent{% endif %}">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        Search
+      </a>
+      <a href="/duplicates" class="nav-link flex items-center gap-3 px-6 py-3 text-sm hover:bg-white/5 transition-colors {% if active_page == 'duplicates' %}bg-white/10 text-white border-r-2 border-vd-accent{% endif %}">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+        Duplicates
+      </a>
+      <a href="/settings" class="nav-link flex items-center gap-3 px-6 py-3 text-sm hover:bg-white/5 transition-colors {% if active_page == 'settings' %}bg-white/10 text-white border-r-2 border-vd-accent{% endif %}">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        Settings
+      </a>
+    </div>
+    <div class="p-4 border-t border-vd-border">
+      <div id="mount-health" hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="#mount-health" hx-select="#mount-health-inner" hx-swap="innerHTML">
+        <div id="mount-health-inner" class="flex items-center gap-2 text-xs text-vd-muted">
+          <span class="w-2 h-2 rounded-full bg-gray-500"></span>
+          Loading...
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Mobile menu button -->
+  <button onclick="document.getElementById('sidebar').classList.toggle('-translate-x-full')" class="lg:hidden fixed top-4 left-4 z-40 p-2 bg-vd-card rounded-lg border border-vd-border">
+    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+
+  <!-- Main content -->
+  <main class="flex-1 lg:ml-64 min-h-screen">
+    <div class="p-6 lg:p-8 max-w-7xl mx-auto">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <!-- Toast container for notifications -->
+  <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+  <script>
+    // Toast notification helper
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toast-container');
+      const colors = {
+        success: 'bg-green-600',
+        error: 'bg-red-600',
+        warning: 'bg-yellow-600',
+        info: 'bg-blue-600'
+      };
+      const toast = document.createElement('div');
+      toast.className = `${colors[type] || colors.info} text-white px-4 py-3 rounded-lg shadow-lg text-sm max-w-sm transition-opacity duration-300`;
+      toast.textContent = message;
+      container.appendChild(toast);
+      setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
+    }
+
+    // Listen for htmx events to show toasts
+    document.body.addEventListener('htmx:afterRequest', function(evt) {
+      if (evt.detail.successful && evt.detail.xhr.status >= 200 && evt.detail.xhr.status < 300) {
+        const trigger = evt.detail.elt.getAttribute('data-toast');
+        if (trigger) showToast(trigger);
+      }
+    });
+    document.body.addEventListener('htmx:responseError', function(evt) {
+      showToast('Request failed: ' + (evt.detail.xhr.statusText || 'Unknown error'), 'error');
+    });
+
+    // Close mobile sidebar when clicking a nav link
+    document.querySelectorAll('.nav-link').forEach(link => {
+      link.addEventListener('click', () => {
+        if (window.innerWidth < 1024) {
+          document.getElementById('sidebar').classList.add('-translate-x-full');
+        }
+      });
+    });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

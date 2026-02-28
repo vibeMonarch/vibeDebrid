@@ -43,7 +43,12 @@ class StatsResponse(BaseModel):
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     """Dashboard page."""
-    return HTMLResponse("<h1>vibeDebrid</h1><p>Dashboard coming soon.</p>")
+    from src.main import templates
+
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "active_page": "dashboard",
+    })
 
 
 @router.get("/api/stats")

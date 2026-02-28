@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - vibeDebrid{% endblock %}
+
+{% block content %}
+<!-- Page header -->
+<div class="flex items-start justify-between mb-8">
+  <div>
+    <h2 class="text-2xl font-bold text-white">Dashboard</h2>
+    <p class="text-sm text-vd-muted mt-1">
+      Last refreshed: <span id="last-refresh">loading...</span>
+    </p>
+  </div>
+  <button
+    onclick="fetchStats()"
+    class="flex items-center gap-2 px-3 py-2 text-sm bg-vd-card border border-vd-border rounded-lg hover:bg-white/5 transition-colors text-vd-muted hover:text-white"
+    title="Refresh now"
+  >
+    <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+    </svg>
+    Refresh
+  </button>
+</div>
+
+<!-- Health Status Card -->
+<div class="mb-8">
+  <h3 class="text-xs font-semibold uppercase tracking-wider text-vd-muted mb-3">System Health</h3>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+    <!-- Mount health -->
+    <div id="health-mount" class="bg-vd-card border border-vd-border rounded-lg p-4 flex items-center gap-3">
+      <div id="health-mount-dot" class="w-3 h-3 rounded-full bg-gray-500 flex-shrink-0"></div>
+      <div class="min-w-0">
+        <p class="text-xs text-vd-muted">Zurg Mount</p>
+        <p id="health-mount-label" class="text-sm font-medium text-gray-400">Checking...</p>
+      </div>
+    </div>
+
+    <!-- Active items summary -->
+    <div class="bg-vd-card border border-vd-border rounded-lg p-4 flex items-center gap-3">
+      <div class="w-3 h-3 rounded-full bg-vd-accent flex-shrink-0"></div>
+      <div class="min-w-0">
+        <p class="text-xs text-vd-muted">In Progress</p>
+        <p id="health-active-label" class="text-sm font-medium text-gray-400">Checking...</p>
+      </div>
+    </div>
+
+    <!-- Total queue -->
+    <div class="bg-vd-card border border-vd-border rounded-lg p-4 flex items-center gap-3">
+      <div class="w-3 h-3 rounded-full bg-vd-muted flex-shrink-0"></div>
+      <div class="min-w-0">
+        <p class="text-xs text-vd-muted">Total Tracked</p>
+        <p id="health-total-label" class="text-sm font-medium text-gray-400">Checking...</p>
+      </div>
+    </div>
+
+    <!-- Completed -->
+    <div class="bg-vd-card border border-vd-border rounded-lg p-4 flex items-center gap-3">
+      <div class="w-3 h-3 rounded-full bg-vd-success flex-shrink-0"></div>
+      <div class="min-w-0">
+        <p class="text-xs text-vd-muted">Completed</p>
+        <p id="health-done-label" class="text-sm font-medium text-gray-400">Checking...</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Active Processing Indicator -->
+<div class="mb-8 bg-vd-card border border-vd-border rounded-lg p-5">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-sm font-semibold text-white">Active Processing</h3>
+    <a href="/queue" class="text-xs text-vd-accent hover:text-vd-accent-hover transition-colors">View queue</a>
+  </div>
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+
+    <a href="/queue?state=wanted" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-indigo-500/50 hover:bg-white/5 transition-colors">
+      <span class="text-2xl font-bold text-white" id="active-wanted">-</span>
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full badge-wanted"></span>
+        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Wanted</span>
+      </div>
+    </a>
+
+    <a href="/queue?state=scraping" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-amber-500/50 hover:bg-white/5 transition-colors">
+      <span class="text-2xl font-bold text-white" id="active-scraping">-</span>
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full badge-scraping"></span>
+        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Scraping</span>
+      </div>
+    </a>
+
+    <a href="/queue?state=adding" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-orange-500/50 hover:bg-white/5 transition-colors">
+      <span class="text-2xl font-bold text-white" id="active-adding">-</span>
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full badge-adding"></span>
+        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Adding</span>
+      </div>
+    </a>
+
+    <a href="/queue?state=checking" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-blue-500/50 hover:bg-white/5 transition-colors">
+      <span class="text-2xl font-bold text-white" id="active-checking">-</span>
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full badge-checking"></span>
+        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Checking</span>
+      </div>
+    </a>
+
+  </div>
+</div>
+
+<!-- Queue State Cards Grid -->
+<div class="mb-8">
+  <h3 class="text-xs font-semibold uppercase tracking-wider text-vd-muted mb-3">Queue States</h3>
+  <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+
+    <!-- Unreleased -->
+    <a href="/queue?state=unreleased"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-slate-400/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-unreleased"></span>
+        <svg class="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-unreleased">-</p>
+      <p class="text-xs text-vd-muted">Unreleased</p>
+    </a>
+
+    <!-- Wanted -->
+    <a href="/queue?state=wanted"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-indigo-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-wanted"></span>
+        <svg class="w-4 h-4 text-indigo-500 group-hover:text-indigo-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-wanted">-</p>
+      <p class="text-xs text-vd-muted">Wanted</p>
+    </a>
+
+    <!-- Scraping -->
+    <a href="/queue?state=scraping"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-amber-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-scraping"></span>
+        <svg class="w-4 h-4 text-amber-500 group-hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-scraping">-</p>
+      <p class="text-xs text-vd-muted">Scraping</p>
+    </a>
+
+    <!-- Adding -->
+    <a href="/queue?state=adding"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-orange-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-adding"></span>
+        <svg class="w-4 h-4 text-orange-500 group-hover:text-orange-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 4v16m8-8H4"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-adding">-</p>
+      <p class="text-xs text-vd-muted">Adding</p>
+    </a>
+
+    <!-- Checking -->
+    <a href="/queue?state=checking"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-blue-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-checking"></span>
+        <svg class="w-4 h-4 text-blue-500 group-hover:text-blue-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-checking">-</p>
+      <p class="text-xs text-vd-muted">Checking</p>
+    </a>
+
+    <!-- Sleeping -->
+    <a href="/queue?state=sleeping"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-purple-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-sleeping"></span>
+        <svg class="w-4 h-4 text-purple-500 group-hover:text-purple-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-sleeping">-</p>
+      <p class="text-xs text-vd-muted">Sleeping</p>
+    </a>
+
+    <!-- Dormant -->
+    <a href="/queue?state=dormant"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-gray-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-dormant"></span>
+        <svg class="w-4 h-4 text-gray-500 group-hover:text-gray-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-dormant">-</p>
+      <p class="text-xs text-vd-muted">Dormant</p>
+    </a>
+
+    <!-- Complete -->
+    <a href="/queue?state=complete"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-green-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-complete"></span>
+        <svg class="w-4 h-4 text-green-500 group-hover:text-green-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M5 13l4 4L19 7"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-complete">-</p>
+      <p class="text-xs text-vd-muted">Complete</p>
+    </a>
+
+    <!-- Done -->
+    <a href="/queue?state=done"
+       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-emerald-500/50 hover:bg-white/5 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <span class="w-2.5 h-2.5 rounded-full badge-done"></span>
+        <svg class="w-4 h-4 text-emerald-500 group-hover:text-emerald-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/>
+        </svg>
+      </div>
+      <p class="text-2xl font-bold text-white mb-1" id="count-done">-</p>
+      <p class="text-xs text-vd-muted">Done</p>
+    </a>
+
+  </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="bg-vd-card border border-vd-border rounded-lg">
+  <div class="flex items-center justify-between p-5 border-b border-vd-border">
+    <h3 class="text-sm font-semibold text-white">Recent Activity</h3>
+    <span class="text-xs text-vd-muted">Last 20 state changes</span>
+  </div>
+  <div class="p-8 flex flex-col items-center justify-center text-center">
+    <svg class="w-10 h-10 text-vd-border mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <p class="text-sm text-vd-muted">Recent activity will appear here</p>
+    <p class="text-xs text-vd-border mt-1">State changes are logged as items move through the pipeline</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // State display configuration
+  const STATE_CONFIG = {
+    unreleased: { countId: 'count-unreleased' },
+    wanted:     { countId: 'count-wanted'     },
+    scraping:   { countId: 'count-scraping'   },
+    adding:     { countId: 'count-adding'     },
+    checking:   { countId: 'count-checking'   },
+    sleeping:   { countId: 'count-sleeping'   },
+    dormant:    { countId: 'count-dormant'    },
+    complete:   { countId: 'count-complete'   },
+    done:       { countId: 'count-done'       },
+  };
+
+  function setTextContent(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  function applyStats(data) {
+    const queue = data.queue || {};
+    const health = data.health || {};
+
+    // Queue state cards
+    for (const [state, cfg] of Object.entries(STATE_CONFIG)) {
+      const count = queue[state] ?? 0;
+      setTextContent(cfg.countId, count);
+    }
+
+    // Active processing breakdown
+    setTextContent('active-wanted',   queue.wanted   ?? 0);
+    setTextContent('active-scraping', queue.scraping ?? 0);
+    setTextContent('active-adding',   queue.adding   ?? 0);
+    setTextContent('active-checking', queue.checking ?? 0);
+
+    // Health summary cards
+    const active = (queue.wanted ?? 0) + (queue.scraping ?? 0)
+                 + (queue.adding ?? 0) + (queue.checking ?? 0);
+    setTextContent('health-active-label', active + ' item' + (active !== 1 ? 's' : ''));
+
+    const total = queue.total ?? 0;
+    setTextContent('health-total-label', total + ' item' + (total !== 1 ? 's' : ''));
+
+    const done = (queue.complete ?? 0) + (queue.done ?? 0);
+    setTextContent('health-done-label', done + ' item' + (done !== 1 ? 's' : ''));
+
+    // Mount health indicator
+    const mountDot   = document.getElementById('health-mount-dot');
+    const mountLabel = document.getElementById('health-mount-label');
+    if (health.mount_available) {
+      mountDot.className   = 'w-3 h-3 rounded-full bg-vd-success flex-shrink-0';
+      mountLabel.className = 'text-sm font-medium text-green-400';
+      mountLabel.textContent = 'Available';
+    } else {
+      mountDot.className   = 'w-3 h-3 rounded-full bg-vd-danger flex-shrink-0';
+      mountLabel.className = 'text-sm font-medium text-red-400';
+      mountLabel.textContent = 'Unavailable';
+    }
+
+    // Update refresh timestamp
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setTextContent('last-refresh', timeStr);
+
+    // Animate refresh icon briefly
+    const icon = document.getElementById('refresh-icon');
+    if (icon) {
+      icon.classList.add('spinner');
+      setTimeout(() => icon.classList.remove('spinner'), 600);
+    }
+  }
+
+  function fetchStats() {
+    fetch('/api/stats')
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(applyStats)
+      .catch(function(err) {
+        console.error('Failed to fetch stats:', err);
+        setTextContent('last-refresh', 'fetch failed');
+      });
+  }
+
+  // Initial fetch on load
+  fetchStats();
+
+  // Poll every 30 seconds
+  setInterval(fetchStats, 30000);
+</script>
+{% endblock %}

@@ -327,6 +327,47 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(duplicates_router, prefix="/api/duplicates", tags=["duplicates"])
 
 
+# --- Page routes (serve Jinja2 templates) ---
+from fastapi import Request  # noqa: E402
+from fastapi.responses import HTMLResponse  # noqa: E402
+
+
+@app.get("/queue", response_class=HTMLResponse, tags=["pages"])
+async def queue_page(request: Request) -> HTMLResponse:
+    """Queue management page."""
+    return templates.TemplateResponse("queue.html", {
+        "request": request,
+        "active_page": "queue",
+    })
+
+
+@app.get("/search", response_class=HTMLResponse, tags=["pages"])
+async def search_page(request: Request) -> HTMLResponse:
+    """Manual search page."""
+    return templates.TemplateResponse("search.html", {
+        "request": request,
+        "active_page": "search",
+    })
+
+
+@app.get("/settings", response_class=HTMLResponse, tags=["pages"])
+async def settings_page(request: Request) -> HTMLResponse:
+    """Settings page."""
+    return templates.TemplateResponse("settings.html", {
+        "request": request,
+        "active_page": "settings",
+    })
+
+
+@app.get("/duplicates", response_class=HTMLResponse, tags=["pages"])
+async def duplicates_page(request: Request) -> HTMLResponse:
+    """Duplicate manager page."""
+    return templates.TemplateResponse("duplicates.html", {
+        "request": request,
+        "active_page": "duplicates",
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
 

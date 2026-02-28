@@ -1,0 +1,845 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - vibeDebrid{% endblock %}
+
+{% block head %}
+<style>
+  /* Toggle switch */
+  .toggle-input:checked + .toggle-track { background-color: #6366f1; }
+  .toggle-input:checked + .toggle-track .toggle-thumb { transform: translateX(1.25rem); }
+  .toggle-track { transition: background-color 0.15s ease; }
+  .toggle-thumb { transition: transform 0.15s ease; }
+
+  /* Collapsible card body */
+  .card-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.2s ease;
+  }
+  .card-body.collapsed {
+    grid-template-rows: 0fr;
+  }
+  .card-body > div { overflow: hidden; }
+
+  /* Chevron rotation */
+  .chevron { transition: transform 0.2s ease; }
+  .chevron.rotated { transform: rotate(-90deg); }
+
+  /* Test result states */
+  .test-result { min-height: 1.5rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h2 class="text-2xl font-bold text-white">Settings</h2>
+  <p class="text-vd-muted text-sm mt-1">Configure vibeDebrid integrations and behaviour.</p>
+</div>
+
+<!-- Connection Tests -->
+<div class="bg-vd-card border border-vd-border rounded-lg p-5 mb-6">
+  <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Connection Tests</h3>
+  <div class="flex flex-col sm:flex-row gap-4">
+
+    <!-- Real-Debrid test -->
+    <div class="flex items-center gap-3 flex-1">
+      <button onclick="runTest('realdebrid', this)"
+              class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test Real-Debrid
+      </button>
+      <span id="test-result-realdebrid" class="test-result text-sm"></span>
+    </div>
+
+    <!-- Torrentio test -->
+    <div class="flex items-center gap-3 flex-1">
+      <button onclick="runTest('torrentio', this)"
+              class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test Torrentio
+      </button>
+      <span id="test-result-torrentio" class="test-result text-sm"></span>
+    </div>
+
+    <!-- Zilean test -->
+    <div class="flex items-center gap-3 flex-1">
+      <button onclick="runTest('zilean', this)"
+              class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test Zilean
+      </button>
+      <span id="test-result-zilean" class="test-result text-sm"></span>
+    </div>
+
+  </div>
+</div>
+
+<!-- Settings sections -->
+<div id="settings-form" class="space-y-4">
+
+  <!-- Loading skeleton -->
+  <div id="settings-loading" class="bg-vd-card border border-vd-border rounded-lg p-8 text-center text-vd-muted text-sm">
+    <svg class="w-5 h-5 spinner inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+    </svg>
+    Loading settings...
+  </div>
+
+  <!-- Real-Debrid section (expanded by default) -->
+  <div id="section-realdebrid" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('realdebrid')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+        </svg>
+        <span class="font-semibold text-white">Real-Debrid</span>
+      </div>
+      <svg id="chevron-realdebrid" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-realdebrid" class="card-body">
+      <div>
+        <div class="px-5 pb-5 space-y-4 border-t border-vd-border pt-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="rd-api-key">API Key</label>
+            <input type="password" id="rd-api-key" name="api_key" autocomplete="new-password"
+                   placeholder="Enter new value to update"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p id="rd-api-key-masked" class="text-xs text-vd-muted mt-1"></p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="rd-api-url">API URL</label>
+            <input type="url" id="rd-api-url" name="api_url"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm text-gray-400" for="rd-prefer-cached">Prefer Cached</label>
+                <p class="text-xs text-vd-muted">Prioritise RD-cached torrents</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer ml-4">
+                <input type="checkbox" id="rd-prefer-cached" class="toggle-input sr-only">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+            </div>
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm text-gray-400" for="rd-allow-uncached">Allow Uncached</label>
+                <p class="text-xs text-vd-muted">Download uncached torrents via RD</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer ml-4">
+                <input type="checkbox" id="rd-allow-uncached" class="toggle-input sr-only">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="rd-max-uncached">Max Uncached Size (GB)</label>
+            <input type="number" id="rd-max-uncached" name="max_uncached_size_gb" min="0" step="1"
+                   class="w-full sm:w-40 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('realdebrid')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Real-Debrid
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scrapers section (collapsed by default) -->
+  <div id="section-scrapers" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('scrapers')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <span class="font-semibold text-white">Scrapers</span>
+      </div>
+      <svg id="chevron-scrapers" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-scrapers" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-6">
+
+          <!-- Torrentio -->
+          <div>
+            <div class="flex items-center gap-3 mb-3">
+              <span class="text-sm font-semibold text-gray-300">Torrentio</span>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="torrentio-enabled" class="toggle-input sr-only">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+              <span class="text-xs text-vd-muted">Enabled</span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="torrentio-url">Base URL</label>
+                <input type="url" id="torrentio-url"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="torrentio-timeout">Timeout (seconds)</label>
+                <input type="number" id="torrentio-timeout" min="1" max="120"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+            </div>
+          </div>
+
+          <hr class="border-vd-border">
+
+          <!-- Zilean -->
+          <div>
+            <div class="flex items-center gap-3 mb-3">
+              <span class="text-sm font-semibold text-gray-300">Zilean</span>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="zilean-enabled" class="toggle-input sr-only">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+              <span class="text-xs text-vd-muted">Enabled</span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="zilean-url">Base URL</label>
+                <input type="url" id="zilean-url"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="zilean-timeout">Timeout (seconds)</label>
+                <input type="number" id="zilean-timeout" min="1" max="120"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+            </div>
+          </div>
+
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('scrapers')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Scrapers
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Paths section (expanded by default) -->
+  <div id="section-paths" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('paths')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+        </svg>
+        <span class="font-semibold text-white">Paths</span>
+      </div>
+      <svg id="chevron-paths" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-paths" class="card-body">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="path-zurg-mount">Zurg Mount Path</label>
+            <input type="text" id="path-zurg-mount"
+                   placeholder="/mnt/zurg"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent font-mono placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Absolute host path to the Zurg rclone mount.</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="path-library-movies">Library Movies Path</label>
+            <input type="text" id="path-library-movies"
+                   placeholder="/mnt/library/movies"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent font-mono placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Absolute host path where movie symlinks are created.</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="path-library-shows">Library Shows Path</label>
+            <input type="text" id="path-library-shows"
+                   placeholder="/mnt/library/shows"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent font-mono placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Absolute host path where TV show symlinks are created.</p>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('paths')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Paths
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quality section (collapsed by default) -->
+  <div id="section-quality" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('quality')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
+        </svg>
+        <span class="font-semibold text-white">Quality</span>
+      </div>
+      <svg id="chevron-quality" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-quality" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="quality-default-profile">Default Profile</label>
+            <select id="quality-default-profile"
+                    class="w-full sm:w-64 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <!-- Populated by JS from profiles keys -->
+            </select>
+          </div>
+          <div>
+            <p class="text-sm text-gray-400 mb-2">Available Profiles</p>
+            <div id="quality-profiles-summary" class="space-y-2 text-sm">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('quality')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Quality
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters section (collapsed by default) -->
+  <div id="section-filters" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('filters')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
+        </svg>
+        <span class="font-semibold text-white">Filters</span>
+      </div>
+      <svg id="chevron-filters" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-filters" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="filters-blocked-keywords">Blocked Keywords</label>
+            <input type="text" id="filters-blocked-keywords"
+                   placeholder="cam, ts, hdcam, ..."
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Comma-separated list. Torrents whose title contains any keyword are skipped.</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="filters-blocked-groups">Blocked Release Groups</label>
+            <input type="text" id="filters-blocked-groups"
+                   placeholder="GROUP1, GROUP2, ..."
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Comma-separated list of release groups to ignore.</p>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('filters')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Filters
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Retry section (collapsed by default) -->
+  <div id="section-retry" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('retry')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        <span class="font-semibold text-white">Retry</span>
+      </div>
+      <svg id="chevron-retry" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-retry" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div>
+            <p class="text-sm text-gray-400 mb-2">Retry Schedule</p>
+            <div id="retry-schedule-display" class="flex flex-wrap gap-2">
+              <!-- Populated by JS -->
+            </div>
+            <p class="text-xs text-vd-muted mt-2">
+              Read-only — edit <code class="text-gray-300 bg-vd-bg px-1 rounded">config.json</code> to change the retry schedule.
+            </p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="retry-dormant-days">Dormant Recheck (days)</label>
+              <input type="number" id="retry-dormant-days" min="1" max="365"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Days between rechecks for dormant items.</p>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="retry-max-active">Max Active Retries</label>
+              <input type="number" id="retry-max-active" min="1" max="100"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Concurrent items in SCRAPING/ADDING state.</p>
+            </div>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('retry')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server section (collapsed by default) -->
+  <div id="section-server" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('server')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+        </svg>
+        <span class="font-semibold text-white">Server</span>
+      </div>
+      <svg id="chevron-server" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-server" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="server-host">Host</label>
+              <input type="text" id="server-host"
+                     placeholder="0.0.0.0"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent font-mono placeholder-gray-600">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="server-port">Port</label>
+              <input type="number" id="server-port" min="1024" max="65535"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+            </div>
+          </div>
+          <p class="text-xs text-vd-muted">Changes to host/port take effect after restarting vibeDebrid.</p>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('server')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Server
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- #settings-form -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+  let currentSettings = {};
+
+  // ---------------------------------------------------------------------------
+  // Collapsible cards
+  // ---------------------------------------------------------------------------
+  function toggleCard(section) {
+    const body    = document.getElementById('body-' + section);
+    const chevron = document.getElementById('chevron-' + section);
+    body.classList.toggle('collapsed');
+    chevron.classList.toggle('rotated');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Toggle switch helper: read / write checkbox state
+  // ---------------------------------------------------------------------------
+  function setToggle(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.checked = !!value;
+  }
+
+  function getToggle(id) {
+    const el = document.getElementById(id);
+    return el ? el.checked : false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Populate form fields from the settings object
+  // ---------------------------------------------------------------------------
+  function populateForm(s) {
+    // Real-Debrid
+    const rd = s.real_debrid || {};
+    const maskedEl = document.getElementById('rd-api-key-masked');
+    if (rd.api_key && maskedEl) {
+      maskedEl.textContent = 'Current: ' + rd.api_key + '  — enter a new value to replace it';
+    }
+    setField('rd-api-url',       rd.api_url             || '');
+    setToggle('rd-prefer-cached',  rd.prefer_cached);
+    setToggle('rd-allow-uncached', rd.allow_uncached);
+    setField('rd-max-uncached',  rd.max_uncached_size_gb != null ? rd.max_uncached_size_gb : '');
+
+    // Scrapers — Torrentio
+    const torrentio = (s.scrapers || {}).torrentio || {};
+    setToggle('torrentio-enabled', torrentio.enabled);
+    setField('torrentio-url',     torrentio.base_url        || '');
+    setField('torrentio-timeout', torrentio.timeout_seconds != null ? torrentio.timeout_seconds : '');
+
+    // Scrapers — Zilean
+    const zilean = (s.scrapers || {}).zilean || {};
+    setToggle('zilean-enabled', zilean.enabled);
+    setField('zilean-url',     zilean.base_url        || '');
+    setField('zilean-timeout', zilean.timeout_seconds != null ? zilean.timeout_seconds : '');
+
+    // Paths
+    const paths = s.paths || {};
+    setField('path-zurg-mount',     paths.zurg_mount     || '');
+    setField('path-library-movies', paths.library_movies || '');
+    setField('path-library-shows',  paths.library_shows  || '');
+
+    // Quality
+    const quality = s.quality || {};
+    const profiles = quality.profiles || {};
+    const profileSelect = document.getElementById('quality-default-profile');
+    profileSelect.innerHTML = '';
+    Object.keys(profiles).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === quality.default_profile) opt.selected = true;
+      profileSelect.appendChild(opt);
+    });
+    // Read-only profile summary
+    const summaryEl = document.getElementById('quality-profiles-summary');
+    summaryEl.innerHTML = '';
+    if (Object.keys(profiles).length === 0) {
+      summaryEl.innerHTML = '<p class="text-vd-muted text-sm italic">No profiles defined.</p>';
+    } else {
+      Object.entries(profiles).forEach(([name, cfg]) => {
+        const row = document.createElement('div');
+        row.className = 'flex items-start gap-3 p-3 bg-vd-bg rounded-lg border border-vd-border';
+        const badge = document.createElement('span');
+        badge.className = 'text-xs font-mono font-semibold text-vd-accent mt-0.5';
+        badge.textContent = name;
+        const details = document.createElement('span');
+        details.className = 'text-xs text-vd-muted font-mono break-all';
+        details.textContent = JSON.stringify(cfg, null, 0).replace(/[{}"]/g, '').replace(/,/g, '  ');
+        row.appendChild(badge);
+        row.appendChild(details);
+        summaryEl.appendChild(row);
+      });
+    }
+
+    // Filters
+    const filters = s.filters || {};
+    setField('filters-blocked-keywords', (filters.blocked_keywords  || []).join(', '));
+    setField('filters-blocked-groups',   (filters.blocked_release_groups || []).join(', '));
+
+    // Retry
+    const retry = s.retry || {};
+    const scheduleEl = document.getElementById('retry-schedule-display');
+    scheduleEl.innerHTML = '';
+    (retry.schedule_minutes || []).forEach(min => {
+      const pill = document.createElement('span');
+      pill.className = 'px-2 py-1 bg-vd-bg border border-vd-border rounded text-xs font-mono text-gray-300';
+      pill.textContent = formatMinutes(min);
+      scheduleEl.appendChild(pill);
+    });
+    setField('retry-dormant-days', retry.dormant_recheck_days != null ? retry.dormant_recheck_days : '');
+    setField('retry-max-active',   retry.max_active_retries   != null ? retry.max_active_retries   : '');
+
+    // Server
+    const server = s.server || {};
+    setField('server-host', server.host || '');
+    setField('server-port', server.port != null ? server.port : '');
+  }
+
+  function setField(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  }
+
+  function formatMinutes(min) {
+    if (min < 60)   return min + 'm';
+    if (min < 1440) return (min / 60) + 'h';
+    return (min / 1440) + 'd';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Load settings on page load
+  // ---------------------------------------------------------------------------
+  async function loadSettings() {
+    try {
+      const res  = await fetch('/api/settings');
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+      const data = await res.json();
+      currentSettings = data.settings || {};
+      populateForm(currentSettings);
+
+      // Show all cards, hide loader
+      document.getElementById('settings-loading').classList.add('hidden');
+      document.querySelectorAll('.settings-card').forEach(el => el.classList.remove('hidden'));
+    } catch (err) {
+      document.getElementById('settings-loading').innerHTML =
+        '<p class="text-red-400 text-sm">Failed to load settings: ' + escapeHtml(err.message) + '</p>';
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Collect payload for each section
+  // ---------------------------------------------------------------------------
+  function collectSection(section) {
+    switch (section) {
+      case 'realdebrid': {
+        const payload = {
+          real_debrid: {
+            api_url:             document.getElementById('rd-api-url').value.trim(),
+            prefer_cached:       getToggle('rd-prefer-cached'),
+            allow_uncached:      getToggle('rd-allow-uncached'),
+            max_uncached_size_gb: parseFloat(document.getElementById('rd-max-uncached').value) || 0,
+          }
+        };
+        const newKey = document.getElementById('rd-api-key').value.trim();
+        if (newKey) payload.real_debrid.api_key = newKey;
+        return payload;
+      }
+      case 'scrapers': {
+        return {
+          scrapers: {
+            torrentio: {
+              enabled:         getToggle('torrentio-enabled'),
+              base_url:        document.getElementById('torrentio-url').value.trim(),
+              timeout_seconds: parseInt(document.getElementById('torrentio-timeout').value) || 30,
+            },
+            zilean: {
+              enabled:         getToggle('zilean-enabled'),
+              base_url:        document.getElementById('zilean-url').value.trim(),
+              timeout_seconds: parseInt(document.getElementById('zilean-timeout').value) || 10,
+            }
+          }
+        };
+      }
+      case 'paths': {
+        return {
+          paths: {
+            zurg_mount:     document.getElementById('path-zurg-mount').value.trim(),
+            library_movies: document.getElementById('path-library-movies').value.trim(),
+            library_shows:  document.getElementById('path-library-shows').value.trim(),
+          }
+        };
+      }
+      case 'quality': {
+        return {
+          quality: {
+            default_profile: document.getElementById('quality-default-profile').value,
+          }
+        };
+      }
+      case 'filters': {
+        const keywords = document.getElementById('filters-blocked-keywords').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        const groups = document.getElementById('filters-blocked-groups').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        return {
+          filters: {
+            blocked_keywords:       keywords,
+            blocked_release_groups: groups,
+          }
+        };
+      }
+      case 'retry': {
+        return {
+          retry: {
+            dormant_recheck_days: parseInt(document.getElementById('retry-dormant-days').value) || 7,
+            max_active_retries:   parseInt(document.getElementById('retry-max-active').value)   || 10,
+          }
+        };
+      }
+      case 'server': {
+        return {
+          server: {
+            host: document.getElementById('server-host').value.trim(),
+            port: parseInt(document.getElementById('server-port').value) || 5100,
+          }
+        };
+      }
+      default:
+        return {};
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Save a section
+  // ---------------------------------------------------------------------------
+  async function saveSection(section) {
+    const payload = collectSection(section);
+    try {
+      const res = await fetch('/api/settings', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || 'HTTP ' + res.status);
+      }
+      showToast('Settings saved.', 'success');
+      // Refresh local copy so masked key label updates if api_key was changed
+      if (section === 'realdebrid') {
+        const refreshed = await fetch('/api/settings');
+        if (refreshed.ok) {
+          const data = await refreshed.json();
+          currentSettings = data.settings || {};
+          const rd = currentSettings.real_debrid || {};
+          const maskedEl = document.getElementById('rd-api-key-masked');
+          if (maskedEl && rd.api_key) {
+            maskedEl.textContent = 'Current: ' + rd.api_key + '  — enter a new value to replace it';
+          }
+          // Clear the password field after a successful save
+          document.getElementById('rd-api-key').value = '';
+        }
+      }
+    } catch (err) {
+      showToast('Save failed: ' + err.message, 'error');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection tests
+  // ---------------------------------------------------------------------------
+  async function runTest(service, btn) {
+    const resultEl = document.getElementById('test-result-' + service);
+    const icon     = btn.querySelector('.btn-icon');
+    const spinner  = btn.querySelector('.btn-spinner');
+
+    // Show loading state
+    btn.disabled = true;
+    icon.classList.add('hidden');
+    spinner.classList.remove('hidden');
+    resultEl.textContent = '';
+    resultEl.className   = 'test-result text-sm text-vd-muted';
+
+    try {
+      const res  = await fetch('/api/settings/test/' + service, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.status === 'ok') {
+        resultEl.className   = 'test-result text-sm text-green-400 flex items-center gap-1';
+        resultEl.innerHTML   = checkIcon() + escapeHtml(data.message || 'Connected');
+      } else {
+        const msg = data.message || data.detail || ('HTTP ' + res.status);
+        resultEl.className   = 'test-result text-sm text-red-400 flex items-center gap-1';
+        resultEl.innerHTML   = crossIcon() + escapeHtml(msg);
+      }
+    } catch (err) {
+      resultEl.className   = 'test-result text-sm text-red-400 flex items-center gap-1';
+      resultEl.innerHTML   = crossIcon() + escapeHtml(err.message);
+    } finally {
+      btn.disabled = false;
+      icon.classList.remove('hidden');
+      spinner.classList.add('hidden');
+    }
+  }
+
+  function checkIcon() {
+    return '<svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+           '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>' +
+           '</svg>';
+  }
+
+  function crossIcon() {
+    return '<svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+           '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>' +
+           '</svg>';
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  document.addEventListener('DOMContentLoaded', loadSettings);
+</script>
+{% endblock %}

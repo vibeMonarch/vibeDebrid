@@ -1,0 +1,717 @@
+{% extends "base.html" %}
+{% block title %}Queue — vibeDebrid{% endblock %}
+
+{% block content %}
+<div x-data="queuePage()" x-init="init()">
+
+  <!-- Page header -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h2 class="text-2xl font-bold text-white">Queue</h2>
+      <p class="text-sm text-vd-muted mt-1">
+        <span x-text="totalItems"></span> items
+        <span x-show="filters.state" x-cloak>
+          in state <span class="text-gray-300 font-medium" x-text="filters.state"></span>
+        </span>
+      </p>
+    </div>
+    <button @click="loadItems()" class="flex items-center gap-2 px-3 py-2 text-sm bg-vd-card border border-vd-border rounded-lg hover:bg-white/10 transition-colors">
+      <svg class="w-4 h-4" :class="{ 'spinner': loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="bg-vd-card border border-vd-border rounded-xl p-4 mb-4">
+    <div class="flex flex-wrap gap-3 items-end">
+
+      <!-- State filter -->
+      <div class="flex flex-col gap-1 min-w-[140px]">
+        <label for="filter-state" class="text-xs text-vd-muted font-medium uppercase tracking-wide">State</label>
+        <select id="filter-state" x-model="filters.state"
+                class="bg-vd-bg border border-vd-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-vd-accent">
+          <option value="">All States</option>
+          <option value="unreleased">Unreleased</option>
+          <option value="wanted">Wanted</option>
+          <option value="scraping">Scraping</option>
+          <option value="adding">Adding</option>
+          <option value="checking">Checking</option>
+          <option value="sleeping">Sleeping</option>
+          <option value="dormant">Dormant</option>
+          <option value="complete">Complete</option>
+          <option value="done">Done</option>
+        </select>
+      </div>
+
+      <!-- Media type filter -->
+      <div class="flex flex-col gap-1 min-w-[120px]">
+        <label for="filter-type" class="text-xs text-vd-muted font-medium uppercase tracking-wide">Type</label>
+        <select id="filter-type" x-model="filters.media_type"
+                class="bg-vd-bg border border-vd-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-vd-accent">
+          <option value="">All Types</option>
+          <option value="movie">Movie</option>
+          <option value="show">Show</option>
+        </select>
+      </div>
+
+      <!-- Title search -->
+      <div class="flex flex-col gap-1 flex-1 min-w-[180px]">
+        <label for="filter-title" class="text-xs text-vd-muted font-medium uppercase tracking-wide">Title</label>
+        <input id="filter-title" type="text" x-model="filters.title"
+               @keydown.enter="applyFilters()"
+               placeholder="Search by title..."
+               class="bg-vd-bg border border-vd-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-vd-muted focus:outline-none focus:border-vd-accent">
+      </div>
+
+      <!-- Apply / Clear -->
+      <div class="flex gap-2">
+        <button @click="applyFilters()"
+                class="px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+          Apply
+        </button>
+        <button @click="clearFilters()"
+                class="px-4 py-2 bg-vd-card border border-vd-border hover:bg-white/10 text-gray-300 text-sm font-medium rounded-lg transition-colors">
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <!-- Active filter pills -->
+    <div class="flex flex-wrap gap-2 mt-3" x-show="activeFilters.length > 0" x-cloak>
+      <span class="text-xs text-vd-muted self-center">Active:</span>
+      <template x-for="f in activeFilters" :key="f.key">
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-vd-accent/20 border border-vd-accent/40 text-vd-accent text-xs rounded-full">
+          <span x-text="f.label"></span>
+          <button @click="removeFilter(f.key)" class="hover:text-white transition-colors ml-0.5">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </span>
+      </template>
+    </div>
+  </div>
+
+  <!-- Bulk actions bar (shown when items are selected) -->
+  <div x-show="selectedIds.size > 0" x-cloak
+       class="bg-vd-accent/10 border border-vd-accent/30 rounded-xl px-4 py-3 mb-4 flex flex-wrap items-center gap-3">
+    <span class="text-sm font-medium text-white">
+      <span x-text="selectedIds.size"></span> item<span x-show="selectedIds.size !== 1">s</span> selected
+    </span>
+    <div class="flex gap-2 ml-auto">
+      <button @click="bulkRetry()"
+              class="px-3 py-1.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Retry Selected
+      </button>
+      <button @click="bulkRemove()"
+              class="px-3 py-1.5 bg-vd-danger hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+        Remove Selected
+      </button>
+      <button @click="clearSelection()"
+              class="px-3 py-1.5 bg-vd-card border border-vd-border hover:bg-white/10 text-gray-300 text-sm font-medium rounded-lg transition-colors">
+        Cancel
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading skeleton -->
+  <div x-show="loading && items.length === 0" class="bg-vd-card border border-vd-border rounded-xl overflow-hidden">
+    <div class="animate-pulse">
+      <div class="h-12 bg-white/5 border-b border-vd-border"></div>
+      <template x-for="i in [1,2,3,4,5]" :key="i">
+        <div class="h-14 border-b border-vd-border/50 flex items-center gap-4 px-4">
+          <div class="w-4 h-4 bg-white/10 rounded"></div>
+          <div class="h-3 bg-white/10 rounded w-48"></div>
+          <div class="h-3 bg-white/10 rounded w-16 ml-auto"></div>
+          <div class="h-5 bg-white/10 rounded-full w-20"></div>
+          <div class="h-3 bg-white/10 rounded w-24"></div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div x-show="!loading && items.length === 0" x-cloak
+       class="bg-vd-card border border-vd-border rounded-xl p-12 text-center">
+    <svg class="w-12 h-12 text-vd-muted mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+    </svg>
+    <p class="text-vd-muted text-sm">No items match your filters.</p>
+    <button @click="clearFilters()" class="mt-3 text-vd-accent hover:text-vd-accent-hover text-sm underline">Clear filters</button>
+  </div>
+
+  <!-- Queue table -->
+  <div x-show="items.length > 0" x-cloak class="bg-vd-card border border-vd-border rounded-xl overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-vd-border bg-white/5 text-left">
+            <th class="px-4 py-3 w-10">
+              <input type="checkbox"
+                     :checked="allSelected"
+                     :indeterminate="someSelected"
+                     @change="toggleSelectAll($event)"
+                     class="w-4 h-4 rounded border-vd-border bg-vd-bg accent-vd-accent cursor-pointer"
+                     aria-label="Select all">
+            </th>
+            <th class="px-4 py-3 font-semibold text-gray-300 min-w-[220px]">Title</th>
+            <th class="px-4 py-3 font-semibold text-gray-300 w-20">Type</th>
+            <th class="px-4 py-3 font-semibold text-gray-300 w-32">State</th>
+            <th class="px-4 py-3 font-semibold text-gray-300 w-24">Quality</th>
+            <th class="px-4 py-3 font-semibold text-gray-300 w-20 text-center">Retries</th>
+            <th class="px-4 py-3 font-semibold text-gray-300 w-40">Last Changed</th>
+            <th class="px-4 py-3 font-semibold text-gray-300 w-28 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="item in items" :key="item.id">
+            <template>
+              <!-- Main row -->
+              <tr class="border-b border-vd-border/50 hover:bg-white/5 transition-colors cursor-pointer"
+                  :class="{ 'bg-white/5': expandedId === item.id }"
+                  @click="toggleExpand(item.id, $event)">
+                <td class="px-4 py-3" @click.stop>
+                  <input type="checkbox"
+                         :value="item.id"
+                         :checked="selectedIds.has(item.id)"
+                         @change="toggleSelect(item.id)"
+                         class="w-4 h-4 rounded border-vd-border bg-vd-bg accent-vd-accent cursor-pointer"
+                         :aria-label="'Select ' + item.title">
+                </td>
+                <td class="px-4 py-3">
+                  <div class="flex items-center gap-2">
+                    <svg class="w-3.5 h-3.5 text-vd-muted flex-shrink-0 transition-transform"
+                         :class="{ 'rotate-90': expandedId === item.id }"
+                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <div>
+                      <div class="font-medium text-white leading-snug" x-text="item.title"></div>
+                      <div class="text-xs text-vd-muted mt-0.5">
+                        <span x-text="item.year || ''"></span>
+                        <span x-show="item.season !== null && item.season !== undefined"
+                              x-text="' · S' + String(item.season).padStart(2,'0') + (item.episode !== null && item.episode !== undefined ? 'E' + String(item.episode).padStart(2,'0') : '')">
+                        </span>
+                        <span x-show="item.imdb_id" class="ml-1 text-vd-accent/70" x-text="item.imdb_id"></span>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs text-vd-muted capitalize" x-text="item.media_type"></span>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium text-white capitalize"
+                        :class="'badge-' + item.state"
+                        x-text="item.state">
+                  </span>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs text-gray-300" x-text="item.quality_profile || '—'"></span>
+                </td>
+                <td class="px-4 py-3 text-center">
+                  <span class="text-xs"
+                        :class="item.retry_count > 3 ? 'text-vd-warning' : 'text-vd-muted'"
+                        x-text="item.retry_count">
+                  </span>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-xs text-vd-muted" x-text="formatDate(item.state_changed_at)"></span>
+                </td>
+                <td class="px-4 py-3 text-right" @click.stop>
+                  <div class="flex items-center justify-end gap-1">
+                    <!-- Retry button — only for sleeping/dormant -->
+                    <button x-show="item.state === 'sleeping' || item.state === 'dormant' || item.state === 'wanted'"
+                            @click="retryItem(item)"
+                            title="Retry item"
+                            class="p-1.5 rounded-md hover:bg-vd-accent/20 text-vd-accent hover:text-vd-accent-hover transition-colors">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                      </svg>
+                      <span class="sr-only">Retry</span>
+                    </button>
+                    <!-- Remove button -->
+                    <button @click="removeItem(item)"
+                            title="Remove item"
+                            class="p-1.5 rounded-md hover:bg-red-500/20 text-vd-muted hover:text-vd-danger transition-colors">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                      </svg>
+                      <span class="sr-only">Remove</span>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- Expand detail row -->
+              <tr x-show="expandedId === item.id" class="border-b border-vd-border/50">
+                <td colspan="8" class="px-6 py-4 bg-vd-bg/50">
+
+                  <!-- Detail loading -->
+                  <div x-show="detailLoading" class="text-xs text-vd-muted animate-pulse py-2">Loading detail...</div>
+
+                  <!-- Detail content -->
+                  <div x-show="!detailLoading && detail && detail.id === item.id" x-cloak>
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                      <!-- Scrape log section -->
+                      <div>
+                        <h4 class="text-xs font-semibold text-vd-muted uppercase tracking-wide mb-3">Scrape History</h4>
+                        <div x-show="!detail || !detail.scrape_logs || detail.scrape_logs.length === 0"
+                             class="text-xs text-vd-muted italic">No scrape logs yet.</div>
+                        <div class="space-y-2" x-show="detail && detail.scrape_logs && detail.scrape_logs.length > 0">
+                          <template x-for="log in (detail ? detail.scrape_logs : [])" :key="log.id">
+                            <div class="bg-vd-card border border-vd-border rounded-lg p-3 text-xs">
+                              <div class="flex items-start justify-between gap-2">
+                                <div class="flex-1 min-w-0">
+                                  <div class="flex items-center gap-2 mb-1">
+                                    <span class="font-medium text-gray-300" x-text="log.scraper_name || log.scraper || '—'"></span>
+                                    <span class="text-vd-muted">·</span>
+                                    <span class="text-vd-muted" x-text="log.results_count + ' result' + (log.results_count !== 1 ? 's' : '')"></span>
+                                  </div>
+                                  <div class="text-vd-muted truncate" x-text="'Query: ' + (log.query || '—')"></div>
+                                  <div x-show="log.selected_result" class="text-vd-success mt-1 truncate"
+                                       x-text="'Selected: ' + (log.selected_result || '')"></div>
+                                </div>
+                                <span class="text-vd-muted flex-shrink-0" x-text="formatDate(log.created_at || log.timestamp)"></span>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+
+                      <!-- Torrents section -->
+                      <div>
+                        <h4 class="text-xs font-semibold text-vd-muted uppercase tracking-wide mb-3">Associated Torrents</h4>
+                        <div x-show="!detail || !detail.torrents || detail.torrents.length === 0"
+                             class="text-xs text-vd-muted italic">No torrents linked.</div>
+                        <div class="space-y-2" x-show="detail && detail.torrents && detail.torrents.length > 0">
+                          <template x-for="torrent in (detail ? detail.torrents : [])" :key="torrent.id || torrent.rd_id">
+                            <div class="bg-vd-card border border-vd-border rounded-lg p-3 text-xs">
+                              <div class="flex items-start justify-between gap-2">
+                                <div class="flex-1 min-w-0">
+                                  <div class="font-medium text-gray-300 truncate"
+                                       x-text="torrent.filename || torrent.name || '—'"></div>
+                                  <div class="flex items-center gap-3 mt-1 text-vd-muted">
+                                    <span x-show="torrent.rd_id" x-text="'RD: ' + torrent.rd_id"></span>
+                                    <span x-show="torrent.resolution" x-text="torrent.resolution"></span>
+                                    <span x-show="torrent.size_bytes" x-text="formatBytes(torrent.size_bytes)"></span>
+                                  </div>
+                                </div>
+                                <span x-show="torrent.cached !== undefined"
+                                      :class="torrent.cached ? 'text-vd-success' : 'text-vd-muted'"
+                                      x-text="torrent.cached ? 'Cached' : 'Not cached'">
+                                </span>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+
+                    </div>
+
+                    <!-- Meta row: next retry, created at -->
+                    <div class="flex flex-wrap gap-6 mt-4 pt-3 border-t border-vd-border/50 text-xs text-vd-muted">
+                      <div x-show="detail && detail.next_retry_at">
+                        Next retry: <span class="text-gray-300" x-text="detail ? formatDate(detail.next_retry_at) : ''"></span>
+                      </div>
+                      <div>
+                        Added: <span class="text-gray-300" x-text="detail ? formatDate(detail.created_at) : ''"></span>
+                      </div>
+                      <div x-show="detail && detail.imdb_id">
+                        IMDB: <a :href="'https://www.imdb.com/title/' + (detail ? detail.imdb_id : '')"
+                                 target="_blank" rel="noopener"
+                                 class="text-vd-accent hover:text-vd-accent-hover underline"
+                                 x-text="detail ? detail.imdb_id : ''"></a>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Pagination -->
+  <div x-show="totalPages > 1" x-cloak
+       class="flex items-center justify-between mt-4 text-sm">
+    <span class="text-vd-muted text-xs">
+      Page <span x-text="currentPage"></span> of <span x-text="totalPages"></span>
+      &mdash; <span x-text="totalItems"></span> total
+    </span>
+    <div class="flex items-center gap-2">
+      <button @click="goToPage(currentPage - 1)"
+              :disabled="currentPage <= 1"
+              class="px-3 py-1.5 rounded-lg border border-vd-border bg-vd-card text-sm text-gray-300 hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+        Previous
+      </button>
+
+      <!-- Page number buttons (show up to 7 pages) -->
+      <template x-for="p in pageRange" :key="p">
+        <button @click="p !== '...' && goToPage(p)"
+                :class="p === currentPage
+                  ? 'bg-vd-accent text-white border-vd-accent'
+                  : p === '...'
+                    ? 'cursor-default text-vd-muted border-transparent bg-transparent'
+                    : 'bg-vd-card border-vd-border text-gray-300 hover:bg-white/10'"
+                class="min-w-[36px] px-2 py-1.5 rounded-lg border text-sm transition-colors"
+                :disabled="p === '...'"
+                x-text="p">
+        </button>
+      </template>
+
+      <button @click="goToPage(currentPage + 1)"
+              :disabled="currentPage >= totalPages"
+              class="px-3 py-1.5 rounded-lg border border-vd-border bg-vd-card text-sm text-gray-300 hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1">
+        Next
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+<script>
+  function queuePage() {
+    return {
+      // State
+      items: [],
+      totalItems: 0,
+      currentPage: 1,
+      pageSize: 50,
+      totalPages: 1,
+      loading: false,
+      expandedId: null,
+      detail: null,
+      detailLoading: false,
+      selectedIds: new Set(),
+
+      // Filters (live model, applied on button press)
+      filters: {
+        state: '',
+        media_type: '',
+        title: '',
+      },
+      // Applied filters (synced to URL)
+      applied: {
+        state: '',
+        media_type: '',
+        title: '',
+      },
+
+      // ------------------------------------------------------------------ //
+      // Lifecycle
+      // ------------------------------------------------------------------ //
+      init() {
+        this.readFiltersFromUrl();
+        this.loadItems();
+      },
+
+      // ------------------------------------------------------------------ //
+      // URL param helpers
+      // ------------------------------------------------------------------ //
+      readFiltersFromUrl() {
+        const p = new URLSearchParams(window.location.search);
+        this.filters.state      = p.get('state')      || '';
+        this.filters.media_type = p.get('media_type') || '';
+        this.filters.title      = p.get('title')      || '';
+        this.applied = { ...this.filters };
+        this.currentPage = parseInt(p.get('page') || '1', 10);
+      },
+
+      pushUrl() {
+        const p = new URLSearchParams();
+        if (this.applied.state)      p.set('state',      this.applied.state);
+        if (this.applied.media_type) p.set('media_type', this.applied.media_type);
+        if (this.applied.title)      p.set('title',      this.applied.title);
+        if (this.currentPage > 1)    p.set('page',       this.currentPage);
+        const qs = p.toString();
+        window.history.replaceState({}, '', qs ? '?' + qs : window.location.pathname);
+      },
+
+      // ------------------------------------------------------------------ //
+      // Computed
+      // ------------------------------------------------------------------ //
+      get allSelected() {
+        return this.items.length > 0 && this.items.every(i => this.selectedIds.has(i.id));
+      },
+
+      get someSelected() {
+        return this.selectedIds.size > 0 && !this.allSelected;
+      },
+
+      get activeFilters() {
+        const out = [];
+        if (this.applied.state)      out.push({ key: 'state',      label: 'State: ' + this.applied.state });
+        if (this.applied.media_type) out.push({ key: 'media_type', label: 'Type: '  + this.applied.media_type });
+        if (this.applied.title)      out.push({ key: 'title',      label: 'Title: '  + this.applied.title });
+        return out;
+      },
+
+      get pageRange() {
+        // Produce an array like [1, 2, '...', 8, 9, 10] for pagination display
+        const total = this.totalPages;
+        const cur   = this.currentPage;
+        if (total <= 7) {
+          return Array.from({ length: total }, (_, i) => i + 1);
+        }
+        const pages = new Set([1, total, cur]);
+        for (let d = -1; d <= 1; d++) {
+          const n = cur + d;
+          if (n > 0 && n <= total) pages.add(n);
+        }
+        const sorted = Array.from(pages).sort((a, b) => a - b);
+        const result = [];
+        let prev = 0;
+        for (const p of sorted) {
+          if (p - prev > 1) result.push('...');
+          result.push(p);
+          prev = p;
+        }
+        return result;
+      },
+
+      // ------------------------------------------------------------------ //
+      // Data loading
+      // ------------------------------------------------------------------ //
+      async loadItems() {
+        this.loading = true;
+        try {
+          const p = new URLSearchParams({ page: this.currentPage, page_size: this.pageSize });
+          if (this.applied.state)      p.set('state',      this.applied.state);
+          if (this.applied.media_type) p.set('media_type', this.applied.media_type);
+          if (this.applied.title)      p.set('title',      this.applied.title);
+
+          const res = await fetch('/api/queue?' + p.toString());
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+
+          this.items      = data.items  || [];
+          this.totalItems = data.total  || 0;
+          this.totalPages = Math.max(1, Math.ceil(this.totalItems / this.pageSize));
+          this.pushUrl();
+        } catch (err) {
+          showToast('Failed to load queue: ' + err.message, 'error');
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async loadDetail(id) {
+        if (this.detail && this.detail.id === id) return; // already loaded
+        this.detailLoading = true;
+        this.detail = null;
+        try {
+          const res = await fetch('/api/queue/' + id);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          this.detail = await res.json();
+        } catch (err) {
+          showToast('Failed to load item detail: ' + err.message, 'error');
+        } finally {
+          this.detailLoading = false;
+        }
+      },
+
+      // ------------------------------------------------------------------ //
+      // Filters
+      // ------------------------------------------------------------------ //
+      applyFilters() {
+        this.applied = { ...this.filters };
+        this.currentPage = 1;
+        this.expandedId = null;
+        this.detail = null;
+        this.clearSelection();
+        this.loadItems();
+      },
+
+      clearFilters() {
+        this.filters = { state: '', media_type: '', title: '' };
+        this.applyFilters();
+      },
+
+      removeFilter(key) {
+        this.filters[key]  = '';
+        this.applied[key]  = '';
+        this.currentPage = 1;
+        this.loadItems();
+      },
+
+      // ------------------------------------------------------------------ //
+      // Pagination
+      // ------------------------------------------------------------------ //
+      goToPage(p) {
+        if (p < 1 || p > this.totalPages) return;
+        this.currentPage = p;
+        this.expandedId = null;
+        this.detail = null;
+        this.loadItems();
+      },
+
+      // ------------------------------------------------------------------ //
+      // Row expansion
+      // ------------------------------------------------------------------ //
+      toggleExpand(id, event) {
+        // Don't expand when clicking inside the actions cell or checkboxes
+        if (event && event.target.closest('button, input, a')) return;
+        if (this.expandedId === id) {
+          this.expandedId = null;
+          this.detail = null;
+        } else {
+          this.expandedId = id;
+          this.loadDetail(id);
+        }
+      },
+
+      // ------------------------------------------------------------------ //
+      // Selection
+      // ------------------------------------------------------------------ //
+      toggleSelect(id) {
+        if (this.selectedIds.has(id)) {
+          this.selectedIds.delete(id);
+        } else {
+          this.selectedIds.add(id);
+        }
+        // Force Alpine reactivity on Set mutation
+        this.selectedIds = new Set(this.selectedIds);
+      },
+
+      toggleSelectAll(event) {
+        if (event.target.checked) {
+          this.selectedIds = new Set(this.items.map(i => i.id));
+        } else {
+          this.selectedIds = new Set();
+        }
+      },
+
+      clearSelection() {
+        this.selectedIds = new Set();
+      },
+
+      // ------------------------------------------------------------------ //
+      // Row actions
+      // ------------------------------------------------------------------ //
+      async retryItem(item) {
+        try {
+          const res = await fetch('/api/queue/' + item.id + '/retry', { method: 'POST' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          showToast('"' + item.title + '" queued for retry', 'success');
+          await this.loadItems();
+          // Refresh detail if this item is expanded
+          if (this.expandedId === item.id) {
+            this.detail = null;
+            await this.loadDetail(item.id);
+          }
+        } catch (err) {
+          showToast('Retry failed: ' + err.message, 'error');
+        }
+      },
+
+      async removeItem(item) {
+        if (!confirm('Remove "' + item.title + '" from the queue? This also removes associated data.')) return;
+        try {
+          const res = await fetch('/api/queue/' + item.id, { method: 'DELETE' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          showToast('"' + item.title + '" removed', 'success');
+          if (this.expandedId === item.id) { this.expandedId = null; this.detail = null; }
+          this.selectedIds.delete(item.id);
+          this.selectedIds = new Set(this.selectedIds);
+          await this.loadItems();
+        } catch (err) {
+          showToast('Remove failed: ' + err.message, 'error');
+        }
+      },
+
+      // ------------------------------------------------------------------ //
+      // Bulk actions (JSON POST via fetch)
+      // ------------------------------------------------------------------ //
+      async bulkRetry() {
+        const ids = Array.from(this.selectedIds);
+        if (ids.length === 0) return;
+        try {
+          const res = await fetch('/api/queue/bulk/retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          showToast(ids.length + ' item' + (ids.length !== 1 ? 's' : '') + ' queued for retry', 'success');
+          this.clearSelection();
+          await this.loadItems();
+        } catch (err) {
+          showToast('Bulk retry failed: ' + err.message, 'error');
+        }
+      },
+
+      async bulkRemove() {
+        const ids = Array.from(this.selectedIds);
+        if (ids.length === 0) return;
+        if (!confirm('Remove ' + ids.length + ' item' + (ids.length !== 1 ? 's' : '') + '? This cannot be undone.')) return;
+        try {
+          const res = await fetch('/api/queue/bulk/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          showToast(ids.length + ' item' + (ids.length !== 1 ? 's' : '') + ' removed', 'success');
+          this.clearSelection();
+          if (this.expandedId && ids.includes(this.expandedId)) {
+            this.expandedId = null;
+            this.detail = null;
+          }
+          await this.loadItems();
+        } catch (err) {
+          showToast('Bulk remove failed: ' + err.message, 'error');
+        }
+      },
+
+      // ------------------------------------------------------------------ //
+      // Formatting helpers
+      // ------------------------------------------------------------------ //
+      formatDate(iso) {
+        if (!iso) return '—';
+        try {
+          const d = new Date(iso);
+          if (isNaN(d)) return iso;
+          const now = new Date();
+          const diff = now - d; // ms
+          if (diff < 60_000)           return 'just now';
+          if (diff < 3_600_000)        return Math.floor(diff / 60_000) + 'm ago';
+          if (diff < 86_400_000)       return Math.floor(diff / 3_600_000) + 'h ago';
+          if (diff < 7 * 86_400_000)   return Math.floor(diff / 86_400_000) + 'd ago';
+          return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+        } catch (_) {
+          return iso;
+        }
+      },
+
+      formatBytes(bytes) {
+        if (!bytes) return '';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let v = bytes, u = 0;
+        while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+        return v.toFixed(1) + ' ' + units[u];
+      },
+    };
+  }
+</script>
+{% endblock %}

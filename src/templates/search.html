@@ -1,0 +1,733 @@
+{% extends "base.html" %}
+
+{% block title %}Search — vibeDebrid{% endblock %}
+
+{% block head %}
+<style>
+  /* Score bar color tiers */
+  .score-bar-high  { background-color: #22c55e; }
+  .score-bar-mid   { background-color: #f59e0b; }
+  .score-bar-low   { background-color: #ef4444; }
+
+  /* Cached left border accent */
+  .result-cached   { border-left: 3px solid #22c55e; }
+  .result-uncached { border-left: 3px solid #334155; }
+
+  /* Season/episode fields slide */
+  .show-fields { display: none; }
+  .show-fields.visible { display: flex; }
+
+  /* Tooltip container */
+  .tooltip-wrapper { position: relative; }
+  .tooltip-box {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 8px 12px;
+    white-space: nowrap;
+    z-index: 20;
+    font-size: 0.75rem;
+    min-width: 180px;
+  }
+  .tooltip-wrapper:hover .tooltip-box,
+  .tooltip-wrapper:focus-within .tooltip-box { display: block; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Page header -->
+  <div>
+    <h2 class="text-2xl font-bold text-white">Search</h2>
+    <p class="text-sm text-vd-muted mt-1">Find and add torrents directly to Real-Debrid.</p>
+  </div>
+
+  <!-- Search form card -->
+  <div class="bg-vd-card border border-vd-border rounded-xl p-6">
+    <form id="search-form" onsubmit="handleSearch(event)" novalidate>
+
+      <!-- Primary query row -->
+      <div class="flex flex-col sm:flex-row gap-3">
+        <div class="flex-1">
+          <label for="query" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">Title</label>
+          <input
+            id="query"
+            name="query"
+            type="text"
+            required
+            placeholder="e.g. The Matrix"
+            autocomplete="off"
+            spellcheck="false"
+            class="w-full bg-vd-bg border border-vd-border rounded-lg px-4 py-3 text-white placeholder-vd-muted text-base
+                   focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+          >
+        </div>
+
+        <!-- Media type -->
+        <div class="sm:w-36">
+          <label for="media_type" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">Type</label>
+          <select
+            id="media_type"
+            name="media_type"
+            onchange="toggleShowFields(this.value)"
+            class="w-full bg-vd-bg border border-vd-border rounded-lg px-3 py-3 text-white text-base
+                   focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+          >
+            <option value="movie">Movie</option>
+            <option value="show">Show</option>
+          </select>
+        </div>
+
+        <!-- Quality profile -->
+        <div class="sm:w-36">
+          <label for="quality_profile" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">Quality</label>
+          <select
+            id="quality_profile"
+            name="quality_profile"
+            class="w-full bg-vd-bg border border-vd-border rounded-lg px-3 py-3 text-white text-base
+                   focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+          >
+            <option value="high">High</option>
+            <option value="standard">Standard</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Secondary metadata row -->
+      <div class="mt-3 flex flex-col sm:flex-row gap-3">
+
+        <!-- IMDB ID -->
+        <div class="sm:w-48">
+          <label for="imdb_id" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">IMDB ID <span class="normal-case text-vd-muted/60">(optional)</span></label>
+          <input
+            id="imdb_id"
+            name="imdb_id"
+            type="text"
+            placeholder="tt0133093"
+            autocomplete="off"
+            spellcheck="false"
+            pattern="tt\d{7,8}"
+            class="w-full bg-vd-bg border border-vd-border rounded-lg px-4 py-2.5 text-white placeholder-vd-muted text-sm
+                   focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+          >
+        </div>
+
+        <!-- Season + Episode — only visible for shows -->
+        <div id="show-fields" class="show-fields gap-3">
+          <div>
+            <label for="season" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">Season</label>
+            <input
+              id="season"
+              name="season"
+              type="number"
+              min="1"
+              placeholder="1"
+              class="w-24 bg-vd-bg border border-vd-border rounded-lg px-4 py-2.5 text-white placeholder-vd-muted text-sm
+                     focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+            >
+          </div>
+          <div>
+            <label for="episode" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">Episode <span class="normal-case text-vd-muted/60">(optional)</span></label>
+            <input
+              id="episode"
+              name="episode"
+              type="number"
+              min="1"
+              placeholder="1"
+              class="w-24 bg-vd-bg border border-vd-border rounded-lg px-4 py-2.5 text-white placeholder-vd-muted text-sm
+                     focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+            >
+          </div>
+        </div>
+
+        <!-- Spacer + search button pushed right -->
+        <div class="flex-1 flex items-end justify-end">
+          <button
+            type="submit"
+            id="search-btn"
+            class="inline-flex items-center gap-2 bg-vd-accent hover:bg-vd-accent-hover text-white font-semibold
+                   px-6 py-2.5 rounded-lg text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-2 focus:ring-offset-vd-card"
+          >
+            <!-- Spinner (hidden by default) -->
+            <svg id="search-spinner" class="w-4 h-4 spinner hidden" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <svg id="search-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <span id="search-btn-text">Search</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Validation message -->
+      <p id="form-error" class="mt-2 text-sm text-red-400 hidden"></p>
+    </form>
+  </div>
+
+  <!-- Manual add section -->
+  <div class="bg-vd-card border border-vd-border rounded-xl p-6">
+    <h3 class="text-sm font-semibold text-white mb-3">Add by Magnet or Hash</h3>
+    <form id="manual-add-form" onsubmit="handleManualAdd(event)" novalidate>
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input
+          id="manual-input"
+          name="magnet_or_hash"
+          type="text"
+          placeholder="magnet:?xt=urn:btih:... or info_hash"
+          autocomplete="off"
+          spellcheck="false"
+          class="flex-1 bg-vd-bg border border-vd-border rounded-lg px-4 py-2.5 text-white placeholder-vd-muted text-sm
+                 focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition font-mono"
+        >
+        <input
+          id="manual-title"
+          name="title"
+          type="text"
+          placeholder="Title (optional)"
+          class="sm:w-48 bg-vd-bg border border-vd-border rounded-lg px-4 py-2.5 text-white placeholder-vd-muted text-sm
+                 focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+        >
+        <button
+          type="submit"
+          id="manual-btn"
+          class="inline-flex items-center gap-2 bg-vd-bg border border-vd-border hover:border-vd-accent text-gray-300 hover:text-white
+                 font-medium px-5 py-2.5 rounded-lg text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-vd-accent"
+        >
+          <svg id="manual-spinner" class="w-4 h-4 spinner hidden" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          Add Manually
+        </button>
+      </div>
+      <p id="manual-error" class="mt-2 text-sm text-red-400 hidden"></p>
+    </form>
+  </div>
+
+  <!-- Results section (hidden until a search is performed) -->
+  <div id="results-section" class="hidden space-y-4">
+
+    <!-- Summary bar -->
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <p id="results-summary" class="text-sm text-vd-muted"></p>
+      <div class="flex items-center gap-2 text-xs text-vd-muted">
+        <span>Sorted: cached first, then by score</span>
+      </div>
+    </div>
+
+    <!-- Results list -->
+    <div id="results-list" class="space-y-3"></div>
+
+    <!-- Empty state -->
+    <div id="results-empty" class="hidden bg-vd-card border border-vd-border rounded-xl p-12 text-center">
+      <svg class="w-12 h-12 mx-auto text-vd-muted/40 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <p class="text-vd-muted font-medium">No results found</p>
+      <p class="text-vd-muted/60 text-sm mt-1">Try different search terms or check your filters.</p>
+    </div>
+
+    <!-- Error state -->
+    <div id="results-error" class="hidden bg-red-950/40 border border-red-800/50 rounded-xl p-6 text-center">
+      <p class="text-red-400 font-medium" id="results-error-msg">Search failed.</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // ─── Helpers ────────────────────────────────────────────────────────────────
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    let value = bytes;
+    while (value >= 1024 && i < units.length - 1) {
+      value /= 1024;
+      i++;
+    }
+    return value.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  function scoreColorClass(score) {
+    if (score >= 70) return 'score-bar-high';
+    if (score >= 40) return 'score-bar-mid';
+    return 'score-bar-low';
+  }
+
+  function scoreTextColor(score) {
+    if (score >= 70) return 'text-green-400';
+    if (score >= 40) return 'text-yellow-400';
+    return 'text-red-400';
+  }
+
+  function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  // ─── Show/hide season+episode fields ────────────────────────────────────────
+
+  function toggleShowFields(mediaType) {
+    const fields = document.getElementById('show-fields');
+    if (mediaType === 'show') {
+      fields.classList.add('visible');
+    } else {
+      fields.classList.remove('visible');
+      document.getElementById('season').value = '';
+      document.getElementById('episode').value = '';
+    }
+  }
+
+  // ─── Search form submission ──────────────────────────────────────────────────
+
+  async function handleSearch(event) {
+    event.preventDefault();
+
+    const form     = document.getElementById('search-form');
+    const errorEl  = document.getElementById('form-error');
+    const query    = document.getElementById('query').value.trim();
+
+    errorEl.classList.add('hidden');
+    errorEl.textContent = '';
+
+    if (!query) {
+      errorEl.textContent = 'Please enter a title to search.';
+      errorEl.classList.remove('hidden');
+      document.getElementById('query').focus();
+      return;
+    }
+
+    const imdbId  = document.getElementById('imdb_id').value.trim() || null;
+    const season  = document.getElementById('season').value.trim();
+    const episode = document.getElementById('episode').value.trim();
+
+    const payload = {
+      query:           query,
+      imdb_id:         imdbId || null,
+      media_type:      document.getElementById('media_type').value,
+      season:          season  ? parseInt(season,  10) : null,
+      episode:         episode ? parseInt(episode, 10) : null,
+      quality_profile: document.getElementById('quality_profile').value,
+    };
+
+    setSearchLoading(true);
+
+    try {
+      const resp = await fetch('/api/search', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        let detail = 'Search failed.';
+        try { detail = (await resp.json()).detail || detail; } catch(_) {}
+        throw new Error(detail);
+      }
+
+      const data = await resp.json();
+      renderResults(data, payload);
+
+    } catch (err) {
+      showResultsError(err.message || 'An unexpected error occurred.');
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
+  function setSearchLoading(loading) {
+    const btn     = document.getElementById('search-btn');
+    const spinner = document.getElementById('search-spinner');
+    const icon    = document.getElementById('search-icon');
+    const label   = document.getElementById('search-btn-text');
+
+    btn.disabled = loading;
+    spinner.classList.toggle('hidden', !loading);
+    icon.classList.toggle('hidden', loading);
+    label.textContent = loading ? 'Searching…' : 'Search';
+  }
+
+  // ─── Render results ─────────────────────────────────────────────────────────
+
+  function renderResults(data, searchPayload) {
+    const section  = document.getElementById('results-section');
+    const list     = document.getElementById('results-list');
+    const summary  = document.getElementById('results-summary');
+    const empty    = document.getElementById('results-empty');
+    const errorDiv = document.getElementById('results-error');
+
+    section.classList.remove('hidden');
+    errorDiv.classList.add('hidden');
+    list.innerHTML = '';
+
+    const results = (data.results || []).slice().sort((a, b) => {
+      // Cached first, then score descending
+      if (a.cached !== b.cached) return a.cached ? -1 : 1;
+      return (b.score || 0) - (a.score || 0);
+    });
+
+    const total    = data.total_filtered ?? results.length;
+    const totalRaw = data.total_raw ?? results.length;
+
+    summary.textContent = `Showing ${results.length} of ${total} results (${totalRaw} raw results before filtering)`;
+
+    if (results.length === 0) {
+      empty.classList.remove('hidden');
+      list.classList.add('hidden');
+      return;
+    }
+
+    empty.classList.add('hidden');
+    list.classList.remove('hidden');
+
+    results.forEach(item => {
+      const card = buildResultCard(item, searchPayload);
+      list.appendChild(card);
+    });
+  }
+
+  function buildResultCard(item, searchPayload) {
+    const wrapper = document.createElement('div');
+    wrapper.id = `result-${item.info_hash}`;
+    wrapper.className = `bg-vd-card border border-vd-border rounded-xl overflow-hidden ${item.cached ? 'result-cached' : 'result-uncached'}`;
+
+    const score          = item.score || 0;
+    const scoreBarClass  = scoreColorClass(score);
+    const scoreTextClass = scoreTextColor(score);
+    const barWidth       = Math.min(100, score).toFixed(1);
+    const sizeFormatted  = formatBytes(item.size_bytes);
+
+    const breakdown    = item.score_breakdown || {};
+    const breakdownStr = Object.entries(breakdown)
+      .map(([k, v]) => `${k}: +${v}`)
+      .join(' / ');
+
+    // Resolution badge colour
+    const resBadgeColor = {
+      '2160p': 'bg-purple-700 text-purple-100',
+      '1080p': 'bg-blue-700 text-blue-100',
+      '720p':  'bg-sky-700 text-sky-100',
+    }[item.resolution] || 'bg-gray-700 text-gray-200';
+
+    wrapper.innerHTML = `
+      <!-- Desktop table-like row -->
+      <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
+
+        <!-- Title + badges -->
+        <div class="min-w-0">
+          <p class="text-sm text-white font-medium truncate" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</p>
+          <div class="flex items-center gap-2 mt-1 flex-wrap">
+            ${item.resolution ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded ${resBadgeColor}">${escapeHtml(item.resolution)}</span>` : ''}
+            ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${escapeHtml(item.codec)}</span>` : ''}
+            ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${escapeHtml(item.quality)}</span>` : ''}
+            ${item.is_season_pack ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Season Pack</span>` : ''}
+          </div>
+        </div>
+
+        <!-- Size -->
+        <div class="text-right">
+          <span class="text-sm text-gray-300 tabular-nums">${escapeHtml(sizeFormatted)}</span>
+        </div>
+
+        <!-- Seeders -->
+        <div class="text-right">
+          <span class="text-sm tabular-nums ${item.seeders > 50 ? 'text-green-400' : item.seeders > 10 ? 'text-yellow-400' : 'text-red-400'}">
+            ${item.seeders ?? '—'}
+          </span>
+          <p class="text-xs text-vd-muted">seeders</p>
+        </div>
+
+        <!-- Cached badge -->
+        <div class="flex justify-center">
+          ${item.cached
+            ? `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-green-900/60 border border-green-700/50 text-green-300">
+                 <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>Cached
+               </span>`
+            : `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
+                 <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Not Cached
+               </span>`
+          }
+        </div>
+
+        <!-- Score -->
+        <div class="w-20 tooltip-wrapper" tabindex="0" aria-label="Score breakdown: ${escapeHtml(breakdownStr)}">
+          <div class="flex items-center justify-end gap-1.5 mb-1">
+            <span class="text-sm font-semibold tabular-nums ${scoreTextClass}">${score.toFixed(1)}</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-vd-bg overflow-hidden">
+            <div class="h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
+          </div>
+          <div class="tooltip-box text-left">
+            <p class="text-gray-300 font-semibold mb-1">Score breakdown</p>
+            ${Object.entries(breakdown).map(([k, v]) =>
+              `<div class="flex justify-between gap-4"><span class="text-vd-muted">${escapeHtml(k)}</span><span class="text-white">+${v}</span></div>`
+            ).join('')}
+          </div>
+        </div>
+
+        <!-- Add button -->
+        <div>
+          <button
+            class="add-btn inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg
+                   bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
+                   focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-1 focus:ring-offset-vd-card"
+            onclick="handleAdd(this, '${escapeHtml(item.info_hash)}', ${JSON.stringify(JSON.stringify(buildAddPayload(item, searchPayload)))})"
+          >
+            <svg class="add-icon w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+            <svg class="add-spinner w-3.5 h-3.5 spinner hidden" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            Add
+          </button>
+        </div>
+      </div>
+
+      <!-- Mobile card layout -->
+      <div class="md:hidden px-4 py-4 space-y-3">
+        <!-- Title + badges -->
+        <div>
+          <p class="text-sm text-white font-medium break-all">${escapeHtml(item.title)}</p>
+          <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+            ${item.resolution ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded ${resBadgeColor}">${escapeHtml(item.resolution)}</span>` : ''}
+            ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${escapeHtml(item.codec)}</span>` : ''}
+            ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${escapeHtml(item.quality)}</span>` : ''}
+            ${item.is_season_pack ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Season Pack</span>` : ''}
+            ${item.cached
+              ? `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-900/60 border border-green-700/50 text-green-300">
+                   <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>Cached
+                 </span>`
+              : `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
+                   <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Not Cached
+                 </span>`
+            }
+          </div>
+        </div>
+
+        <!-- Stats row -->
+        <div class="flex items-center gap-4 text-xs text-vd-muted flex-wrap">
+          <span>${escapeHtml(sizeFormatted)}</span>
+          <span class="${item.seeders > 50 ? 'text-green-400' : item.seeders > 10 ? 'text-yellow-400' : 'text-red-400'}">${item.seeders ?? '—'} seeders</span>
+        </div>
+
+        <!-- Score bar -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs text-vd-muted">Score</span>
+            <span class="text-xs font-semibold tabular-nums ${scoreTextClass}">${score.toFixed(1)}</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-vd-bg overflow-hidden">
+            <div class="h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
+          </div>
+          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1">${escapeHtml(breakdownStr)}</p>` : ''}
+        </div>
+
+        <!-- Add button -->
+        <button
+          class="add-btn w-full inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-lg
+                 bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
+                 focus:outline-none focus:ring-2 focus:ring-vd-accent"
+          onclick="handleAdd(this, '${escapeHtml(item.info_hash)}', ${JSON.stringify(JSON.stringify(buildAddPayload(item, searchPayload)))})"
+        >
+          <svg class="add-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          <svg class="add-spinner w-4 h-4 spinner hidden" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          Add to Real-Debrid
+        </button>
+      </div>
+    `;
+
+    return wrapper;
+  }
+
+  function buildAddPayload(item, searchPayload) {
+    return {
+      magnet_or_hash:  item.info_hash,
+      title:           searchPayload.query,
+      imdb_id:         searchPayload.imdb_id || null,
+      media_type:      searchPayload.media_type,
+      year:            null,
+      season:          searchPayload.season || null,
+      episode:         searchPayload.episode || null,
+      quality_profile: searchPayload.quality_profile,
+    };
+  }
+
+  // ─── Add a result to Real-Debrid ────────────────────────────────────────────
+
+  async function handleAdd(btn, infoHash, payloadJson) {
+    if (btn.disabled) return;
+
+    const payload = JSON.parse(payloadJson);
+    // Always use the info_hash from the result, not from the search form
+    payload.magnet_or_hash = infoHash;
+
+    // Find all add buttons in this card and disable them
+    const card = document.getElementById(`result-${infoHash}`);
+    const allAddBtns = card ? card.querySelectorAll('.add-btn') : [btn];
+
+    allAddBtns.forEach(b => { b.disabled = true; });
+
+    // Show spinner on clicked button
+    const icon    = btn.querySelector('.add-icon');
+    const spinner = btn.querySelector('.add-spinner');
+    if (icon)    icon.classList.add('hidden');
+    if (spinner) spinner.classList.remove('hidden');
+
+    try {
+      const resp = await fetch('/api/add', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+
+      let data = {};
+      try { data = await resp.json(); } catch(_) {}
+
+      if (!resp.ok) {
+        throw new Error(data.detail || data.message || 'Failed to add torrent.');
+      }
+
+      // Update all add buttons in the card to "Added" state
+      allAddBtns.forEach(b => {
+        b.disabled = true;
+        b.classList.remove('bg-vd-accent', 'hover:bg-vd-accent-hover');
+        b.classList.add('bg-green-700', 'cursor-default');
+        const bIcon    = b.querySelector('.add-icon');
+        const bSpinner = b.querySelector('.add-spinner');
+        if (bIcon)    bIcon.classList.add('hidden');
+        if (bSpinner) bSpinner.classList.add('hidden');
+
+        // Replace button text node
+        const textNodes = [...b.childNodes].filter(n => n.nodeType === Node.TEXT_NODE);
+        textNodes.forEach(n => n.remove());
+
+        // Insert checkmark svg + "Added"
+        const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        check.setAttribute('class', 'w-3.5 h-3.5 flex-shrink-0');
+        check.setAttribute('fill', 'none');
+        check.setAttribute('stroke', 'currentColor');
+        check.setAttribute('viewBox', '0 0 24 24');
+        check.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>';
+        b.appendChild(check);
+
+        const label = document.createElement('span');
+        label.textContent = 'Added';
+        b.appendChild(label);
+      });
+
+      const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
+      showToast(`Added to Real-Debrid${rdId}`, 'success');
+
+    } catch (err) {
+      // Restore button on failure
+      allAddBtns.forEach(b => { b.disabled = false; });
+      if (icon)    icon.classList.remove('hidden');
+      if (spinner) spinner.classList.add('hidden');
+
+      showToast(err.message || 'Failed to add torrent.', 'error');
+    }
+  }
+
+  // ─── Manual add ─────────────────────────────────────────────────────────────
+
+  async function handleManualAdd(event) {
+    event.preventDefault();
+
+    const errorEl = document.getElementById('manual-error');
+    const input   = document.getElementById('manual-input').value.trim();
+    const title   = document.getElementById('manual-title').value.trim();
+    const btn     = document.getElementById('manual-btn');
+    const spinner = document.getElementById('manual-spinner');
+
+    errorEl.classList.add('hidden');
+    errorEl.textContent = '';
+
+    if (!input) {
+      errorEl.textContent = 'Please enter a magnet link or info hash.';
+      errorEl.classList.remove('hidden');
+      document.getElementById('manual-input').focus();
+      return;
+    }
+
+    btn.disabled = true;
+    spinner.classList.remove('hidden');
+
+    const payload = {
+      magnet_or_hash:  input,
+      title:           title || null,
+      imdb_id:         null,
+      media_type:      'movie',
+      year:            null,
+      season:          null,
+      episode:         null,
+      quality_profile: 'high',
+    };
+
+    try {
+      const resp = await fetch('/api/add', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+
+      let data = {};
+      try { data = await resp.json(); } catch(_) {}
+
+      if (!resp.ok) {
+        throw new Error(data.detail || data.message || 'Failed to add torrent.');
+      }
+
+      const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
+      showToast(`Added to Real-Debrid${rdId}`, 'success');
+
+      // Clear inputs on success
+      document.getElementById('manual-input').value = '';
+      document.getElementById('manual-title').value = '';
+
+    } catch (err) {
+      errorEl.textContent = err.message || 'An unexpected error occurred.';
+      errorEl.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      spinner.classList.add('hidden');
+    }
+  }
+
+  // ─── Error display helper ────────────────────────────────────────────────────
+
+  function showResultsError(msg) {
+    const section  = document.getElementById('results-section');
+    const errorDiv = document.getElementById('results-error');
+    const errorMsg = document.getElementById('results-error-msg');
+    const list     = document.getElementById('results-list');
+    const empty    = document.getElementById('results-empty');
+
+    section.classList.remove('hidden');
+    list.innerHTML = '';
+    list.classList.add('hidden');
+    empty.classList.add('hidden');
+    errorMsg.textContent = msg;
+    errorDiv.classList.remove('hidden');
+  }
+</script>
+{% endblock %}

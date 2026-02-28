@@ -50,27 +50,21 @@
 
 ## Next Steps (In Order)
 
-### Step 1: End-to-End Test on Live Server
-- Start vibeDebrid: `source .venv/bin/activate && python -m src.main`
-- Add item via POST /api/add with a known magnet/hash
-- Watch it flow: ADDING → CHECKING → COMPLETE → symlink created
-- Verify symlink points to real file in Zurg mount
-- Check GET /api/stats returns correct state counts
+### Step 1: Web UI
+- Frontend-dev agent builds Jinja2 + htmx + Tailwind templates
+- Dashboard, queue management, manual search, settings, duplicates
+- Dark mode default, mobile-friendly
 
 ### Step 2: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - src/services/plex.py — watchlist, library scan trigger
 - Wire into scheduler with config intervals
 
-### Step 3: Web UI
-- Frontend-dev agent builds Jinja2 + htmx + Tailwind templates
-- Dashboard, queue management, manual search, settings, duplicates
-- Dark mode default, mobile-friendly
 
-### Step 4: Upgrade Manager
+### Step 3: Upgrade Manager
 - src/core/upgrade_manager.py — monitor for higher quality versions within window
 
-### Step 5: Docker
+### Step 4: Docker
 - Dockerfile + docker-compose.yml alongside existing Zurg/rclone stack
 
 ## Key Files to Read
