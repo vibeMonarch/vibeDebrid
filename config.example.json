@@ -29,20 +29,53 @@
         "default_profile": "high",
         "profiles": {
             "high": {
-                "resolution_order": ["2160p", "1080p", "720p"],
+                "resolution_order": [
+                    "2160p",
+                    "1080p",
+                    "720p"
+                ],
                 "min_resolution": "720p",
-                "preferred_codec": ["x265", "hevc", "av1", "x264"],
-                "preferred_audio": ["atmos", "truehd", "dts-hd", "dts", "aac"],
-                "preferred_source": ["bluray", "web-dl", "webrip", "hdtv"],
+                "preferred_codec": [
+                    "x265",
+                    "hevc",
+                    "av1",
+                    "x264"
+                ],
+                "preferred_audio": [
+                    "atmos",
+                    "truehd",
+                    "dts-hd",
+                    "dts",
+                    "aac"
+                ],
+                "preferred_source": [
+                    "bluray",
+                    "web-dl",
+                    "webrip",
+                    "hdtv"
+                ],
                 "min_size_mb": 200,
                 "max_size_gb": 80
             },
             "standard": {
-                "resolution_order": ["1080p", "720p"],
+                "resolution_order": [
+                    "1080p",
+                    "720p"
+                ],
                 "min_resolution": "720p",
-                "preferred_codec": ["x265", "x264"],
-                "preferred_audio": ["dts", "aac"],
-                "preferred_source": ["web-dl", "webrip", "bluray"],
+                "preferred_codec": [
+                    "x265",
+                    "x264"
+                ],
+                "preferred_audio": [
+                    "dts",
+                    "aac"
+                ],
+                "preferred_source": [
+                    "web-dl",
+                    "webrip",
+                    "bluray"
+                ],
                 "min_size_mb": 100,
                 "max_size_gb": 20
             }
@@ -50,12 +83,25 @@
     },
     "filters": {
         "blocked_release_groups": [],
-        "blocked_keywords": ["cam", "ts", "telesync", "telecine", "hdcam"],
+        "blocked_keywords": [
+            "cam",
+            "ts",
+            "telesync",
+            "telecine",
+            "hdcam"
+        ],
         "required_language": null,
         "allow_multi_audio": true
     },
     "retry": {
-        "schedule_minutes": [30, 60, 120, 360, 720, 1440],
+        "schedule_minutes": [
+            30,
+            60,
+            120,
+            360,
+            720,
+            1440
+        ],
         "dormant_recheck_days": 7,
         "max_active_retries": 7,
         "unreleased_check_hours": 6
@@ -69,6 +115,11 @@
         "scan_interval_minutes": 15,
         "scan_on_startup": true
     },
+    "scheduler": {
+        "queue_processor_minutes": 5,
+        "symlink_verifier_minutes": 30,
+        "unreleased_check_minutes": 360
+    },
     "trakt": {
         "enabled": false,
         "client_id": "",
@@ -76,7 +127,9 @@
         "access_token": "",
         "refresh_token": "",
         "poll_interval_minutes": 15,
-        "lists": ["watchlist"]
+        "lists": [
+            "watchlist"
+        ]
     },
     "plex": {
         "enabled": false,

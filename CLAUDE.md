@@ -38,6 +38,7 @@ tests/                 → pytest tests, one file per core module
 - Docstrings on all public functions (single-line for simple, Google style for complex)
 - Tests use pytest + pytest-asyncio, fixtures in conftest.py
 - No print statements — use logging
+- Always use the project virtualenv: `.venv/bin/python` (not system Python)
 
 ## Critical Design Decisions
 

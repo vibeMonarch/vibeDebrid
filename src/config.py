@@ -136,6 +136,12 @@ class BackupConfig(BaseModel):
     backup_dir: str = "./backups"
 
 
+class SchedulerConfig(BaseModel):
+    queue_processor_minutes: int = 5
+    symlink_verifier_minutes: int = 30
+    unreleased_check_minutes: int = 360
+
+
 # --- Main settings ---
 
 
@@ -171,6 +177,7 @@ class Settings(BaseSettings):
     plex: PlexConfig = PlexConfig()
     server: ServerConfig = ServerConfig()
     backup: BackupConfig = BackupConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
 
     @classmethod
     def load(cls) -> "Settings":

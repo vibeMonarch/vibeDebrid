@@ -10,9 +10,15 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 
 from src.config import settings
-from src.database import engine, init_db
+from src.database import engine, init_db, async_session
+from src.core.queue_manager import queue_manager
+from src.core.scrape_pipeline import scrape_pipeline
+from src.core.mount_scanner import mount_scanner
+from src.core.symlink_manager import symlink_manager
+from src.models.media_item import MediaItem, QueueState
 
 logger = logging.getLogger(__name__)
 
@@ -37,51 +43,128 @@ def setup_logging() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+async def _job_mount_scan() -> None:
+    """Scheduled job: scan the Zurg mount and update the file index."""
+    logger.info("Scheduled job starting: mount_scan")
+    session = async_session()
+    try:
+        result = await mount_scanner.scan(session)
+        await session.commit()
+        logger.info(
+            "Scheduled job complete: mount_scan found=%d added=%d removed=%d",
+            result.files_found,
+            result.files_added,
+            result.files_removed,
+        )
+    except Exception:
+        logger.exception("Scheduled job failed: mount_scan")
+        await session.rollback()
+    finally:
+        await session.close()
+
+
+async def _job_queue_processor() -> None:
+    """Scheduled job: advance queue items through the state machine and scrape WANTED items."""
+    logger.info("Scheduled job starting: queue_processor")
+    session = async_session()
+    try:
+        stats = await queue_manager.process_queue(session)
+        logger.info("Queue transitions applied: %s", stats)
+
+        # Fetch all WANTED items and run the scrape pipeline for each
+        result = await session.execute(
+            select(MediaItem).where(MediaItem.state == QueueState.WANTED)
+        )
+        wanted_items = result.scalars().all()
+        logger.info("WANTED items to scrape: %d", len(wanted_items))
+
+        for item in wanted_items:
+            try:
+                await queue_manager.transition(session, item.id, QueueState.SCRAPING)
+                await scrape_pipeline.run(session, item)
+            except Exception:
+                logger.exception(
+                    "Scrape pipeline failed for item id=%d title=%s", item.id, item.title
+                )
+                # Transition to SLEEPING so the item is retried later
+                # rather than stuck in SCRAPING forever
+                try:
+                    await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                except Exception:
+                    logger.exception(
+                        "Failed to transition item id=%d to SLEEPING after pipeline error",
+                        item.id,
+                    )
+
+        await session.commit()
+        logger.info("Scheduled job complete: queue_processor")
+    except Exception:
+        logger.exception("Scheduled job failed: queue_processor")
+        await session.rollback()
+    finally:
+        await session.close()
+
+
+async def _job_symlink_verifier() -> None:
+    """Scheduled job: verify existing symlinks are still valid."""
+    logger.info("Scheduled job starting: symlink_verifier")
+    session = async_session()
+    try:
+        result = await symlink_manager.verify_symlinks(session)
+        await session.commit()
+        logger.info(
+            "Scheduled job complete: symlink_verifier checked=%d broken=%d",
+            result.total_checked,
+            result.broken_count,
+        )
+    except Exception:
+        logger.exception("Scheduled job failed: symlink_verifier")
+        await session.rollback()
+    finally:
+        await session.close()
+
+
 def _register_scheduled_jobs() -> None:
     """Register periodic jobs with the scheduler.
 
-    Jobs are stubs until their core modules are implemented. Each job
-    calls into the corresponding core module so the scheduler stays thin.
+    All intervals are read from settings — no hardcoded values.
     """
-    # Mount scanner: check Zurg mount every N minutes
-    # scheduler.add_job(
-    #     mount_scanner.scan,
-    #     "interval",
-    #     minutes=settings.mount_scanner.scan_interval_minutes,
-    #     id="mount_scan",
-    #     replace_existing=True,
-    # )
+    scheduler.add_job(
+        _job_mount_scan,
+        "interval",
+        minutes=settings.mount_scanner.scan_interval_minutes,
+        id="mount_scan",
+        replace_existing=True,
+    )
+    logger.info(
+        "Registered job: mount_scan (every %d min)",
+        settings.mount_scanner.scan_interval_minutes,
+    )
 
-    # Queue processor: advance items through the state machine
-    # scheduler.add_job(
-    #     queue_manager.process_queue,
-    #     "interval",
-    #     minutes=1,
-    #     id="queue_process",
-    #     replace_existing=True,
-    # )
+    scheduler.add_job(
+        _job_queue_processor,
+        "interval",
+        minutes=settings.scheduler.queue_processor_minutes,
+        id="queue_processor",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info(
+        "Registered job: queue_processor (every %d min)",
+        settings.scheduler.queue_processor_minutes,
+    )
 
-    # Trakt watchlist polling
-    # if settings.trakt.enabled:
-    #     scheduler.add_job(
-    #         trakt.poll_watchlist,
-    #         "interval",
-    #         minutes=settings.trakt.poll_interval_minutes,
-    #         id="trakt_poll",
-    #         replace_existing=True,
-    #     )
-
-    # Upgrade checker
-    # if settings.upgrade.enabled:
-    #     scheduler.add_job(
-    #         upgrade_manager.check_upgrades,
-    #         "interval",
-    #         minutes=settings.upgrade.check_interval_minutes,
-    #         id="upgrade_check",
-    #         replace_existing=True,
-    #     )
-
-    logger.info("Scheduled jobs registered (stubs until core modules are implemented)")
+    scheduler.add_job(
+        _job_symlink_verifier,
+        "interval",
+        minutes=settings.scheduler.symlink_verifier_minutes,
+        id="symlink_verifier",
+        replace_existing=True,
+    )
+    logger.info(
+        "Registered job: symlink_verifier (every %d min)",
+        settings.scheduler.symlink_verifier_minutes,
+    )
 
 
 @asynccontextmanager
@@ -101,6 +184,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _register_scheduled_jobs()
     scheduler.start()
     logger.info("Scheduler started")
+
+    # Run mount scan immediately on startup if configured
+    if settings.mount_scanner.scan_on_startup:
+        logger.info("Running startup mount scan")
+        await _job_mount_scan()
 
     yield
 
