@@ -5,8 +5,8 @@ stream metadata for movies and TV episodes.  No authentication is required.
 
 Real-world quirks documented here:
 - Episode-level queries return 0 results for running seasons (e.g. a show that
-  is mid-air on streaming services).  The fallback chain (episode → season →
-  show) is the primary bug fix over the previous CLI Debrid implementation.
+  is mid-air on streaming services).  The fallback chain (episode → season)
+  is the primary bug fix over the previous CLI Debrid implementation.
 - Do NOT append ``limit=1`` or ``cachedonly`` to URLs — these were CLI Debrid
   bugs that silently throttled and filtered results.
 - The ``opts`` config value is inserted as a path segment between base_url and
@@ -184,7 +184,7 @@ class TorrentioClient:
     async def scrape_episode(
         self, imdb_id: str, season: int, episode: int
     ) -> list[TorrentioResult]:
-        """Scrape Torrentio for a specific episode with a three-level fallback.
+        """Scrape Torrentio for a specific episode with a two-level fallback.
 
         The fallback chain fixes the primary bug from CLI Debrid where running
         seasons returned 0 results at the episode level and were silently dropped.
@@ -193,7 +193,6 @@ class TorrentioClient:
           1. Episode query  → ``/stream/series/{imdb_id}:{season}:{episode}.json``
           2. Season query   → ``/stream/series/{imdb_id}:{season}:1.json``
              (episode 1 is used as the season anchor; results are season packs)
-          3. Show query     → ``/stream/series/{imdb_id}.json``
 
         Args:
             imdb_id: The IMDB ID, e.g. ``"tt12345678"``.
@@ -243,26 +242,9 @@ class TorrentioClient:
                 imdb_id,
                 season,
             )
-            return results
-
-        # Step 3 — show-level query
-        logger.info(
-            "scrape_episode: step=2 returned 0 results for %s S%02d, "
-            "trying show-level query",
-            imdb_id,
-            season,
-        )
-        show_path = f"/stream/series/{imdb_id}.json"
-        results = await self._query(show_path)
-        if results:
-            logger.info(
-                "scrape_episode: step=3 (show) succeeded with %d results for %s",
-                len(results),
-                imdb_id,
-            )
         else:
             logger.warning(
-                "scrape_episode: all three fallback levels returned 0 results "
+                "scrape_episode: both fallback levels returned 0 results "
                 "for %s S%02dE%02d — content may not be available yet",
                 imdb_id,
                 season,

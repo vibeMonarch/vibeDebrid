@@ -8,7 +8,7 @@ the caller-managed transaction.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 VALID_TRANSITIONS: dict[QueueState, set[QueueState]] = {
     QueueState.UNRELEASED: {QueueState.WANTED},
     QueueState.WANTED: {QueueState.SCRAPING},
-    QueueState.SCRAPING: {QueueState.ADDING, QueueState.SLEEPING},
+    QueueState.SCRAPING: {QueueState.ADDING, QueueState.SLEEPING, QueueState.CHECKING, QueueState.COMPLETE},
     QueueState.ADDING: {QueueState.CHECKING},
     QueueState.CHECKING: {QueueState.COMPLETE, QueueState.SLEEPING},
     QueueState.SLEEPING: {QueueState.SCRAPING, QueueState.DORMANT},
@@ -316,7 +316,7 @@ class QueueManager:
         )
         unreleased_items = result.scalars().all()
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         advanced_ids: list[int] = []
 
         for item in unreleased_items:
@@ -326,8 +326,7 @@ class QueueManager:
                     item.id,
                     item.air_date,
                 )
-                self._apply_transition_side_effects(item, QueueState.UNRELEASED, QueueState.WANTED)
-                await session.flush()
+                await self.transition(session, item.id, QueueState.WANTED)
                 advanced_ids.append(item.id)
 
         if advanced_ids:
@@ -391,15 +390,13 @@ class QueueManager:
         retries_triggered = 0
 
         for item in ready_items:
-            from_state = item.state
             logger.info(
                 "process_queue: triggering retry for item id=%d (state=%r, title=%r)",
                 item.id,
-                from_state.value,
+                item.state.value,
                 item.title,
             )
-            self._apply_transition_side_effects(item, from_state, QueueState.SCRAPING)
-            await session.flush()
+            await self.transition(session, item.id, QueueState.SCRAPING)
             retries_triggered += 1
 
         summary: dict[str, int] = {

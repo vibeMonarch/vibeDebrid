@@ -355,35 +355,16 @@ async def test_scrape_episode_fallback_to_season(client: TorrentioClient) -> Non
 
 
 @pytest.mark.asyncio
-async def test_scrape_episode_fallback_to_show(client: TorrentioClient) -> None:
-    """When both episode AND season queries return 0 results, show-level query runs."""
-    show_stream = _make_stream(
-        info_hash="e" * 40,
-        title="Show.Name.S01.S02.S03.1080p.WEB-DL-GROUP",
-    )
+async def test_scrape_episode_both_fallbacks_empty(client: TorrentioClient) -> None:
+    """Both episode and season fallback levels return 0 results; method returns []."""
     empty = _make_response(200, _make_torrentio_response([]))
-    show_resp = _make_response(200, _make_torrentio_response([show_stream]))
-
-    # Sequential: episode → empty, season → empty, show → results
-    transport = _patch_client(client, [empty, empty, show_resp])
+    transport = _patch_client(client, [empty, empty])
 
     results = await client.scrape_episode("tt3333333", season=2, episode=5)
 
-    assert len(results) == 1
-    assert results[0].info_hash == "e" * 40
-    # All three levels should have been queried
-    assert len(transport.requests_made) == 3
-
-
-@pytest.mark.asyncio
-async def test_scrape_episode_all_empty(client: TorrentioClient) -> None:
-    """All three fallback levels return 0 results; method returns [] without raising."""
-    empty = _make_response(200, _make_torrentio_response([]))
-    _patch_client(client, [empty, empty, empty])
-
-    results = await client.scrape_episode("tt4444444", season=1, episode=1)
-
     assert results == []
+    # Both levels should have been queried
+    assert len(transport.requests_made) == 2
 
 
 @pytest.mark.asyncio

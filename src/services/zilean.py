@@ -277,7 +277,11 @@ class ZileanClient:
 
         results: list[ZileanResult] = []
         for entry in raw_list:
-            parsed = self._parse_entry(entry)
+            try:
+                parsed = self._parse_entry(entry)
+            except Exception as exc:
+                logger.debug("zilean: skipping unparseable entry: %s", exc)
+                continue
             if parsed is not None:
                 results.append(parsed)
 

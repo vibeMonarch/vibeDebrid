@@ -161,7 +161,7 @@ _PATCH_TARGETS = {
     "rd_cache": "src.core.scrape_pipeline.rd_client.check_instant_availability",
     "rd_add": "src.core.scrape_pipeline.rd_client.add_magnet",
     "rd_select": "src.core.scrape_pipeline.rd_client.select_files",
-    "filter_best": "src.core.scrape_pipeline.filter_engine.get_best",
+    "filter_rank": "src.core.scrape_pipeline.filter_engine.filter_and_rank",
     "queue_transition": "src.core.scrape_pipeline.queue_manager.transition",
 }
 
@@ -179,7 +179,7 @@ class _Mocks:
     rd_cache: AsyncMock
     rd_add: AsyncMock
     rd_select: AsyncMock
-    filter_best: MagicMock
+    filter_rank: MagicMock
     queue_transition: AsyncMock
 
 
@@ -240,8 +240,8 @@ async def _all_mocks(
     mocks.rd_select = started["rd_select"]
     mocks.rd_select.return_value = None
 
-    mocks.filter_best = started["filter_best"]
-    mocks.filter_best.return_value = None
+    mocks.filter_rank = started["filter_rank"]
+    mocks.filter_rank.return_value = []
 
     mocks.queue_transition = started["queue_transition"]
     # Return the item passed in (pipeline calls transition(session, item.id, ...))
@@ -461,8 +461,8 @@ class TestScraperResults:
             await pipeline.run(session, wanted_item)
 
         # filter_engine.get_best must have been called with a non-empty list
-        m.filter_best.assert_called_once()
-        call_args = m.filter_best.call_args
+        m.filter_rank.assert_called_once()
+        call_args = m.filter_rank.call_args
         results_passed = call_args[0][0] if call_args[0] else call_args[1].get("results", [])
         assert zilean_result in results_passed
 
@@ -479,8 +479,8 @@ class TestScraperResults:
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
-        m.filter_best.assert_called_once()
-        call_args = m.filter_best.call_args
+        m.filter_rank.assert_called_once()
+        call_args = m.filter_rank.call_args
         results_passed = call_args[0][0] if call_args[0] else call_args[1].get("results", [])
         assert torrentio_result in results_passed
 
@@ -498,7 +498,7 @@ class TestScraperResults:
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
-        call_args = m.filter_best.call_args
+        call_args = m.filter_rank.call_args
         results_passed = call_args[0][0] if call_args[0] else call_args[1].get("results", [])
         assert z in results_passed
         assert t in results_passed
@@ -581,14 +581,14 @@ class TestFilteringAndRdCache:
     async def test_filter_returns_best_proceeds_to_add(
         self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
     ) -> None:
-        """filter_engine.get_best returns a result → rd_client.add_magnet called."""
+        """filter_engine.filter_and_rank returns results → rd_client.add_magnet called."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         torrentio_result = _make_torrentio_result()
         filtered = _make_filtered_result(torrentio_result)
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
@@ -597,13 +597,13 @@ class TestFilteringAndRdCache:
     async def test_filter_returns_none_gives_no_results(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """filter_engine.get_best returns None (all rejected) → action='no_results'."""
+        """filter_engine.filter_and_rank returns [] (all rejected) → action='no_results'."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         torrentio_result = _make_torrentio_result()
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = None
+            m.filter_rank.return_value = []
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
@@ -626,8 +626,8 @@ class TestFilteringAndRdCache:
             await pipeline.run(session, wanted_item)
 
         # filter_best must have been called with cached_hashes containing the hash
-        m.filter_best.assert_called_once()
-        call_kwargs = m.filter_best.call_args[1]
+        m.filter_rank.assert_called_once()
+        call_kwargs = m.filter_rank.call_args[1]
         cached_hashes = call_kwargs.get("cached_hashes") or set()
         assert fake_hash in cached_hashes
 
@@ -645,7 +645,7 @@ class TestFilteringAndRdCache:
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         # Pipeline survived; filter_best was still called
-        m.filter_best.assert_called_once()
+        m.filter_rank.assert_called_once()
         # action is no_results because filter returns None by default
         assert result.action in ("no_results", "added_to_rd", "error")
 
@@ -668,7 +668,7 @@ class TestAddToRd:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             m.rd_add.return_value = {"id": "RD999", "uri": "magnet:?xt=urn:btih:" + "a" * 40}
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
@@ -686,7 +686,7 @@ class TestAddToRd:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
@@ -702,7 +702,7 @@ class TestAddToRd:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             m.rd_add.return_value = {"id": "RD_EXPECTED", "uri": "magnet:?xt=urn:btih:" + "a" * 40}
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
@@ -719,7 +719,7 @@ class TestAddToRd:
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             m.rd_add.side_effect = RuntimeError("RD API error")
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
@@ -736,7 +736,7 @@ class TestAddToRd:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             m.rd_select.side_effect = RuntimeError("RD select files error")
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
@@ -755,7 +755,7 @@ class TestAddToRd:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             m.rd_add.return_value = {"id": "RD_REG", "uri": "magnet:?xt=urn:btih:" + info_hash}
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
@@ -775,7 +775,7 @@ class TestAddToRd:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
@@ -870,7 +870,7 @@ class TestScrapeLogPersistence:
 
         async with _all_mocks(mock_rd_torrent) as m:
             m.torrentio_movie.return_value = [torrentio_result]
-            m.filter_best.return_value = filtered
+            m.filter_rank.return_value = [filtered]
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
             await session.flush()
@@ -990,7 +990,7 @@ class TestErrorHandling:
         async with _all_mocks() as m:
             # Make filter_best blow up in an unexpected way
             m.torrentio_movie.return_value = [_make_torrentio_result()]
-            m.filter_best.side_effect = Exception("totally unexpected crash")
+            m.filter_rank.side_effect = Exception("totally unexpected crash")
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
@@ -1005,7 +1005,7 @@ class TestErrorHandling:
         async with _all_mocks() as m:
             m.rd_add.side_effect = RuntimeError("connection refused")
             m.torrentio_movie.return_value = [_make_torrentio_result()]
-            m.filter_best.return_value = _make_filtered_result(_make_torrentio_result())
+            m.filter_rank.return_value = [_make_filtered_result(_make_torrentio_result())]
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
@@ -1020,7 +1020,7 @@ class TestErrorHandling:
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result()]
-            m.filter_best.side_effect = Exception("kaboom")
+            m.filter_rank.side_effect = Exception("kaboom")
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 

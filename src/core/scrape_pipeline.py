@@ -253,18 +253,14 @@ class ScrapePipeline:
                 exc,
             )
 
-        # Apply filter engine
-        best: FilteredResult | None = filter_engine.get_best(
-            combined,  # type: ignore[arg-type]
-            profile_name=item.quality_profile,
-            cached_hashes=cached_set,
-        )
+        # Apply filter engine (single pass — get_best calls filter_and_rank internally)
         ranked = filter_engine.filter_and_rank(
             combined,  # type: ignore[arg-type]
             profile_name=item.quality_profile,
             cached_hashes=cached_set,
         )
         filtered_count = len(ranked)
+        best: FilteredResult | None = ranked[0] if ranked else None
 
         if best is None:
             logger.info(
@@ -421,6 +417,7 @@ class ScrapePipeline:
             selected_result=selected_result,
             duration_ms=duration_ms,
         )
+        await queue_manager.transition(session, item.id, QueueState.COMPLETE)
         return PipelineResult(
             item_id=item.id,
             action="mount_hit",
@@ -450,17 +447,19 @@ class ScrapePipeline:
                 "imdb_id": item.imdb_id,
                 "season": item.season,
                 "episode": item.episode,
-                "resolution": item.requested_resolution,
             }
         )
 
         try:
+            # Pass None for resolution to match any — register_torrent stores
+            # the actual result resolution, so a resolution-specific check here
+            # would miss valid duplicates registered at a different resolution.
             existing = await dedup_engine.check_content_duplicate(
                 session,
                 item.imdb_id,
                 item.season,
                 item.episode,
-                item.requested_resolution,
+                None,
             )
         except Exception as exc:
             logger.warning(
@@ -510,6 +509,7 @@ class ScrapePipeline:
             selected_result=selected,
             duration_ms=duration_ms,
         )
+        await queue_manager.transition(session, item.id, QueueState.CHECKING)
         return PipelineResult(
             item_id=item.id,
             action="dedup_hit",
@@ -623,8 +623,17 @@ class ScrapePipeline:
                 )
         else:
             # SHOW — requires season and episode
-            season = item.season or 1
-            episode = item.episode or 1
+            if item.season is None or item.episode is None:
+                logger.warning(
+                    "scrape_pipeline: item id=%d is a SHOW but season=%s episode=%s "
+                    "— cannot scrape without both values",
+                    item.id,
+                    item.season,
+                    item.episode,
+                )
+                return results, 0
+            season = item.season
+            episode = item.episode
             query_params = json.dumps(
                 {
                     "imdb_id": item.imdb_id,
@@ -759,6 +768,21 @@ class ScrapePipeline:
             )
 
         rd_id: str = str(add_response.get("id", ""))
+        if not rd_id:
+            logger.error(
+                "scrape_pipeline: add_magnet returned empty rd_id for item id=%d hash=%s",
+                item.id,
+                info_hash,
+            )
+            await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+            return PipelineResult(
+                item_id=item.id,
+                action="error",
+                message="RD add_magnet returned empty torrent ID",
+                selected_hash=info_hash,
+                scrape_results_count=scrape_results_count,
+                filtered_results_count=filtered_results_count,
+            )
 
         # --- select_files ---
         try:

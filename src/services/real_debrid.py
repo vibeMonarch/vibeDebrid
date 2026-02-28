@@ -116,10 +116,6 @@ class RealDebridClient:
     exceptions so the caller can decide whether to retry or surface the error.
     """
 
-    def __init__(self) -> None:
-        self._base_url = settings.real_debrid.api_url.rstrip("/")
-        self._api_key = settings.real_debrid.api_key
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -127,9 +123,9 @@ class RealDebridClient:
     def _build_client(self, timeout: float = _DEFAULT_TIMEOUT) -> httpx.AsyncClient:
         """Create a new httpx.AsyncClient with auth headers and timeout."""
         return httpx.AsyncClient(
-            base_url=self._base_url,
+            base_url=settings.real_debrid.api_url.rstrip("/"),
             headers={
-                "Authorization": f"Bearer {self._api_key}",
+                "Authorization": f"Bearer {settings.real_debrid.api_key}",
                 "User-Agent": "vibeDebrid/0.1",
             },
             timeout=timeout,
@@ -216,8 +212,8 @@ class RealDebridClient:
         """
         async with self._build_client() as client:
             response = await client.get("/user")
-        self._raise_for_status(response)
-        data: dict[str, Any] = response.json()
+            self._raise_for_status(response)
+            data: dict[str, Any] = response.json()
         logger.debug("get_user: username=%s type=%s", data.get("username"), data.get("type"))
         return data
 
@@ -239,8 +235,8 @@ class RealDebridClient:
         """
         async with self._build_client() as client:
             response = await client.post("/torrents/addMagnet", data={"magnet": magnet_uri})
-        self._raise_for_status(response)
-        data: dict[str, Any] = response.json()
+            self._raise_for_status(response)
+            data: dict[str, Any] = response.json()
         logger.info("add_magnet: added torrent id=%s", data.get("id"))
         return data
 
@@ -279,12 +275,17 @@ class RealDebridClient:
 
         merged: RdInstantAvailability = {}
 
+        async def _fetch_chunk(client: httpx.AsyncClient, chunk: list[str]) -> dict[str, Any]:
+            path = "/torrents/instantAvailability/" + "/".join(chunk)
+            response = await client.get(path)
+            self._raise_for_status(response)
+            return response.json()
+
         async with self._build_client(timeout=_BATCH_TIMEOUT) as client:
-            for chunk in chunks:
-                path = "/torrents/instantAvailability/" + "/".join(chunk)
-                response = await client.get(path)
-                self._raise_for_status(response)
-                chunk_data: dict[str, Any] = response.json()
+            chunk_results = await asyncio.gather(
+                *(_fetch_chunk(client, chunk) for chunk in chunks)
+            )
+            for chunk_data in chunk_results:
                 # Filter out hashes with empty/no cached variants so callers
                 # can treat presence in the dict as "is cached".
                 for hash_key, availability in chunk_data.items():
@@ -318,8 +319,8 @@ class RealDebridClient:
         """
         async with self._build_client() as client:
             response = await client.get("/torrents", params={"limit": limit, "offset": offset})
-        self._raise_for_status(response)
-        data: list[dict[str, Any]] = response.json()
+            self._raise_for_status(response)
+            data: list[dict[str, Any]] = response.json()
         logger.debug("list_torrents: returned %d items (offset=%d)", len(data), offset)
         return data
 
@@ -341,8 +342,8 @@ class RealDebridClient:
         """
         async with self._build_client() as client:
             response = await client.get(f"/torrents/info/{torrent_id}")
-        self._raise_for_status(response)
-        data: dict[str, Any] = response.json()
+            self._raise_for_status(response)
+            data: dict[str, Any] = response.json()
         logger.debug(
             "get_torrent_info: id=%s status=%s progress=%s%%",
             torrent_id,
@@ -384,16 +385,16 @@ class RealDebridClient:
                 data={"files": files_value},
             )
 
-        # RD returns 204 No Content on success; treat any 2xx as success.
-        if response.status_code == 204 or response.is_success:
-            logger.info(
-                "select_files: torrent_id=%s files=%s",
-                torrent_id,
-                files_value if len(files_value) < 80 else files_value[:77] + "...",
-            )
-            return
+            # RD returns 204 No Content on success; treat any 2xx as success.
+            if response.status_code == 204 or response.is_success:
+                logger.info(
+                    "select_files: torrent_id=%s files=%s",
+                    torrent_id,
+                    files_value if len(files_value) < 80 else files_value[:77] + "...",
+                )
+                return
 
-        self._raise_for_status(response)
+            self._raise_for_status(response)
 
     async def delete_torrent(self, torrent_id: str) -> None:
         """Remove a torrent from the RD account.
@@ -414,13 +415,13 @@ class RealDebridClient:
         async with self._build_client() as client:
             response = await client.delete(f"/torrents/delete/{torrent_id}")
 
-        if response.status_code == 404:
-            logger.warning(
-                "delete_torrent: torrent_id=%s not found (already deleted?)", torrent_id
-            )
-            return
+            if response.status_code == 404:
+                logger.warning(
+                    "delete_torrent: torrent_id=%s not found (already deleted?)", torrent_id
+                )
+                return
 
-        self._raise_for_status(response)
+            self._raise_for_status(response)
         logger.info("delete_torrent: torrent_id=%s deleted", torrent_id)
 
 

@@ -332,25 +332,25 @@ class DedupEngine:
             info_hash: 40-char hex info hash of the torrent to mark removed.
         """
         normalised = info_hash.lower().strip()
-        stmt = select(RdTorrent).where(RdTorrent.info_hash == normalised)
+        stmt = select(RdTorrent).where(
+            RdTorrent.info_hash == normalised,
+            RdTorrent.status == TorrentStatus.ACTIVE,
+        )
         result = await session.execute(stmt)
         torrent = result.scalar_one_or_none()
 
         if torrent is None:
             logger.warning(
-                "dedup.mark_torrent_removed: no record for info_hash=%s", normalised
+                "dedup.mark_torrent_removed: no active record for info_hash=%s", normalised
             )
             return
 
-        old_status = torrent.status
         torrent.status = TorrentStatus.REMOVED
         await session.flush()
 
         logger.info(
-            "dedup.mark_torrent_removed: info_hash=%s status %s -> %s",
+            "dedup.mark_torrent_removed: info_hash=%s status ACTIVE -> REMOVED",
             normalised,
-            old_status.value,
-            TorrentStatus.REMOVED.value,
         )
 
     async def mark_torrent_replaced(
@@ -373,27 +373,27 @@ class DedupEngine:
         normalised_old = old_info_hash.lower().strip()
         normalised_new = new_info_hash.lower().strip()
 
-        stmt = select(RdTorrent).where(RdTorrent.info_hash == normalised_old)
+        stmt = select(RdTorrent).where(
+            RdTorrent.info_hash == normalised_old,
+            RdTorrent.status == TorrentStatus.ACTIVE,
+        )
         result = await session.execute(stmt)
         torrent = result.scalar_one_or_none()
 
         if torrent is None:
             logger.warning(
-                "dedup.mark_torrent_replaced: no record for old_info_hash=%s",
+                "dedup.mark_torrent_replaced: no active record for old_info_hash=%s",
                 normalised_old,
             )
             return
 
-        old_status = torrent.status
         torrent.status = TorrentStatus.REPLACED
         await session.flush()
 
         logger.info(
-            "dedup.mark_torrent_replaced: old_info_hash=%s status %s -> %s "
+            "dedup.mark_torrent_replaced: old_info_hash=%s status ACTIVE -> REPLACED "
             "(replaced by new_info_hash=%s)",
             normalised_old,
-            old_status.value,
-            TorrentStatus.REPLACED.value,
             normalised_new,
         )
 
