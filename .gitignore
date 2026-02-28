@@ -19,6 +19,8 @@ build/
 
 # Project
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 config.json
 !config.example.json
