@@ -1,17 +1,23 @@
 """Async wrapper for the Real-Debrid REST API v1.0."""
 
+import asyncio
 import logging
+import os
 from typing import Any
 
 import httpx
 from pydantic import BaseModel
 
 from src.config import settings
+from src.core.mount_scanner import VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
 # Statuses that indicate a torrent's content is already cached on RD servers.
 _CACHED_STATUSES = frozenset({"downloaded", "waiting_files_selection"})
+
+# Statuses that indicate a torrent is broken and should not be kept.
+_ERROR_STATUSES = frozenset({"magnet_error", "error", "virus", "dead"})
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -93,6 +99,24 @@ class RdAddMagnetResponse(BaseModel):
 
     id: str
     uri: str
+
+
+class CacheCheckResult(BaseModel):
+    """Result of probing a single info hash for RD cache status.
+
+    Attributes:
+        info_hash: The torrent info hash that was checked.
+        cached: True if cached, False if not cached, None if an error/no-video
+                prevented determination.
+        rd_id: The RD torrent ID if the torrent was kept (keep_if_cached=True
+               and cached), otherwise None.
+        has_video_files: Whether the torrent contains video files.
+    """
+
+    info_hash: str
+    cached: bool | None
+    rd_id: str | None = None
+    has_video_files: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +211,53 @@ class RealDebridClient:
             status_code=status,
             error_code=error_code,
         )
+
+    @staticmethod
+    def _has_video_files(files: list[dict]) -> bool:
+        """Check whether any file in the torrent has a video extension."""
+        for f in files:
+            path = f.get("path", "")
+            _, ext = os.path.splitext(path)
+            if ext.lower() in VIDEO_EXTENSIONS:
+                return True
+        return False
+
+    async def _api_call_with_retry(
+        self,
+        coro_factory: Any,
+        max_retries: int = 3,
+        label: str = "",
+    ) -> Any:
+        """Call an async function with exponential backoff on rate limit.
+
+        Args:
+            coro_factory: A callable that returns an awaitable (called each attempt).
+            max_retries: Maximum number of attempts.
+            label: Label for log messages.
+
+        Returns:
+            The result of the successful call.
+
+        Raises:
+            The last exception if all retries are exhausted.
+        """
+        for attempt in range(max_retries):
+            try:
+                return await coro_factory()
+            except RealDebridRateLimitError:
+                if attempt == max_retries - 1:
+                    raise
+                delay = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                logger.warning(
+                    "%s: rate limited, retrying in %ds (attempt %d/%d)",
+                    label or "api_call",
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
+                await asyncio.sleep(delay)
+        # Unreachable, but satisfies type checker
+        raise RuntimeError("unreachable")  # pragma: no cover
 
     # ------------------------------------------------------------------
     # Public API methods
@@ -352,45 +423,87 @@ class RealDebridClient:
 
             self._raise_for_status(response)
 
-    async def check_cached(self, info_hash: str) -> bool:
+    async def check_cached(
+        self, info_hash: str, *, keep_if_cached: bool = False
+    ) -> CacheCheckResult:
         """Check whether a single torrent is cached on RD servers.
 
-        Adds the magnet, inspects the torrent status, then deletes it.
-        A torrent whose status is ``"downloaded"`` or
-        ``"waiting_files_selection"`` immediately after add is cached.
+        Adds the magnet, inspects the torrent status, checks for error statuses
+        and video files, then either keeps or deletes the torrent.
 
-        This is expensive (3 API calls per hash).  Prefer
-        ``check_cached_batch`` for checking multiple hashes.
+        When *keep_if_cached* is True and the torrent IS cached, the torrent
+        is left in the RD account and the returned ``rd_id`` can be reused by
+        the caller (avoiding a redundant ``add_magnet`` later).
 
         Args:
             info_hash: 40-character hex info hash.
+            keep_if_cached: If True, keep cached torrents instead of deleting.
 
         Returns:
-            True if the torrent is cached, False otherwise (including on any
-            API error).
+            CacheCheckResult with cached status and optional rd_id.
         """
         magnet_uri = f"magnet:?xt=urn:btih:{info_hash}"
         rd_id: str | None = None
+        should_keep = False
         try:
-            add_resp = await self.add_magnet(magnet_uri)
+            add_resp = await self._api_call_with_retry(
+                lambda: self.add_magnet(magnet_uri),
+                label=f"check_cached({info_hash[:8]}...).add_magnet",
+            )
             rd_id = str(add_resp.get("id", ""))
             if not rd_id:
                 logger.warning("check_cached: add_magnet returned empty id for hash=%s", info_hash)
-                return False
+                return CacheCheckResult(info_hash=info_hash, cached=None)
 
-            info = await self.get_torrent_info(rd_id)
+            info = await self._api_call_with_retry(
+                lambda: self.get_torrent_info(rd_id),
+                label=f"check_cached({info_hash[:8]}...).get_info",
+            )
             status = info.get("status", "")
+
+            # Error status → treat as indeterminate
+            if status in _ERROR_STATUSES:
+                logger.warning(
+                    "check_cached: hash=%s rd_id=%s has error status=%s",
+                    info_hash, rd_id, status,
+                )
+                return CacheCheckResult(
+                    info_hash=info_hash, cached=None, has_video_files=False,
+                )
+
+            # Check for video files
+            files = info.get("files", [])
+            has_video = self._has_video_files(files) if files else True
+            if files and not has_video:
+                logger.warning(
+                    "check_cached: hash=%s rd_id=%s has no video files",
+                    info_hash, rd_id,
+                )
+                return CacheCheckResult(
+                    info_hash=info_hash, cached=None, has_video_files=False,
+                )
+
             cached = status in _CACHED_STATUSES
             logger.debug(
-                "check_cached: hash=%s rd_id=%s status=%s cached=%s",
-                info_hash, rd_id, status, cached,
+                "check_cached: hash=%s rd_id=%s status=%s cached=%s keep=%s",
+                info_hash, rd_id, status, cached, keep_if_cached,
             )
-            return cached
+
+            if cached and keep_if_cached:
+                should_keep = True
+                return CacheCheckResult(
+                    info_hash=info_hash, cached=True, rd_id=rd_id,
+                    has_video_files=has_video,
+                )
+
+            return CacheCheckResult(
+                info_hash=info_hash, cached=cached, has_video_files=has_video,
+            )
         except Exception as exc:
             logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
-            return False
+            return CacheCheckResult(info_hash=info_hash, cached=None)
         finally:
-            if rd_id:
+            if rd_id and not should_keep:
                 try:
                     await self.delete_torrent(rd_id)
                 except Exception as exc:
@@ -403,7 +516,9 @@ class RealDebridClient:
         self,
         hashes: list[str],
         max_checks: int = 10,
-    ) -> set[str]:
+        *,
+        keep_if_cached: bool = False,
+    ) -> dict[str, CacheCheckResult]:
         """Check up to *max_checks* hashes for RD cache status.
 
         Hashes are checked sequentially to avoid tripping RD's rate limit.
@@ -412,29 +527,32 @@ class RealDebridClient:
         Args:
             hashes: Info hashes to check, ordered by priority (best first).
             max_checks: Maximum number of hashes to probe.
+            keep_if_cached: If True, keep cached torrents in the RD account.
 
         Returns:
-            Set of info hashes confirmed as cached.
+            Dict mapping info hash to CacheCheckResult.
         """
-        cached: set[str] = set()
+        results: dict[str, CacheCheckResult] = {}
         to_check = hashes[:max_checks]
+        checked_count = 0
         for idx, h in enumerate(to_check):
             try:
-                if await self.check_cached(h):
-                    cached.add(h)
+                results[h] = await self.check_cached(h, keep_if_cached=keep_if_cached)
+                checked_count = idx + 1
             except RealDebridRateLimitError:
                 logger.warning(
                     "check_cached_batch: rate limited after %d/%d checks, stopping early",
                     idx, len(to_check),
                 )
+                checked_count = idx
                 break
         logger.info(
             "check_cached_batch: checked %d/%d hashes, %d cached",
-            min(len(to_check), idx + 1) if to_check else 0,
+            checked_count if to_check else 0,
             len(hashes),
-            len(cached),
+            sum(1 for cr in results.values() if cr.cached is True),
         )
-        return cached
+        return results
 
     async def delete_torrent(self, torrent_id: str) -> None:
         """Remove a torrent from the RD account.

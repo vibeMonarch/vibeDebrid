@@ -26,7 +26,7 @@ from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
-from src.services.real_debrid import RealDebridAuthError, RealDebridError
+from src.services.real_debrid import CacheCheckResult, RealDebridAuthError, RealDebridError
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1079,7 @@ class TestSearch:
         with patch(
             "src.api.routes.search.rd_client.check_cached",
             new_callable=AsyncMock,
-            return_value=True,
+            return_value=CacheCheckResult(info_hash="d" * 40, cached=True),
         ):
             resp = await http_no_db.post(
                 "/api/check-cached",
@@ -1098,7 +1098,7 @@ class TestSearch:
         with patch(
             "src.api.routes.search.rd_client.check_cached",
             new_callable=AsyncMock,
-            return_value=False,
+            return_value=CacheCheckResult(info_hash="e" * 40, cached=False),
         ):
             resp = await http_no_db.post(
                 "/api/check-cached",

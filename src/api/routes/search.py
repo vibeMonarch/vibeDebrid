@@ -236,7 +236,8 @@ async def check_cached(body: CheckCachedRequest) -> CheckCachedResponse:
     Returns:
         The hash and its cached status.
     """
-    cached = await rd_client.check_cached(body.info_hash)
+    result = await rd_client.check_cached(body.info_hash, keep_if_cached=False)
+    cached = result.cached is True  # coerce None→False for frontend
     return CheckCachedResponse(info_hash=body.info_hash, cached=cached)
 
 

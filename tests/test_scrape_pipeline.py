@@ -30,6 +30,7 @@ from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
+from src.services.real_debrid import CacheCheckResult
 from src.services.torrentio import TorrentioResult
 from src.services.zilean import ZileanResult
 
@@ -161,6 +162,7 @@ _PATCH_TARGETS = {
     "rd_add": "src.core.scrape_pipeline.rd_client.add_magnet",
     "rd_select": "src.core.scrape_pipeline.rd_client.select_files",
     "rd_check_cached_batch": "src.core.scrape_pipeline.rd_client.check_cached_batch",
+    "rd_delete": "src.core.scrape_pipeline.rd_client.delete_torrent",
     "filter_rank": "src.core.scrape_pipeline.filter_engine.filter_and_rank",
     "queue_transition": "src.core.scrape_pipeline.queue_manager.transition",
 }
@@ -179,6 +181,7 @@ class _Mocks:
     rd_add: AsyncMock
     rd_select: AsyncMock
     rd_check_cached_batch: AsyncMock
+    rd_delete: AsyncMock
     filter_rank: MagicMock
     queue_transition: AsyncMock
 
@@ -238,7 +241,10 @@ async def _all_mocks(
     mocks.rd_select.return_value = None
 
     mocks.rd_check_cached_batch = started["rd_check_cached_batch"]
-    mocks.rd_check_cached_batch.return_value = set()
+    mocks.rd_check_cached_batch.return_value = {}
+
+    mocks.rd_delete = started["rd_delete"]
+    mocks.rd_delete.return_value = None
 
     mocks.filter_rank = started["filter_rank"]
     mocks.filter_rank.return_value = []
@@ -621,7 +627,7 @@ class TestFilteringAndRdCache:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [torrentio_result]
             m.filter_rank.return_value = [filtered]
-            m.rd_check_cached_batch.return_value = {fake_hash}
+            m.rd_check_cached_batch.return_value = {fake_hash: CacheCheckResult(info_hash=fake_hash, cached=True, rd_id="RD_KEPT")}
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
@@ -646,6 +652,49 @@ class TestFilteringAndRdCache:
         call_kwargs = m.filter_rank.call_args[1]
         cached_hashes = call_kwargs.get("cached_hashes") or set()
         assert cached_hashes == set()
+
+    async def test_rerank_called_with_cached_hashes_when_cached_found(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When check_cached_batch finds cached hashes, filter_and_rank is called twice — second time with cached_hashes."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        fake_hash = "c" * 40
+        torrentio_result = _make_torrentio_result(info_hash=fake_hash)
+        filtered = _make_filtered_result(torrentio_result)
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.rd_check_cached_batch.return_value = {
+                fake_hash: CacheCheckResult(info_hash=fake_hash, cached=True, rd_id="RD_KEPT"),
+            }
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        # filter_and_rank should be called twice: first with empty set, then with cached hashes
+        assert m.filter_rank.call_count == 2
+        second_call_kwargs = m.filter_rank.call_args_list[1][1]
+        assert fake_hash in second_call_kwargs.get("cached_hashes", set())
+
+    async def test_rerank_not_called_when_no_cached_results(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When check_cached_batch finds no cached hashes, filter_and_rank is called only once."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        fake_hash = "c" * 40
+        torrentio_result = _make_torrentio_result(info_hash=fake_hash)
+        filtered = _make_filtered_result(torrentio_result)
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.rd_check_cached_batch.return_value = {
+                fake_hash: CacheCheckResult(info_hash=fake_hash, cached=False),
+            }
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        assert m.filter_rank.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +831,55 @@ class TestAddToRd:
             for call in m.queue_transition.call_args_list
         )
         assert adding_called
+
+    async def test_add_magnet_skipped_when_rd_id_from_cache_check(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When cache_results has rd_id for the chosen hash, add_magnet is not called."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        info_hash = "a" * 40
+        torrentio_result = _make_torrentio_result(info_hash=info_hash)
+        filtered = _make_filtered_result(torrentio_result)
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.rd_check_cached_batch.return_value = {
+                info_hash: CacheCheckResult(info_hash=info_hash, cached=True, rd_id="RD_REUSE"),
+            }
+            pipeline = ScrapePipeline()
+            result = await pipeline.run(session, wanted_item)
+
+        m.rd_add.assert_not_called()
+        assert result.action == "added_to_rd"
+        assert result.rd_torrent_id == "RD_REUSE"
+
+    async def test_unused_kept_torrents_cleaned_up(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """Kept torrents that weren't chosen are deleted via cleanup."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        chosen_hash = "a" * 40
+        other_hash = "f" * 40
+        torrentio_result = _make_torrentio_result(info_hash=chosen_hash)
+        filtered = _make_filtered_result(torrentio_result)
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.rd_check_cached_batch.return_value = {
+                chosen_hash: CacheCheckResult(info_hash=chosen_hash, cached=True, rd_id="RD_CHOSEN"),
+                other_hash: CacheCheckResult(info_hash=other_hash, cached=True, rd_id="RD_OTHER"),
+            }
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        # The unused kept torrent (other_hash) should have been deleted
+        m.rd_delete.assert_called()
+        delete_calls = [call.args[0] for call in m.rd_delete.call_args_list]
+        assert "RD_OTHER" in delete_calls
+        # The chosen torrent should NOT be deleted
+        assert "RD_CHOSEN" not in delete_calls
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ from src.core.mount_scanner import mount_scanner
 from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
-from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
+from src.services.real_debrid import CacheCheckResult, RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrentio import TorrentioResult, torrentio_client
 from src.services.zilean import ZileanResult, zilean_client
 
@@ -230,20 +230,36 @@ class ScrapePipeline:
             cached_hashes=set(),
         )
 
-        # Probe RD cache for the top 10 filtered results.
+        # Probe RD cache for the top 10 filtered results, keeping cached
+        # torrents in the RD account to avoid a redundant add_magnet later.
         top_hashes = [
             fr.result.info_hash for fr in ranked[:10] if fr.result.info_hash
         ]
+        cache_results: dict[str, CacheCheckResult] = {}
         cached_set: set[str] = set()
         if top_hashes:
             try:
-                cached_set = await rd_client.check_cached_batch(top_hashes)
+                cache_results = await rd_client.check_cached_batch(
+                    top_hashes, keep_if_cached=True,
+                )
+                cached_set = {
+                    h for h, cr in cache_results.items() if cr.cached is True
+                }
             except Exception as exc:
                 logger.warning(
                     "scrape_pipeline: check_cached_batch failed for item id=%d: %s",
                     item.id,
                     exc,
                 )
+
+        # Re-rank with actual cached hashes if any were found.
+        if cached_set:
+            ranked = filter_engine.filter_and_rank(
+                combined,  # type: ignore[arg-type]
+                profile_name=item.quality_profile,
+                cached_hashes=cached_set,
+            )
+
         logger.debug(
             "scrape_pipeline: %d/%d top results cached for item id=%d",
             len(cached_set),
@@ -297,6 +313,7 @@ class ScrapePipeline:
             item,
             best=best,
             cached_set=cached_set,
+            cache_results=cache_results,
             scrape_results_count=total_count,
             filtered_results_count=filtered_count,
             total_duration_ms=zilean_duration_ms + torrentio_duration_ms,
@@ -681,11 +698,15 @@ class ScrapePipeline:
         *,
         best: FilteredResult,
         cached_set: set[str],
+        cache_results: dict[str, CacheCheckResult],
         scrape_results_count: int,
         filtered_results_count: int,
         total_duration_ms: int,
     ) -> PipelineResult:
         """Add the best-scored result to Real-Debrid and register it locally.
+
+        If the cache check already kept the torrent (rd_id in cache_results),
+        the add_magnet call is skipped and the existing rd_id is reused.
 
         On add_magnet failure: transitions to SLEEPING, returns error result.
         On select_files failure: logs warning but does NOT change state (the
@@ -696,6 +717,7 @@ class ScrapePipeline:
             item: The MediaItem being acquired.
             best: The top-ranked FilteredResult from the filter engine.
             cached_set: Info hashes known to be cached in RD.
+            cache_results: Results from check_cached_batch (may contain rd_ids).
             scrape_results_count: Total raw results count (for PipelineResult).
             filtered_results_count: Filtered results count (for PipelineResult).
             total_duration_ms: Cumulative scraper duration (for scrape_log).
@@ -717,61 +739,75 @@ class ScrapePipeline:
             is_cached,
         )
 
-        # --- add_magnet ---
-        try:
-            add_response = await rd_client.add_magnet(magnet_uri)
-        except RealDebridError as exc:
-            logger.error(
-                "scrape_pipeline: add_magnet failed for item id=%d hash=%s: %s",
-                item.id,
-                info_hash,
-                exc,
+        # --- Reuse rd_id from cache check if available ---
+        existing_cr = cache_results.get(info_hash)
+        rd_id: str = ""
+        if existing_cr and existing_cr.rd_id:
+            rd_id = existing_cr.rd_id
+            logger.info(
+                "scrape_pipeline: reusing kept rd_id=%s from cache check for hash=%s",
+                rd_id, info_hash,
             )
-            await self._log_scrape(
-                session,
-                media_item_id=item.id,
-                scraper="pipeline",
-                query_params=json.dumps(
-                    {"magnet_uri": magnet_uri, "step": "add_magnet"}
-                ),
-                results_count=scrape_results_count,
-                results_summary=None,
-                selected_result=json.dumps({"info_hash": info_hash, "error": str(exc)}),
-                duration_ms=total_duration_ms,
-            )
-            await queue_manager.transition(session, item.id, QueueState.SLEEPING)
-            return PipelineResult(
-                item_id=item.id,
-                action="error",
-                message=f"RD add_magnet failed: {exc}",
-                selected_hash=info_hash,
-                scrape_results_count=scrape_results_count,
-                filtered_results_count=filtered_results_count,
-            )
-        except Exception as exc:
-            logger.error(
-                "scrape_pipeline: unexpected error in add_magnet for item id=%d: %s",
-                item.id,
-                exc,
-                exc_info=True,
-            )
-            await queue_manager.transition(session, item.id, QueueState.SLEEPING)
-            return PipelineResult(
-                item_id=item.id,
-                action="error",
-                message=f"Unexpected error adding magnet: {exc}",
-                selected_hash=info_hash,
-                scrape_results_count=scrape_results_count,
-                filtered_results_count=filtered_results_count,
-            )
+        else:
+            # --- add_magnet ---
+            try:
+                add_response = await rd_client.add_magnet(magnet_uri)
+            except RealDebridError as exc:
+                logger.error(
+                    "scrape_pipeline: add_magnet failed for item id=%d hash=%s: %s",
+                    item.id,
+                    info_hash,
+                    exc,
+                )
+                await self._log_scrape(
+                    session,
+                    media_item_id=item.id,
+                    scraper="pipeline",
+                    query_params=json.dumps(
+                        {"magnet_uri": magnet_uri, "step": "add_magnet"}
+                    ),
+                    results_count=scrape_results_count,
+                    results_summary=None,
+                    selected_result=json.dumps({"info_hash": info_hash, "error": str(exc)}),
+                    duration_ms=total_duration_ms,
+                )
+                await self._cleanup_kept_torrents(cache_results)
+                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                return PipelineResult(
+                    item_id=item.id,
+                    action="error",
+                    message=f"RD add_magnet failed: {exc}",
+                    selected_hash=info_hash,
+                    scrape_results_count=scrape_results_count,
+                    filtered_results_count=filtered_results_count,
+                )
+            except Exception as exc:
+                logger.error(
+                    "scrape_pipeline: unexpected error in add_magnet for item id=%d: %s",
+                    item.id,
+                    exc,
+                    exc_info=True,
+                )
+                await self._cleanup_kept_torrents(cache_results)
+                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                return PipelineResult(
+                    item_id=item.id,
+                    action="error",
+                    message=f"Unexpected error adding magnet: {exc}",
+                    selected_hash=info_hash,
+                    scrape_results_count=scrape_results_count,
+                    filtered_results_count=filtered_results_count,
+                )
 
-        rd_id: str = str(add_response.get("id", ""))
+            rd_id = str(add_response.get("id", ""))
+
         if not rd_id:
             logger.error(
                 "scrape_pipeline: add_magnet returned empty rd_id for item id=%d hash=%s",
                 item.id,
                 info_hash,
             )
+            await self._cleanup_kept_torrents(cache_results)
             await queue_manager.transition(session, item.id, QueueState.SLEEPING)
             return PipelineResult(
                 item_id=item.id,
@@ -781,6 +817,9 @@ class ScrapePipeline:
                 scrape_results_count=scrape_results_count,
                 filtered_results_count=filtered_results_count,
             )
+
+        # Clean up any other kept torrents (not the one we're using)
+        await self._cleanup_kept_torrents(cache_results, exclude_hash=info_hash)
 
         # --- select_files ---
         try:
@@ -939,6 +978,31 @@ class ScrapePipeline:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _cleanup_kept_torrents(
+        cache_results: dict[str, CacheCheckResult],
+        exclude_hash: str | None = None,
+    ) -> None:
+        """Delete any torrents that were kept during cache checking but not chosen.
+
+        Args:
+            cache_results: The cache check results dict.
+            exclude_hash: Info hash of the torrent to keep (the chosen one).
+        """
+        for h, cr in cache_results.items():
+            if cr.rd_id and h != exclude_hash:
+                try:
+                    await rd_client.delete_torrent(cr.rd_id)
+                    logger.debug(
+                        "scrape_pipeline: cleaned up kept torrent rd_id=%s hash=%s",
+                        cr.rd_id, h,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "scrape_pipeline: failed to clean up kept torrent rd_id=%s: %s",
+                        cr.rd_id, exc,
+                    )
 
     @staticmethod
     def _summarise_results(results: list[_AnyResult]) -> list[dict[str, Any]]:
