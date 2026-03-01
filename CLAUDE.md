@@ -71,7 +71,14 @@ When fixing a bug:
 - Port 5100 for web UI
 - SQLite database stored in a mounted volume for persistence
 
-## Sub-Agent Routing Rules
+### Orchestration Rules
+
+**NEVER execute implementation tasks directly.** Instead:
+1. Analyze the request and create a plan
+2. Delegate execution to the appropriate subagent(s)
+
+### Sub-Agent Routing Rules
+Check the .claude/agents descriptions before deciding which agents to route the task. If no fitting agent available, do the planning yourself.
 
 **Parallel dispatch** (ALL conditions must be met):
 - 3+ unrelated tasks or independent domains

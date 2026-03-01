@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-02-28
+## Last Updated: 2026-03-01
 
 ## Completed
 
@@ -51,11 +51,19 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 602 tests, all passing**
+**Total: 675 tests, all passing**
+
+### Season Pack Support ✅
+- is_season_pack column on MediaItem with DB migration
+- Search UI: Season/Episode columns, "Full" badge for season packs
+- Season pack add sets episode=None, symlinks ALL episodes (not just searched one)
+- Per-episode dedup: groups mount matches by episode, picks best resolution
+- Partial-failure tolerance in symlink loop (skips broken, retries if all fail)
+- Scrape pipeline allows season packs through Torrentio (episode=1 anchor)
+- 25 new tests
 
 ## Next Steps (In Order)
-
-
+### Step 0: Bugfixes and improvements
 
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
