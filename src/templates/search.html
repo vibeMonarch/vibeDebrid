@@ -509,7 +509,7 @@
 
     wrapper.innerHTML = `
       <!-- Desktop table-like row -->
-      <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
+      <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
 
         <!-- Title + badges -->
         <div class="min-w-0">
@@ -520,6 +520,19 @@
             ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${escapeHtml(item.quality)}</span>` : ''}
             ${item.is_season_pack ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Season Pack</span>` : ''}
           </div>
+        </div>
+
+        <!-- Season -->
+        <div class="text-center">
+          <span class="text-sm text-gray-300 tabular-nums">${item.season != null ? 'S' + String(item.season).padStart(2, '0') : '—'}</span>
+        </div>
+
+        <!-- Episode -->
+        <div class="text-center">
+          ${item.is_season_pack
+            ? '<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Full</span>'
+            : `<span class="text-sm text-gray-300 tabular-nums">${item.episode != null ? 'E' + String(item.episode).padStart(2, '0') : '—'}</span>`
+          }
         </div>
 
         <!-- Size -->
@@ -561,6 +574,9 @@
                    bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                    focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-1 focus:ring-offset-vd-card"
             data-hash="${escapeHtml(item.info_hash)}"
+            data-season="${item.season}"
+            data-episode="${item.episode}"
+            data-season-pack="${item.is_season_pack}"
           >
             <svg class="add-icon w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -591,6 +607,7 @@
         <!-- Stats row -->
         <div class="flex items-center gap-4 text-xs text-vd-muted flex-wrap">
           <span>${escapeHtml(sizeFormatted)}</span>
+          ${item.season != null ? `<span class="text-gray-300">${'S' + String(item.season).padStart(2, '0')}${item.is_season_pack ? ' Full Season' : (item.episode != null ? 'E' + String(item.episode).padStart(2, '0') : '')}</span>` : ''}
           <span class="${item.seeders > 50 ? 'text-green-400' : item.seeders > 10 ? 'text-yellow-400' : 'text-red-400'}">${item.seeders ?? '—'} seeders</span>
         </div>
 
@@ -612,6 +629,9 @@
                  bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                  focus:outline-none focus:ring-2 focus:ring-vd-accent"
           data-hash="${escapeHtml(item.info_hash)}"
+          data-season="${item.season}"
+          data-episode="${item.episode}"
+          data-season-pack="${item.is_season_pack}"
         >
           <svg class="add-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -637,14 +657,19 @@
     const infoHash = btn.dataset.hash;
     if (!infoHash || !_lastSearchPayload) return;
 
+    const isSeasonPack = btn.dataset.seasonPack === 'true';
+    const season = btn.dataset.season !== 'null' && btn.dataset.season !== 'undefined' ? parseInt(btn.dataset.season, 10) : null;
+    const episode = isSeasonPack ? null : (btn.dataset.episode !== 'null' && btn.dataset.episode !== 'undefined' ? parseInt(btn.dataset.episode, 10) : null);
+
     const payload = {
       magnet_or_hash:  infoHash,
       title:           _lastSearchPayload.query,
       imdb_id:         _lastSearchPayload.imdb_id || null,
       media_type:      _lastSearchPayload.media_type,
       year:            null,
-      season:          _lastSearchPayload.season || null,
-      episode:         _lastSearchPayload.episode || null,
+      season:          season,
+      episode:         episode,
+      is_season_pack:  isSeasonPack,
       quality_profile: _lastSearchPayload.quality_profile,
     };
 

@@ -158,26 +158,80 @@ async def _job_queue_processor() -> None:
 
         for item in checking_items:
             try:
-                matches = await mount_scanner.lookup(
-                    session,
-                    title=item.title,
-                    season=item.season,
-                    episode=item.episode,
-                )
-                if not matches:
-                    logger.info(
-                        "CHECKING item id=%d title=%r not found in mount yet, will retry next cycle",
-                        item.id, item.title,
+                if item.is_season_pack:
+                    # Season packs: look up ALL episodes (episode=None) and symlink each match
+                    matches = await mount_scanner.lookup(
+                        session,
+                        title=item.title,
+                        season=item.season,
+                        episode=None,
                     )
-                    continue
+                    if not matches:
+                        logger.info(
+                            "CHECKING season pack id=%d title=%r not found in mount yet, will retry next cycle",
+                            item.id, item.title,
+                        )
+                        continue
 
-                # Use the first (most recent) match
-                source_path = matches[0].filepath
-                logger.info(
-                    "CHECKING item id=%d found in mount: %s", item.id, source_path,
-                )
+                    # Deduplicate: pick one file per episode
+                    _RES_RANK = {"2160p": 4, "1080p": 3, "720p": 2, "480p": 1}
+                    by_episode: dict[int | None, list] = {}
+                    for m in matches:
+                        by_episode.setdefault(m.parsed_episode, []).append(m)
 
-                await symlink_manager.create_symlink(session, item, source_path)
+                    best_per_episode = []
+                    for ep, ep_matches in sorted(by_episode.items(), key=lambda x: (x[0] is None, x[0])):
+                        def _sort_key(m):
+                            res = m.parsed_resolution
+                            if item.requested_resolution and res == item.requested_resolution:
+                                preferred = 1  # boost exact match
+                            else:
+                                preferred = 0
+                            return (preferred, _RES_RANK.get(res, 0), m.filesize or 0)
+                        best = max(ep_matches, key=_sort_key)
+                        best_per_episode.append(best)
+
+                    logger.info(
+                        "CHECKING season pack id=%d: %d mount matches deduplicated to %d episodes",
+                        item.id, len(matches), len(best_per_episode),
+                    )
+                    created = 0
+                    for match in best_per_episode:
+                        try:
+                            await symlink_manager.create_symlink(session, item, match.filepath)
+                            created += 1
+                        except Exception:
+                            logger.warning(
+                                "CHECKING season pack id=%d: failed to symlink %s, skipping",
+                                item.id, match.filepath,
+                            )
+                    if created == 0:
+                        logger.warning(
+                            "CHECKING season pack id=%d: all %d symlinks failed, will retry next cycle",
+                            item.id, len(best_per_episode),
+                        )
+                        continue
+                else:
+                    # Single episode/movie: use the first (most recent) match
+                    matches = await mount_scanner.lookup(
+                        session,
+                        title=item.title,
+                        season=item.season,
+                        episode=item.episode,
+                    )
+                    if not matches:
+                        logger.info(
+                            "CHECKING item id=%d title=%r not found in mount yet, will retry next cycle",
+                            item.id, item.title,
+                        )
+                        continue
+
+                    source_path = matches[0].filepath
+                    logger.info(
+                        "CHECKING item id=%d found in mount: %s", item.id, source_path,
+                    )
+                    await symlink_manager.create_symlink(session, item, source_path)
+
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
             except Exception:
                 logger.exception(

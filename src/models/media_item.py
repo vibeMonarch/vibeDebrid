@@ -6,7 +6,7 @@ import enum
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, Enum, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
@@ -45,6 +45,7 @@ class MediaItem(Base):
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), nullable=False)
     season: Mapped[int | None] = mapped_column(Integer, nullable=True)
     episode: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_season_pack: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     state: Mapped[QueueState] = mapped_column(
         Enum(QueueState), nullable=False, default=QueueState.WANTED, index=True
     )

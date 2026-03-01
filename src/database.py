@@ -45,10 +45,28 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+async def _migrate_add_columns() -> None:
+    """Add columns introduced after initial schema creation."""
+    async with engine.begin() as conn:
+        # is_season_pack (added for season pack feature)
+        try:
+            await conn.execute(
+                text("ALTER TABLE media_items ADD COLUMN is_season_pack BOOLEAN NOT NULL DEFAULT 0")
+            )
+            logger.info("Migration: added is_season_pack column")
+        except Exception as exc:
+            if "duplicate column" in str(exc).lower():
+                pass  # Column already exists
+            else:
+                logger.warning("Migration: failed to add is_season_pack column: %s", exc)
+
+
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    await _migrate_add_columns()
 
     # Verify WAL mode
     async with async_session() as session:

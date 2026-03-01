@@ -637,8 +637,8 @@ class ScrapePipeline:
                     exc,
                 )
         else:
-            # SHOW — requires season and episode
-            if item.season is None or item.episode is None:
+            # SHOW — requires at least a season number
+            if item.season is None:
                 logger.warning(
                     "scrape_pipeline: item id=%d is a SHOW but season=%s episode=%s "
                     "— cannot scrape without both values",
@@ -648,7 +648,7 @@ class ScrapePipeline:
                 )
                 return results, 0
             season = item.season
-            episode = item.episode
+            episode = item.episode if item.episode is not None else 1
             query_params = json.dumps(
                 {
                     "imdb_id": item.imdb_id,

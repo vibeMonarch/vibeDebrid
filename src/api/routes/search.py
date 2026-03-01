@@ -50,6 +50,8 @@ class SearchResultItem(BaseModel):
     size_bytes: int | None = None
     seeders: int | None = None
     is_season_pack: bool = False
+    season: int | None = None
+    episode: int | None = None
     cached: bool | None = None  # True=cached, False=not cached, None=unchecked
     score: float = 0.0
     score_breakdown: dict[str, float] = {}
@@ -86,6 +88,7 @@ class AddRequest(BaseModel):
     year: int | None = None
     season: int | None = None
     episode: int | None = None
+    is_season_pack: bool = False
     quality_profile: str | None = None
 
 
@@ -208,6 +211,8 @@ async def search(body: SearchRequest) -> SearchResponse:
             size_bytes=fr.result.size_bytes,
             seeders=fr.result.seeders,
             is_season_pack=fr.result.is_season_pack,
+            season=fr.result.season,
+            episode=fr.result.episode,
             cached=None,  # checked async by frontend via /api/check-cached
             score=fr.score,
             score_breakdown=fr.score_breakdown,
@@ -293,6 +298,12 @@ async def add_torrent(
             detail=f"Invalid media_type '{body.media_type}': must be 'movie' or 'show'",
         )
 
+    if body.is_season_pack and body.season is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Season packs require a season number",
+        )
+
     # Always create the MediaItem first in ADDING state.  If the RD call
     # fails we fall back to WANTED so the pipeline can pick it up later.
     item = MediaItem(
@@ -301,7 +312,8 @@ async def add_torrent(
         year=body.year,
         media_type=media_type,
         season=body.season,
-        episode=body.episode,
+        episode=None if body.is_season_pack else body.episode,
+        is_season_pack=body.is_season_pack,
         state=QueueState.ADDING,
         state_changed_at=datetime.now(UTC),
         quality_profile=body.quality_profile,
