@@ -110,6 +110,9 @@ _ILLEGAL_CHARS_RE = re.compile(r'[/\\*?"<>|]')
 # Collapse multiple consecutive spaces or dashes into a single instance.
 _MULTI_SPACE_RE = re.compile(r" {2,}")
 _MULTI_DASH_RE = re.compile(r"-{2,}")
+# Used by _find_existing_show_dir to strip decorations before exact matching.
+_TIMESTAMP_PREFIX_RE = re.compile(r"^\d{12}\s+")
+_RESOLUTION_SUFFIX_RE = re.compile(r"\s+\d{3,4}p$", re.IGNORECASE)
 
 
 def sanitize_name(name: str) -> str:
@@ -151,48 +154,93 @@ def sanitize_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_movie_dir(title: str, year: int | None) -> str:
-    """Build the organized library directory path for a movie.
+def _format_timestamp() -> str:
+    """Return current local time as YYYYMMDDHHMM string for user-facing paths."""
+    # Local time is intentional: directory names are user-facing, so they
+    # should reflect the user's clock rather than UTC.
+    return datetime.now().strftime("%Y%m%d%H%M")
 
-    Uses ``settings.paths.library_movies`` as the base.  The returned path
-    is always absolute.
+
+def _find_existing_show_dir(library_shows: str, core_name: str) -> str | None:
+    """Scan library_shows for a directory matching core_name (case-insensitive).
+
+    Strips any 12-digit timestamp prefix and resolution suffix before comparing.
+    Returns the existing directory name or None.
+    """
+    try:
+        entries = os.listdir(library_shows)
+    except FileNotFoundError:
+        return None
+    lower_core = core_name.lower()
+    for entry in entries:
+        stripped = _TIMESTAMP_PREFIX_RE.sub("", entry)
+        stripped = _RESOLUTION_SUFFIX_RE.sub("", stripped)
+        if stripped.lower() == lower_core:
+            full_path = os.path.join(library_shows, entry)
+            if os.path.isdir(full_path):
+                return entry
+    return None
+
+
+def build_movie_dir(title: str, year: int | None, resolution: str | None = None) -> str:
+    """Build the organized library directory path for a movie.
 
     Args:
         title: Movie title (will be sanitized).
         year: Release year, or None when unknown.
+        resolution: Requested resolution (e.g. "2160p"), included when enabled.
 
     Returns:
-        Absolute path like ``/path/to/library/movies/Movie Name (2024)``
-        or ``/path/to/library/movies/Movie Name`` when year is None.
+        Absolute path like ``/path/to/library/movies/202603011430 Movie Name (2024) 2160p``
     """
+    naming = settings.symlink_naming
     safe_title = sanitize_name(title)
-    if year is not None:
-        dir_name = f"{safe_title} ({year})"
-    else:
-        dir_name = safe_title
+    parts: list[str] = []
+    if naming.date_prefix:
+        parts.append(_format_timestamp())
+    parts.append(safe_title)
+    if naming.release_year and year is not None:
+        parts.append(f"({year})")
+    if naming.resolution and resolution:
+        parts.append(resolution)
+    dir_name = " ".join(parts)
     return os.path.join(settings.paths.library_movies, dir_name)
 
 
-def build_show_dir(title: str, year: int | None, season: int) -> str:
+def build_show_dir(title: str, year: int | None, season: int, resolution: str | None = None) -> str:
     """Build the organized library directory path for a show episode.
-
-    Uses ``settings.paths.library_shows`` as the base.  The returned path
-    is always absolute.
 
     Args:
         title: Show title (will be sanitized).
         year: First-air year, or None when unknown.
         season: Season number (zero-padded to two digits in the output).
+        resolution: Requested resolution (e.g. "2160p"), included when enabled.
 
     Returns:
-        Absolute path like ``/path/to/library/shows/Show Name (2024)/Season 01``
-        or ``/path/to/library/shows/Show Name/Season 01`` when year is None.
+        Absolute path like ``/path/to/library/shows/202603011430 Show Name (2024)/Season 01``
     """
+    naming = settings.symlink_naming
     safe_title = sanitize_name(title)
-    if year is not None:
-        show_dir = f"{safe_title} ({year})"
+
+    # Build core_name for matching existing directories
+    core_parts: list[str] = [safe_title]
+    if naming.release_year and year is not None:
+        core_parts.append(f"({year})")
+    core_name = " ".join(core_parts)
+
+    # Check for existing show directory first
+    existing = _find_existing_show_dir(settings.paths.library_shows, core_name)
+    if existing is not None:
+        show_dir = existing
     else:
-        show_dir = safe_title
+        parts: list[str] = []
+        if naming.date_prefix:
+            parts.append(_format_timestamp())
+        parts.append(core_name)
+        if naming.resolution and resolution:
+            parts.append(resolution)
+        show_dir = " ".join(parts)
+
     season_dir = f"Season {season:02d}"
     return os.path.join(settings.paths.library_shows, show_dir, season_dir)
 
@@ -259,13 +307,18 @@ class SymlinkManager:
 
         # --- Step 2: determine target directory ---
         if media_item.media_type == MediaType.MOVIE:
-            target_dir = build_movie_dir(media_item.title, media_item.year)
+            target_dir = build_movie_dir(media_item.title, media_item.year, media_item.requested_resolution)
         else:
             season = media_item.season if media_item.season is not None else 1
-            target_dir = build_show_dir(media_item.title, media_item.year, season)
+            target_dir = await asyncio.to_thread(
+                build_show_dir, media_item.title, media_item.year, season, media_item.requested_resolution
+            )
 
         # --- Step 3: build full target symlink path ---
         filename = os.path.basename(source_path)
+        # For shows with date_prefix enabled, prefix the episode filename
+        if media_item.media_type == MediaType.SHOW and settings.symlink_naming.date_prefix:
+            filename = f"{_format_timestamp()} {filename}"
         target_path = os.path.join(target_dir, filename)
 
         logger.debug(

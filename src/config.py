@@ -142,6 +142,12 @@ class SchedulerConfig(BaseModel):
     unreleased_check_minutes: int = 360
 
 
+class SymlinkNamingConfig(BaseModel):
+    date_prefix: bool = True
+    release_year: bool = True
+    resolution: bool = False
+
+
 # --- Main settings ---
 
 
@@ -178,6 +184,7 @@ class Settings(BaseSettings):
     server: ServerConfig = ServerConfig()
     backup: BackupConfig = BackupConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
+    symlink_naming: SymlinkNamingConfig = SymlinkNamingConfig()
 
     @classmethod
     def load(cls) -> "Settings":

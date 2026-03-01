@@ -148,5 +148,10 @@
         "interval_hours": 24,
         "max_backups": 7,
         "backup_dir": "./backups"
+    },
+    "symlink_naming": {
+        "date_prefix": true,
+        "release_year": true,
+        "resolution": false
     }
 }

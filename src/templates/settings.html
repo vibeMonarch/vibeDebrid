@@ -507,6 +507,78 @@
     </div>
   </div>
 
+
+  <!-- Symlink Naming section (collapsed by default) -->
+  <div id="section-symlink-naming" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('symlink-naming')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+        </svg>
+        <span class="font-semibold text-white">Symlink Naming</span>
+      </div>
+      <svg id="chevron-symlink-naming" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-symlink-naming" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm text-gray-400" for="sn-date-prefix">Date Prefix</label>
+                <p class="text-xs text-vd-muted">Add YYYYMMDDHHMM timestamp to folder names</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer ml-4">
+                <input type="checkbox" id="sn-date-prefix" class="toggle-input sr-only" onchange="updateNamingPreview()">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+            </div>
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm text-gray-400" for="sn-release-year">Release Year</label>
+                <p class="text-xs text-vd-muted">Include year in parentheses, e.g. (2024)</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer ml-4">
+                <input type="checkbox" id="sn-release-year" class="toggle-input sr-only" onchange="updateNamingPreview()">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+            </div>
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm text-gray-400" for="sn-resolution">Resolution</label>
+                <p class="text-xs text-vd-muted">Include resolution in folder name, e.g. 2160p</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer ml-4">
+                <input type="checkbox" id="sn-resolution" class="toggle-input sr-only" onchange="updateNamingPreview()">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div id="naming-preview" class="bg-vd-bg border border-vd-border rounded-lg p-3 font-mono text-xs text-gray-300 space-y-1"></div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('symlink_naming')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Symlink Naming
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- #settings-form -->
 {% endblock %}
 
@@ -625,6 +697,13 @@
     setField('retry-dormant-days', retry.dormant_recheck_days != null ? retry.dormant_recheck_days : '');
     setField('retry-max-active',   retry.max_active_retries   != null ? retry.max_active_retries   : '');
 
+    // Symlink Naming
+    const sn = s.symlink_naming || {};
+    setToggle('sn-date-prefix',  sn.date_prefix !== false);
+    setToggle('sn-release-year', sn.release_year !== false);
+    setToggle('sn-resolution',   sn.resolution === true);
+    updateNamingPreview();
+
     // Server
     const server = s.server || {};
     setField('server-host', server.host || '');
@@ -740,6 +819,15 @@
           }
         };
       }
+      case 'symlink_naming': {
+        return {
+          symlink_naming: {
+            date_prefix:  getToggle('sn-date-prefix'),
+            release_year: getToggle('sn-release-year'),
+            resolution:   getToggle('sn-resolution'),
+          }
+        };
+      }
       default:
         return {};
     }
@@ -835,6 +923,44 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Symlink naming live preview
+  // ---------------------------------------------------------------------------
+  function updateNamingPreview() {
+    const preview = document.getElementById('naming-preview');
+    if (!preview) return;
+    const dp = getToggle('sn-date-prefix');
+    const ry = getToggle('sn-release-year');
+    const res = getToggle('sn-resolution');
+    const now = new Date();
+    const ts = String(now.getFullYear())
+      + String(now.getMonth() + 1).padStart(2, '0')
+      + String(now.getDate()).padStart(2, '0')
+      + String(now.getHours()).padStart(2, '0')
+      + String(now.getMinutes()).padStart(2, '0');
+
+    // Movie example
+    let movieParts = [];
+    if (dp) movieParts.push(ts);
+    movieParts.push('The Matrix');
+    if (ry) movieParts.push('(1999)');
+    if (res) movieParts.push('2160p');
+    const movieDir = movieParts.join(' ');
+
+    // Show example
+    let showParts = [];
+    if (dp) showParts.push(ts);
+    showParts.push('Breaking Bad');
+    if (ry) showParts.push('(2008)');
+    if (res) showParts.push('1080p');
+    const showDir = showParts.join(' ');
+    const epPrefix = dp ? ts + ' ' : '';
+
+    preview.innerHTML =
+      '<div>movies/' + escapeHtml(movieDir) + '/The.Matrix.1999.2160p.mkv</div>' +
+      '<div>shows/' + escapeHtml(showDir) + '/Season 01/' + epPrefix + 'Breaking.Bad.S01E01.mkv</div>';
   }
 
   // ---------------------------------------------------------------------------

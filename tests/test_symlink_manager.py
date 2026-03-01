@@ -36,11 +36,14 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import SymlinkNamingConfig
 from src.core.symlink_manager import (
     SourceNotFoundError,
     SymlinkCreationError,
     SymlinkManager,
     VerifyResult,
+    _find_existing_show_dir,
+    _format_timestamp,
     build_movie_dir,
     build_show_dir,
     sanitize_name,
@@ -48,6 +51,10 @@ from src.core.symlink_manager import (
 )
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
+
+# Naming config with date_prefix disabled — used in tests that assert exact
+# path equality so they are not coupled to the timestamp feature.
+_NAMING_NO_PREFIX = SymlinkNamingConfig(date_prefix=False, release_year=True, resolution=False)
 
 
 # ---------------------------------------------------------------------------
@@ -110,17 +117,6 @@ def _make_source_file(mount_dir: str, filename: str = "video.mkv") -> str:
     path = os.path.join(mount_dir, filename)
     Path(path).write_bytes(b"fake video content")
     return path
-
-
-def _make_settings_patch(library_paths: dict[str, str]):
-    """Return a context-manager that patches settings.paths for symlink_manager."""
-    return patch(
-        "src.core.symlink_manager.settings",
-        **{
-            "paths.library_movies": library_paths["movies"],
-            "paths.library_shows": library_paths["shows"],
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +261,7 @@ class TestBuildMovieDir:
         """Title and year produce 'Title (Year)' directory under library_movies."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_movie_dir("Test Movie", 2024)
         expected = os.path.join(library_paths["movies"], "Test Movie (2024)")
         assert result == expected
@@ -273,6 +270,7 @@ class TestBuildMovieDir:
         """When year is None the directory is just the sanitized title."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_movie_dir("Test Movie", None)
         expected = os.path.join(library_paths["movies"], "Test Movie")
         assert result == expected
@@ -281,6 +279,7 @@ class TestBuildMovieDir:
         """Illegal filesystem characters in the title are sanitized."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_movie_dir("Batman: The Movie", 2022)
         assert ":" not in result
         assert "Batman" in result
@@ -290,6 +289,7 @@ class TestBuildMovieDir:
         """The returned path is absolute (starts with '/')."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_movie_dir("Any Title", 2020)
         assert os.path.isabs(result)
 
@@ -297,6 +297,7 @@ class TestBuildMovieDir:
         """The path is rooted at settings.paths.library_movies."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_movie_dir("Some Movie", 2023)
         assert result.startswith(library_paths["movies"])
 
@@ -313,6 +314,7 @@ class TestBuildShowDir:
         """Title, year, and season produce the full expected directory path."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_show_dir("Test Show", 2024, 3)
         expected = os.path.join(
             library_paths["shows"], "Test Show (2024)", "Season 03"
@@ -323,6 +325,7 @@ class TestBuildShowDir:
         """Season 1 becomes 'Season 01' (zero-padded to two digits)."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_show_dir("Show", 2020, 1)
         assert "Season 01" in result
 
@@ -330,6 +333,7 @@ class TestBuildShowDir:
         """Season 12 becomes 'Season 12' (already two digits)."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_show_dir("Show", 2020, 12)
         assert "Season 12" in result
 
@@ -337,6 +341,7 @@ class TestBuildShowDir:
         """When year is None the directory is 'Title/Season XX'."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_show_dir("No Year Show", None, 1)
         assert "No Year Show" in result
         assert "Season 01" in result
@@ -347,6 +352,7 @@ class TestBuildShowDir:
         """The returned path is absolute."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_show_dir("Show", 2021, 2)
         assert os.path.isabs(result)
 
@@ -354,6 +360,7 @@ class TestBuildShowDir:
         """The path is rooted at settings.paths.library_shows."""
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = build_show_dir("Show", 2021, 2)
         assert result.startswith(library_paths["shows"])
 
@@ -375,6 +382,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert os.path.islink(result.target_path)
 
@@ -387,6 +395,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert os.path.isdir(os.path.dirname(result.target_path))
 
@@ -399,6 +408,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert os.readlink(result.target_path) == source
 
@@ -411,6 +421,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert result.id is not None
         assert result.source_path == source
@@ -426,6 +437,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert isinstance(result, Symlink)
 
@@ -438,6 +450,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             with pytest.raises(SourceNotFoundError):
                 await manager.create_symlink(session, movie_item, nonexistent)
 
@@ -451,6 +464,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             # Create initial symlink pointing to old source
             first = await manager.create_symlink(session, movie_item, old_source)
             stale_target = first.target_path
@@ -476,6 +490,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             second = await manager.create_symlink(session, new_item, second_source)
 
         assert os.readlink(second.target_path) == second_source
@@ -489,6 +504,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert "Test Movie" in result.target_path
         assert "2024" in result.target_path
@@ -503,6 +519,7 @@ class TestCreateSymlinkMovie:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, movie_item, source)
         assert os.path.basename(result.target_path) == filename
 
@@ -524,6 +541,7 @@ class TestCreateSymlinkShow:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, show_item, source)
         assert "Season 02" in result.target_path
 
@@ -543,15 +561,15 @@ class TestCreateSymlinkShow:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, show_item, source)
-        parts = Path(result.target_path).parts
         # library_shows root should appear in the path
         assert result.target_path.startswith(library_paths["shows"])
         # Title (Year) segment
         assert "Test Show (2023)" in result.target_path
         # Season segment
         assert "Season 02" in result.target_path
-        # Filename preserved
+        # Filename preserved (date_prefix=False so no timestamp prepended)
         assert os.path.basename(result.target_path) == filename
 
     async def test_season_none_defaults_to_season_01(
@@ -575,6 +593,7 @@ class TestCreateSymlinkShow:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, item, source)
         assert "Season 01" in result.target_path
 
@@ -587,6 +606,7 @@ class TestCreateSymlinkShow:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, show_item, source)
         assert result.media_item_id == show_item.id
         assert result.source_path == source
@@ -1051,6 +1071,7 @@ class TestEdgeCases:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             with pytest.raises(SourceNotFoundError) as exc_info:
                 await manager.create_symlink(session, movie_item, missing)
         assert exc_info.value.source_path == missing
@@ -1097,7 +1118,332 @@ class TestEdgeCases:
         with patch("src.core.symlink_manager.settings") as mock_settings:
             mock_settings.paths.library_movies = library_paths["movies"]
             mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
             result = await manager.create_symlink(session, item, source)
         # Path should not contain a parenthesised year like "(None)"
         assert "(None)" not in result.target_path
         assert "Timeless Film" in result.target_path
+
+
+# ---------------------------------------------------------------------------
+# Group 10: TestBuildMovieDirNaming
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMovieDirNaming:
+    """Test build_movie_dir with all combinations of SymlinkNamingConfig flags."""
+
+    def test_all_enabled(self, library_paths: dict[str, str]) -> None:
+        """All three flags on: timestamp, year, and resolution appear in dir name."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=True, resolution=True)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", 2024, "2160p")
+        expected = os.path.join(library_paths["movies"], "202603011430 Test Movie (2024) 2160p")
+        assert result == expected
+
+    def test_date_prefix_only(self, library_paths: dict[str, str]) -> None:
+        """Only date_prefix=True: dir name is '<timestamp> <title>' with no year or resolution."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=False, resolution=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", 2024, "2160p")
+        expected = os.path.join(library_paths["movies"], "202603011430 Test Movie")
+        assert result == expected
+
+    def test_year_only(self, library_paths: dict[str, str]) -> None:
+        """Only release_year=True: dir name is '<title> (<year>)' — original behavior."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=True, resolution=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", 2024, "2160p")
+        expected = os.path.join(library_paths["movies"], "Test Movie (2024)")
+        assert result == expected
+
+    def test_resolution_only(self, library_paths: dict[str, str]) -> None:
+        """Only resolution=True: dir name is '<title> <resolution>'."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=False, resolution=True)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", 2024, "2160p")
+        expected = os.path.join(library_paths["movies"], "Test Movie 2160p")
+        assert result == expected
+
+    def test_all_disabled(self, library_paths: dict[str, str]) -> None:
+        """All flags off: dir name is exactly the sanitized title, nothing else."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=False, resolution=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", 2024, "2160p")
+        expected = os.path.join(library_paths["movies"], "Test Movie")
+        assert result == expected
+
+    def test_no_year_provided(self, library_paths: dict[str, str]) -> None:
+        """release_year=True but year=None: no '(None)' and no stray parentheses in dir name."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=True, resolution=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", None)
+        assert "(None)" not in result
+        assert "Test Movie" in result
+        # No trailing/leading spaces in the dir name component
+        dir_name = os.path.basename(result)
+        assert dir_name == dir_name.strip()
+
+    def test_no_resolution_provided(self, library_paths: dict[str, str]) -> None:
+        """resolution=True but resolution=None: no trailing space or 'None' in dir name."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=False, resolution=True)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = naming
+            result = build_movie_dir("Test Movie", 2024, None)
+        dir_name = os.path.basename(result)
+        assert "None" not in dir_name
+        assert dir_name == dir_name.strip()
+        assert dir_name == "Test Movie"
+
+
+# ---------------------------------------------------------------------------
+# Group 11: TestBuildShowDirNaming
+# ---------------------------------------------------------------------------
+
+
+class TestBuildShowDirNaming:
+    """Test build_show_dir with SymlinkNamingConfig flags and existing-dir reuse."""
+
+    def test_all_enabled_new_show(self, library_paths: dict[str, str]) -> None:
+        """All flags on, no existing dir: path is '<timestamp> <title> (<year>)/Season XX'."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=True, resolution=True)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"), \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = build_show_dir("Test Show", 2023, 2, "2160p")
+        expected = os.path.join(
+            library_paths["shows"], "202603011430 Test Show (2023) 2160p", "Season 02"
+        )
+        assert result == expected
+
+    def test_existing_show_reused(self, library_paths: dict[str, str]) -> None:
+        """When an existing show dir is found, it is reused instead of creating a new timestamped one."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=True, resolution=False)
+        existing_dir_name = "202601011200 Test Show (2023)"
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"), \
+             patch(
+                 "src.core.symlink_manager._find_existing_show_dir",
+                 return_value=existing_dir_name,
+             ):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = build_show_dir("Test Show", 2023, 3)
+        expected = os.path.join(library_paths["shows"], existing_dir_name, "Season 03")
+        assert result == expected
+        # The new timestamp must NOT appear — the old dir was reused
+        assert "202603011430" not in result
+
+    def test_season_dir_never_has_timestamp(self, library_paths: dict[str, str]) -> None:
+        """The Season XX directory component never contains a timestamp regardless of date_prefix."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=True, resolution=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"), \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = build_show_dir("Test Show", 2023, 1)
+        # The last path component must be the plain season directory
+        season_component = os.path.basename(result)
+        assert season_component == "Season 01"
+        assert "202603011430" not in season_component
+
+    def test_date_prefix_off(self, library_paths: dict[str, str]) -> None:
+        """date_prefix=False: no timestamp in the show directory name."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=True, resolution=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"), \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = build_show_dir("Test Show", 2023, 4)
+        expected = os.path.join(library_paths["shows"], "Test Show (2023)", "Season 04")
+        assert result == expected
+        assert "202603011430" not in result
+
+
+# ---------------------------------------------------------------------------
+# Group 12: TestFindExistingShowDir
+# ---------------------------------------------------------------------------
+
+
+class TestFindExistingShowDir:
+    """Unit tests for _find_existing_show_dir using a real tmp_path filesystem."""
+
+    def test_match_with_timestamp(self, tmp_path: Path) -> None:
+        """A dir named '<timestamp> <core_name>' is found when searching by core_name."""
+        dir_name = "202603011430 Breaking Bad (2008)"
+        (tmp_path / dir_name).mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Breaking Bad (2008)")
+        assert result == dir_name
+
+    def test_match_without_timestamp(self, tmp_path: Path) -> None:
+        """A dir named exactly '<core_name>' is found when there is no timestamp prefix."""
+        dir_name = "Breaking Bad (2008)"
+        (tmp_path / dir_name).mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Breaking Bad (2008)")
+        assert result == dir_name
+
+    def test_case_insensitive(self, tmp_path: Path) -> None:
+        """Matching is case-insensitive: a lowercase dir matches a mixed-case core_name."""
+        dir_name = "breaking bad (2008)"
+        (tmp_path / dir_name).mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Breaking Bad (2008)")
+        assert result == dir_name
+
+    def test_missing_dir_returns_none(self, tmp_path: Path) -> None:
+        """When library_shows does not exist, the function returns None without raising."""
+        nonexistent = str(tmp_path / "no_such_library")
+        result = _find_existing_show_dir(nonexistent, "Breaking Bad (2008)")
+        assert result is None
+
+    def test_no_match_returns_none(self, tmp_path: Path) -> None:
+        """A library containing unrelated shows returns None for a different core_name."""
+        (tmp_path / "Something Else (2020)").mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Breaking Bad (2008)")
+        assert result is None
+
+    def test_ignores_files(self, tmp_path: Path) -> None:
+        """A regular file whose name contains core_name is not returned — only directories match."""
+        core_name = "Breaking Bad (2008)"
+        # Create a plain file (not a directory) whose name contains the core_name
+        (tmp_path / core_name).write_text("not a directory")
+        result = _find_existing_show_dir(str(tmp_path), core_name)
+        assert result is None
+
+    def test_does_not_match_longer_title(self, tmp_path: Path) -> None:
+        """A directory with a longer title should not be matched."""
+        (tmp_path / "The Matrix Reloaded (2003)").mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "The Matrix (1999)")
+        assert result is None
+
+    def test_matches_with_resolution_suffix(self, tmp_path: Path) -> None:
+        """A directory with a resolution suffix should still match."""
+        (tmp_path / "202603011430 Breaking Bad (2008) 1080p").mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Breaking Bad (2008)")
+        assert result == "202603011430 Breaking Bad (2008) 1080p"
+
+
+# ---------------------------------------------------------------------------
+# Group 13: TestCreateSymlinkEpisodeTimestamp
+# ---------------------------------------------------------------------------
+
+
+class TestCreateSymlinkEpisodeTimestamp:
+    """Test that create_symlink prefixes episode filenames with a timestamp for shows."""
+
+    async def test_show_episode_gets_timestamp_prefix(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """With date_prefix=True, the episode filename starts with the timestamp."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=True, resolution=False)
+        item = MediaItem(
+            imdb_id="tt7654321",
+            title="Test Show",
+            year=2023,
+            media_type=MediaType.SHOW,
+            season=2,
+            episode=5,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+        )
+        session.add(item)
+        await session.flush()
+
+        source = _make_source_file(library_paths["mount"], "Test.Show.S02E05.mkv")
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        assert filename.startswith("202603011430 ")
+        assert "Test.Show.S02E05.mkv" in filename
+
+    async def test_movie_file_never_gets_timestamp(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """With date_prefix=True, movie filenames are never prefixed with a timestamp."""
+        naming = SymlinkNamingConfig(date_prefix=True, release_year=True, resolution=False)
+        item = MediaItem(
+            imdb_id="tt1234567",
+            title="Test Movie",
+            year=2024,
+            media_type=MediaType.MOVIE,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+        )
+        session.add(item)
+        await session.flush()
+
+        original_filename = "Test.Movie.2024.1080p.mkv"
+        source = _make_source_file(library_paths["mount"], original_filename)
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        # The filename must be exactly the original — no timestamp prepended
+        assert filename == original_filename
+
+    async def test_show_episode_no_prefix_when_disabled(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """With date_prefix=False, the episode filename is the original source filename."""
+        naming = SymlinkNamingConfig(date_prefix=False, release_year=True, resolution=False)
+        item = MediaItem(
+            imdb_id="tt7654321",
+            title="Test Show",
+            year=2023,
+            media_type=MediaType.SHOW,
+            season=1,
+            episode=3,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+        )
+        session.add(item)
+        await session.flush()
+
+        original_filename = "Test.Show.S01E03.mkv"
+        source = _make_source_file(library_paths["mount"], original_filename)
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = naming
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        # No timestamp prefix when date_prefix is disabled
+        assert filename == original_filename
+        assert "202603011430" not in filename
