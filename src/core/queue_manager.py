@@ -246,6 +246,20 @@ class QueueManager:
             effective_state.value,
             item.title,
         )
+
+        try:
+            from src.core.event_bus import event_bus, QueueEvent  # noqa: PLC0415
+            event_bus.publish(QueueEvent(
+                item_id=item.id,
+                title=item.title,
+                old_state=from_state.value,
+                new_state=effective_state.value,
+                retry_count=item.retry_count,
+                media_type=item.media_type.value if item.media_type else "",
+            ))
+        except Exception:
+            logger.warning("Failed to publish state change event for item id=%d", item_id, exc_info=True)
+
         return item
 
     async def force_transition(
@@ -293,6 +307,20 @@ class QueueManager:
             item_id,
             new_state.value,
         )
+
+        try:
+            from src.core.event_bus import event_bus, QueueEvent  # noqa: PLC0415
+            event_bus.publish(QueueEvent(
+                item_id=item.id,
+                title=item.title,
+                old_state=from_state.value,
+                new_state=new_state.value,
+                retry_count=item.retry_count,
+                media_type=item.media_type.value if item.media_type else "",
+            ))
+        except Exception:
+            logger.warning("Failed to publish force transition event for item id=%d", item_id, exc_info=True)
+
         return item
 
     # ------------------------------------------------------------------

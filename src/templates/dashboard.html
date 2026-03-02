@@ -351,7 +351,12 @@
   // Initial fetch on load
   fetchStats();
 
-  // Poll every 30 seconds
-  setInterval(fetchStats, 30000);
+  // SSE-driven refresh (primary), fallback poll every 60s
+  let _dashDebounce = null;
+  VD_SSE.onStateChange(function() {
+    if (_dashDebounce) clearTimeout(_dashDebounce);
+    _dashDebounce = setTimeout(fetchStats, 1000);
+  });
+  setInterval(fetchStats, 60000);
 </script>
 {% endblock %}

@@ -377,6 +377,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("vibeDebrid shutting down")
     scheduler.shutdown(wait=False)
+    from src.core.event_bus import event_bus
+    event_bus.shutdown()
     await engine.dispose()
     logger.info("Shutdown complete")
 
@@ -399,6 +401,7 @@ from src.api.routes.search import router as search_router  # noqa: E402
 from src.api.routes.settings import router as settings_router  # noqa: E402
 from src.api.routes.duplicates import router as duplicates_router  # noqa: E402
 from src.api.routes.discover import router as discover_router  # noqa: E402
+from src.api.routes.sse import router as sse_router  # noqa: E402
 
 app.include_router(dashboard_router)
 app.include_router(queue_router, prefix="/api/queue", tags=["queue"])
@@ -406,6 +409,7 @@ app.include_router(search_router, prefix="/api", tags=["search"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(duplicates_router, prefix="/api/duplicates", tags=["duplicates"])
 app.include_router(discover_router, prefix="/api/discover", tags=["discover"])
+app.include_router(sse_router, prefix="/api", tags=["sse"])
 
 
 # --- Page routes (serve Jinja2 templates) ---

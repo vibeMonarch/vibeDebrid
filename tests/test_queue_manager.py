@@ -1191,3 +1191,50 @@ class TestEdgeCases:
         """ItemNotFoundError is a proper Exception subclass."""
         err = ItemNotFoundError(1)
         assert isinstance(err, Exception)
+
+
+# ---------------------------------------------------------------------------
+# Event bus integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_transition_publishes_event(session: AsyncSession) -> None:
+    """transition() publishes a QueueEvent to the event bus."""
+    from src.core.event_bus import EventBus
+
+    bus = EventBus()
+    client_id, queue = bus.subscribe()
+
+    item = await _make_item(session, state=QueueState.WANTED)
+    qm = QueueManager()
+
+    with patch("src.core.event_bus.event_bus", bus):
+        await qm.transition(session, item.id, QueueState.SCRAPING)
+
+    event = queue.get_nowait()
+    assert event.item_id == item.id
+    assert event.old_state == "wanted"
+    assert event.new_state == "scraping"
+    bus.unsubscribe(client_id)
+
+
+@pytest.mark.asyncio
+async def test_force_transition_publishes_event(session: AsyncSession) -> None:
+    """force_transition() publishes a QueueEvent to the event bus."""
+    from src.core.event_bus import EventBus
+
+    bus = EventBus()
+    client_id, queue = bus.subscribe()
+
+    item = await _make_item(session, state=QueueState.SLEEPING)
+    qm = QueueManager()
+
+    with patch("src.core.event_bus.event_bus", bus):
+        await qm.force_transition(session, item.id, QueueState.WANTED)
+
+    event = queue.get_nowait()
+    assert event.item_id == item.id
+    assert event.old_state == "sleeping"
+    assert event.new_state == "wanted"
+    bus.unsubscribe(client_id)

@@ -144,6 +144,43 @@
         }
       });
     });
+
+    // SSE connection manager (shared across pages)
+    const VD_SSE = (function() {
+      let es = null;
+      let handlers = [];
+
+      function connect() {
+        if (es) return;
+        es = new EventSource('/api/events');
+        es.addEventListener('state_change', function(e) {
+          try {
+            const data = JSON.parse(e.data);
+            handlers.forEach(function(h) { try { h(data); } catch(err) { console.error('SSE handler error:', err); } });
+          } catch(_) {}
+        });
+        es.onerror = function() {
+          // EventSource auto-reconnects per spec; just log
+          console.debug('SSE connection error, will reconnect');
+        };
+      }
+
+      function disconnect() {
+        if (es) { es.close(); es = null; }
+      }
+
+      return {
+        onStateChange: function(handler) {
+          handlers.push(handler);
+          if (handlers.length === 1) connect();
+          // Return unsubscribe function
+          return function() {
+            handlers = handlers.filter(function(h) { return h !== handler; });
+            if (handlers.length === 0) disconnect();
+          };
+        }
+      };
+    })();
   </script>
   {% block scripts %}{% endblock %}
 </body>

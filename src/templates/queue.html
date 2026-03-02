@@ -402,6 +402,8 @@
       detail: null,
       detailLoading: false,
       selectedIds: new Set(),
+      _sseUnsub: null,
+      _sseDebounce: null,
 
       // Filters (live model, applied on button press)
       filters: {
@@ -422,6 +424,13 @@
       init() {
         this.readFiltersFromUrl();
         this.loadItems();
+        // Subscribe to SSE for live updates
+        this._sseUnsub = VD_SSE.onStateChange((data) => this.handleSSE(data));
+      },
+
+      destroy() {
+        if (this._sseUnsub) this._sseUnsub();
+        if (this._sseDebounce) clearTimeout(this._sseDebounce);
       },
 
       // ------------------------------------------------------------------ //
@@ -512,6 +521,30 @@
         } finally {
           this.loading = false;
         }
+      },
+
+      // ------------------------------------------------------------------ //
+      // SSE live updates
+      // ------------------------------------------------------------------ //
+      handleSSE(data) {
+        // Find the item in the current view
+        const idx = this.items.findIndex(i => i.id === data.item_id);
+        if (idx !== -1) {
+          // Check if item should still be visible with current filters
+          if (this.applied.state && data.new_state !== this.applied.state) {
+            // Item moved out of the filtered state — remove from view
+            this.items.splice(idx, 1);
+            this.totalItems = Math.max(0, this.totalItems - 1);
+            this.totalPages = Math.max(1, Math.ceil(this.totalItems / this.pageSize));
+          } else {
+            // Update in place
+            this.items[idx].state = data.new_state;
+            this.items[idx].retry_count = data.retry_count;
+          }
+        }
+        // Debounced full reload to catch pagination/count drift
+        if (this._sseDebounce) clearTimeout(this._sseDebounce);
+        this._sseDebounce = setTimeout(() => this.loadItems(), 2000);
       },
 
       async loadDetail(id) {
