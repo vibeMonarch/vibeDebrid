@@ -51,7 +51,7 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 697 tests, all passing**
+**Total: 831 tests, all passing**
 
 ### Symlink Naming Convention ✅
 - SymlinkNamingConfig: date_prefix, release_year, resolution toggles
@@ -100,6 +100,22 @@
 - Genre browsing: clickable chips, poster grid with Load More pagination
 - Queue integration: "Add to Queue" resolves IMDb ID, creates WANTED item
 - 15 new tests (9 tmdb service + 6 API route)
+
+### SSE: Live Queue & Dashboard Updates ✅
+- src/core/event_bus.py — QueueEvent dataclass, EventBus (subscribe/publish/shutdown, maxsize=64 per client)
+- src/api/routes/sse.py — GET /api/events SSE endpoint (30s heartbeat, shutdown sentinel)
+- queue_manager.py — publish events on transition() and force_transition()
+- base.html — VD_SSE global manager (lazy EventSource, auto-reconnect)
+- queue.html — live state badge updates, filter-aware removal, 2s debounced reload
+- dashboard.html — SSE-driven stats refresh (1s debounce), fallback poll extended to 60s
+- Fixed: naive vs aware datetime comparison bug in CHECKING timeout
+- 21 new tests (19 event_bus + 2 queue_manager integration)
+
+### Step 0.5: Fast CHECKING Resolution
+- Problem: cached RD torrents are instantly available on Zurg mount, but CHECKING items must wait for the next mount_scan scheduler cycle before files are found and symlinked
+- Goal: items that are already in RD cache should complete within ~1 minute (mount scan + symlink + COMPLETE), not wait for the full scheduler interval
+- Approach: trigger a targeted mount scan (or direct filesystem lookup) during CHECKING stage when mount index has no matches, so newly added cached torrents are found immediately
+- This avoids the multi-minute gap between ADDING→CHECKING and the next mount_scan cycle
 
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
