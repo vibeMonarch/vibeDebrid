@@ -1,12 +1,18 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 675 tests, all passing (as of 2026-03-01)
+- 697 tests, all passing (as of 2026-03-01)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
 ## Completed Features
+- [Symlink Naming Convention](symlink-naming.md) — 2026-03-01
 - [Season Pack Support](season-packs.md) — 2026-03-01
+- Seeders display removal — 2026-03-02
+
+## STATUS.md Next Steps
+Pending features:
+- Manual "RD Status" button in search results (per-torrent cache check)
 
 ## Agent Routing Patterns
 - Backend changes (models, routes, pipeline): backend-dev (sequential, shared state)

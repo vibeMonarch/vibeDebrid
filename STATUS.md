@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-01
+## Last Updated: 2026-03-02
 
 ## Completed
 
@@ -51,7 +51,17 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 675 tests, all passing**
+**Total: 697 tests, all passing**
+
+### Symlink Naming Convention ✅
+- SymlinkNamingConfig: date_prefix, release_year, resolution toggles
+- Movie dirs: optional YYYYMMDDHHMM prefix, year, resolution
+- Show dirs: timestamp from first episode (persists via dir reuse), season dir unchanged
+- Episode files: per-file timestamp prefix for shows
+- Settings UI: collapsible card with 3 toggles + live preview
+- Exact dir matching (strips timestamp/resolution before compare, prevents false positives)
+- build_show_dir wrapped in asyncio.to_thread (blocking I/O fix)
+- 22 new tests, 22 existing tests hardened
 
 ### Season Pack Support ✅
 - is_season_pack column on MediaItem with DB migration
@@ -64,7 +74,18 @@
 
 ## Next Steps (In Order)
 ### Step 0: Bugfixes and improvements
+- ~~Symlink Folder Naming Convention~~ ✅ (completed above)
 
+- ~~Seeders display fix~~ ✅ Removed seeders column from search results UI
+  - Investigated: Torrentio parses seeders correctly from emoji metadata (👤 count)
+  - Zilean has no seeders data at all (confirmed via API schema, OpenAPI spec, and torznab dummy values)
+  - Fix: removed seeders display from desktop grid and mobile stats row
+  - Seeders still used internally by filter_engine for scoring (up to 10 pts)
+
+- Manual RD cache check button: Add "RD Status" button per search result
+  - Currently only first 10 results get automatic cache check
+  - Allow user to manually trigger cache check on any individual result
+  - Show cached/uncached status with existing visual styling
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - src/services/plex.py — watchlist, library scan trigger

@@ -509,7 +509,7 @@
 
     wrapper.innerHTML = `
       <!-- Desktop table-like row -->
-      <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
+      <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
 
         <!-- Title + badges -->
         <div class="min-w-0">
@@ -538,14 +538,6 @@
         <!-- Size -->
         <div class="text-right">
           <span class="text-sm text-gray-300 tabular-nums">${escapeHtml(sizeFormatted)}</span>
-        </div>
-
-        <!-- Seeders -->
-        <div class="text-right">
-          <span class="text-sm tabular-nums ${item.seeders > 50 ? 'text-green-400' : item.seeders > 10 ? 'text-yellow-400' : 'text-red-400'}">
-            ${item.seeders ?? '—'}
-          </span>
-          <p class="text-xs text-vd-muted">seeders</p>
         </div>
 
         <!-- Cached badge -->
@@ -608,7 +600,6 @@
         <div class="flex items-center gap-4 text-xs text-vd-muted flex-wrap">
           <span>${escapeHtml(sizeFormatted)}</span>
           ${item.season != null ? `<span class="text-gray-300">${'S' + String(item.season).padStart(2, '0')}${item.is_season_pack ? ' Full Season' : (item.episode != null ? 'E' + String(item.episode).padStart(2, '0') : '')}</span>` : ''}
-          <span class="${item.seeders > 50 ? 'text-green-400' : item.seeders > 10 ? 'text-yellow-400' : 'text-red-400'}">${item.seeders ?? '—'} seeders</span>
         </div>
 
         <!-- Score bar -->
