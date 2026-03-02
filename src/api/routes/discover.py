@@ -578,3 +578,45 @@ async def add_to_queue(
         imdb_id=imdb_id,
         message=f"Added '{body.title}' to queue",
     )
+
+
+class ResolveResponse(BaseModel):
+    """Response for GET /api/discover/resolve/{media_type}/{tmdb_id}."""
+
+    imdb_id: str | None = None
+
+
+@router.get("/resolve/{media_type}/{tmdb_id}")
+async def resolve_imdb(
+    media_type: str,
+    tmdb_id: int,
+) -> ResolveResponse:
+    """Resolve a TMDB ID to an IMDB ID via TMDB external IDs.
+
+    Args:
+        media_type: Must be ``"movie"`` or ``"tv"``.
+        tmdb_id: The TMDB ID to resolve.
+
+    Returns:
+        ResolveResponse with the IMDB ID if found.
+
+    Raises:
+        HTTPException 400: When media_type is not ``"movie"`` or ``"tv"``.
+        HTTPException 503: When the TMDB API key is not configured.
+    """
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(
+            status_code=400,
+            detail="media_type must be 'movie' or 'tv'",
+        )
+
+    if not settings.tmdb.api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="TMDB API key is not configured",
+        )
+
+    ext_ids = await tmdb_client.get_external_ids(tmdb_id, media_type)
+    imdb_id = ext_ids.imdb_id if ext_ids is not None else None
+
+    return ResolveResponse(imdb_id=imdb_id)

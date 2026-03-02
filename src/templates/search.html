@@ -771,6 +771,11 @@
       const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
       showToast(`Added to Real-Debrid${rdId}`, 'success');
 
+      // If we came from discover, redirect back after a short delay
+      if (window._searchReturnTo === 'discover') {
+        setTimeout(function() { window.location.href = '/discover'; }, 1500);
+      }
+
     } catch (err) {
       // Restore button on failure
       allAddBtns.forEach(b => { b.disabled = false; });
@@ -847,6 +852,35 @@
   }
 
   // ─── Error display helper ────────────────────────────────────────────────────
+
+  // ─── Auto-fill from URL params (discover → search flow) ────────────────────
+
+  (function() {
+    var params = new URLSearchParams(window.location.search);
+    var query = params.get('query');
+    if (!query) return;
+
+    // Pre-fill form fields
+    document.getElementById('query').value = query;
+
+    var imdbId = params.get('imdb_id');
+    if (imdbId) document.getElementById('imdb_id').value = imdbId;
+
+    var mediaType = params.get('media_type');
+    if (mediaType) {
+      document.getElementById('media_type').value = mediaType;
+      toggleShowFields(mediaType);
+    }
+
+    // Store return destination
+    var fromPage = params.get('from');
+    if (fromPage) window._searchReturnTo = fromPage;
+
+    // Auto-submit after a short delay (let DOM settle)
+    setTimeout(function() {
+      handleSearch(new Event('submit'));
+    }, 100);
+  })();
 
   function showResultsError(msg) {
     const section  = document.getElementById('results-section');

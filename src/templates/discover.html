@@ -177,7 +177,7 @@
 {% block content %}
 <div class="mb-6">
   <h2 class="text-2xl font-bold text-white">Discover</h2>
-  <p class="text-vd-muted text-sm mt-1">Browse trending content and add to your queue.</p>
+  <p class="text-vd-muted text-sm mt-1">Browse trending content and add to your library.</p>
 </div>
 
 <!-- Tabs -->
@@ -602,7 +602,7 @@
         'data-tmdb-id="' + item.tmdb_id + '" ' +
         'data-media-type="' + escAttr(item.media_type) + '" ' +
         'data-title="' + escAttr(item.title) + '" ' +
-        'data-year="' + (item.year || '') + '">Add to Queue</button>';
+        'data-year="' + (item.year || '') + '">Add to Library</button>';
     }
 
     card.innerHTML =
@@ -626,54 +626,35 @@
     return card;
   }
 
-  // Add to queue — delegated click handler
+  // Add to Library — resolve IMDB ID and navigate to search page
   document.addEventListener('click', async function(e) {
     var btn = e.target.closest('.add-btn-action');
     if (!btn) return;
 
-    var tmdbId = parseInt(btn.dataset.tmdbId, 10);
+    var tmdbId = btn.dataset.tmdbId;
     var mediaType = btn.dataset.mediaType;
     var title = btn.dataset.title;
-    var year = btn.dataset.year ? parseInt(btn.dataset.year, 10) : null;
 
     btn.disabled = true;
-    btn.textContent = 'Adding...';
+    btn.textContent = 'Loading...';
 
     try {
-      var resp = await fetch('/api/discover/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, title: title, year: year })
-      });
-      var data = await resp.json();
+      // Resolve TMDB → IMDB ID
+      var resp = await fetch('/api/discover/resolve/' + encodeURIComponent(mediaType) + '/' + encodeURIComponent(tmdbId));
+      var data = resp.ok ? await resp.json() : {};
 
-      if (!resp.ok) {
-        throw new Error(data.detail || 'Failed to add');
-      }
+      // Build search URL with pre-filled params
+      var params = new URLSearchParams();
+      params.set('query', title);
+      if (data.imdb_id) params.set('imdb_id', data.imdb_id);
+      params.set('media_type', mediaType === 'tv' ? 'show' : 'movie');
+      params.set('from', 'discover');
 
-      if (data.status === 'created') {
-        showToast(data.message);
-        btn.className = 'add-btn add-btn-queue';
-        btn.textContent = 'In Queue';
-        var card = btn.closest('.poster-card');
-        if (card) {
-          var badge = card.querySelector('.badge-status');
-          if (!badge) {
-            badge = document.createElement('span');
-            card.querySelector('.poster-img-wrap').appendChild(badge);
-          }
-          badge.className = 'poster-badge badge-status bg-blue-600 text-white';
-          badge.textContent = 'In Queue';
-        }
-      } else {
-        showToast(data.message, 'info');
-        btn.className = 'add-btn add-btn-queue';
-        btn.textContent = 'In Queue';
-      }
+      window.location.href = '/search?' + params.toString();
     } catch (err) {
-      showToast('Failed: ' + err.message, 'error');
+      showToast('Failed to resolve: ' + err.message, 'error');
       btn.disabled = false;
-      btn.textContent = 'Add to Queue';
+      btn.textContent = 'Add to Library';
       btn.className = 'add-btn add-btn-available add-btn-action';
     }
   });
