@@ -90,7 +90,7 @@
 
 ### Discovery Feature ✅
 - src/services/tmdb.py — TMDB API client (trending, top rated, genres, discover, search, external IDs)
-- src/api/routes/discover.py — 6 endpoints (trending, top_rated, genres, by-genre, search, add)
+- src/api/routes/discover.py — 7 endpoints (trending, top_rated, genres, by-genre, search, add, resolve)
 - src/templates/discover.html — browsable discovery page with Movies/TV/Search tabs
 - Settings UI: TMDB section with API key config + connection test
 - Config: TmdbConfig with enabled, api_key, base_url, image_base_url, timeout
@@ -98,7 +98,9 @@
 - Nav: Discover link in sidebar
 - Movies/TV tabs: trending row, top rated row, genre chip browsing (3 parallel API calls on load)
 - Genre browsing: clickable chips, poster grid with Load More pagination
-- Queue integration: "Add to Queue" resolves IMDb ID, creates WANTED item
+- "Add to Library" flow: resolve TMDB→IMDB, navigate to search page for manual torrent selection, redirect back to discover after add
+- GET /api/discover/resolve/{media_type}/{tmdb_id} — lightweight TMDB→IMDB ID resolution
+- Search page auto-fills and auto-submits when opened with URL params from discover
 - 15 new tests (9 tmdb service + 6 API route)
 
 ### SSE: Live Queue & Dashboard Updates ✅
@@ -110,6 +112,11 @@
 - dashboard.html — SSE-driven stats refresh (1s debounce), fallback poll extended to 60s
 - Fixed: naive vs aware datetime comparison bug in CHECKING timeout
 - 21 new tests (19 event_bus + 2 queue_manager integration)
+
+### Step 0.4: Discover Page State Preservation
+- Problem: when user clicks "Add to Library" on a genre browsing page, they navigate to search. After adding a torrent, they return to /discover but lose their position — active tab, selected genre, scroll position, and loaded genre results are all reset
+- Goal: returning from search should restore the exact discover page state (tab, genre, scroll)
+- Possible approaches: URL-based state (encode tab/genre/page in discover URL + pass as return_to), sessionStorage, or open search in a modal/overlay instead of full navigation
 
 ### Step 0.5: Fast CHECKING Resolution
 - Problem: cached RD torrents are instantly available on Zurg mount, but CHECKING items must wait for the next mount_scan scheduler cycle before files are found and symlinked
