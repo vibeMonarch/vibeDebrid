@@ -32,6 +32,7 @@ from typing import Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import FilteredResult, filter_engine
 from src.core.mount_scanner import mount_scanner
@@ -230,10 +231,11 @@ class ScrapePipeline:
             cached_hashes=set(),
         )
 
-        # Probe RD cache for the top 10 filtered results, keeping cached
+        # Probe RD cache for the top filtered results, keeping cached
         # torrents in the RD account to avoid a redundant add_magnet later.
+        cache_limit = settings.search.cache_check_limit
         top_hashes = [
-            fr.result.info_hash for fr in ranked[:10] if fr.result.info_hash
+            fr.result.info_hash for fr in ranked[:cache_limit] if fr.result.info_hash
         ]
         cache_results: dict[str, CacheCheckResult] = {}
         cached_set: set[str] = set()
