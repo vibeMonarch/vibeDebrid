@@ -38,7 +38,7 @@ from src.models.torrent import RdTorrent, TorrentStatus
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(timezone.utc)
 
 
 async def _make_media_item(

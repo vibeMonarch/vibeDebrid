@@ -167,7 +167,7 @@ async def _job_queue_processor() -> None:
                         episode=None,
                     )
                     if not matches:
-                        timeout_threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                        timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
                         )
                         if item.state_changed_at and item.state_changed_at <= timeout_threshold:
@@ -230,7 +230,7 @@ async def _job_queue_processor() -> None:
                         episode=item.episode,
                     )
                     if not matches:
-                        timeout_threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                        timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
                         )
                         if item.state_changed_at and item.state_changed_at <= timeout_threshold:
