@@ -406,6 +406,7 @@ async def search_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("search.html", {
         "request": request,
         "active_page": "search",
+        "cache_check_limit": settings.search.cache_check_limit,
     })
 
 

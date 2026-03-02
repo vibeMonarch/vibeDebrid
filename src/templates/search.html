@@ -256,6 +256,8 @@
 
 {% block scripts %}
 <script>
+  const CACHE_CHECK_LIMIT = {{ cache_check_limit }};
+
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   function formatBytes(bytes) {
@@ -355,8 +357,8 @@
       const data = await resp.json();
       renderResults(data);
 
-      // Kick off async cache checking for the top 10 results (non-blocking).
-      const hashes = (data.results || []).slice(0, 10).map(r => r.info_hash).filter(Boolean);
+      // Kick off async cache checking for the top results (non-blocking).
+      const hashes = (data.results || []).slice(0, CACHE_CHECK_LIMIT).map(r => r.info_hash).filter(Boolean);
       checkCachedProgressive(hashes);
 
     } catch (err) {
@@ -469,17 +471,18 @@
   }
 
   function cacheBadgeHtml(item, idx) {
-    // Top 10 results will be checked — show a spinner.
-    // The rest show N/A.
-    if (idx < 10) {
+    // Top CACHE_CHECK_LIMIT results will be checked — show a spinner.
+    // The rest show a manual Check RD button.
+    if (idx < CACHE_CHECK_LIMIT) {
       return `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
           <svg class="w-3 h-3 cache-spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
           Checking&hellip;
         </span>`;
     }
-    return `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
-        N/A
-      </span>`;
+    return `<button class="check-rd-btn inline-flex items-center gap-1 text-xs font-semibold px-3 py-1 rounded-full bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors" data-hash="${escapeHtml(item.info_hash)}">
+    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+    Check RD
+  </button>`;
   }
 
   function buildResultCard(item, idx) {
@@ -665,6 +668,49 @@
     };
 
     handleAdd(btn, infoHash, payload);
+  });
+
+  document.getElementById('results-list').addEventListener('click', function(e) {
+    const btn = e.target.closest('.check-rd-btn');
+    if (!btn) return;
+
+    const infoHash = btn.dataset.hash;
+    if (!infoHash) return;
+
+    // Find the card and replace ALL .cache-badge containers with spinner
+    const card = document.getElementById('result-' + infoHash);
+    if (!card) return;
+
+    const spinnerHtml = `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-vd-bg border border-vd-border text-vd-muted">
+      <svg class="w-3 h-3 cache-spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      Checking&hellip;
+    </span>`;
+
+    card.querySelectorAll('.cache-badge').forEach(el => {
+      el.innerHTML = spinnerHtml;
+    });
+
+    // Make the API call
+    fetch('/api/check-cached', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ info_hash: infoHash }),
+    })
+      .then(resp => {
+        if (!resp.ok) throw new Error('Check failed');
+        return resp.json();
+      })
+      .then(data => {
+        updateCacheBadge(data.info_hash, data.cached);
+      })
+      .catch(() => {
+        // Show error badge on failure
+        card.querySelectorAll('.cache-badge').forEach(el => {
+          el.innerHTML = `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-red-900/60 border border-red-700/50 text-red-300">
+            <span>&#10007;</span>Error
+          </span>`;
+        });
+      });
   });
 
   async function handleAdd(btn, infoHash, payload) {

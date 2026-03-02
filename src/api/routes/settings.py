@@ -73,8 +73,13 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
     # Write to config.json
     await asyncio.to_thread(CONFIG_FILE.write_text, json.dumps(merged, indent=2))
 
+    # Reload the in-memory singleton so changes take effect immediately
+    reloaded = Settings.load()
+    for field in reloaded.model_fields:
+        setattr(settings, field, getattr(reloaded, field))
+
     logger.info("Settings updated and written to %s", CONFIG_FILE)
-    return {"status": "ok", "message": "Settings updated. Restart may be needed for some changes."}
+    return {"status": "ok", "message": "Settings updated."}
 
 
 @router.post("/test/realdebrid")

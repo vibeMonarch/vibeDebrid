@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 697 tests, all passing (as of 2026-03-01)
+- 697 tests, all passing (as of 2026-03-02)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -9,10 +9,10 @@
 - [Symlink Naming Convention](symlink-naming.md) — 2026-03-01
 - [Season Pack Support](season-packs.md) — 2026-03-01
 - Seeders display removal — 2026-03-02
+- Manual RD cache check button + configurable limit — 2026-03-02
 
 ## STATUS.md Next Steps
-Pending features:
-- Manual "RD Status" button in search results (per-torrent cache check)
+Pending features: Trakt + Plex integration (Step 1)
 
 ## Agent Routing Patterns
 - Backend changes (models, routes, pipeline): backend-dev (sequential, shared state)
@@ -26,3 +26,4 @@ Pending features:
 - DB migrations: add to `_migrate_add_columns()` in `src/database.py`, catch specific errors
 - State transitions: use `queue_manager.transition()`, never direct `item.state =` assignment
 - `add_torrent()` in search.py bypasses queue_manager for state changes (pre-existing tech debt)
+- Settings PUT handler reloads in-memory singleton via `setattr` loop — no restart needed for any setting

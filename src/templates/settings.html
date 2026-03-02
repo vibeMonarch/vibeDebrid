@@ -579,6 +579,44 @@
     </div>
   </div>
 
+  <!-- Search section (collapsed by default) -->
+  <div id="section-search" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('search')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <span class="font-semibold text-white">Search</span>
+      </div>
+      <svg id="chevron-search" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-search" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="search-cache-check-limit">Auto cache check limit</label>
+            <input type="number" id="search-cache-check-limit" min="0" step="1"
+                   class="w-full sm:w-40 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+            <p class="text-xs text-vd-muted mt-1">Number of top search results to automatically check RD cache status. Results beyond this limit will show a manual "Check RD" button.</p>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('search')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Search
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- #settings-form -->
 {% endblock %}
 
@@ -708,6 +746,10 @@
     const server = s.server || {};
     setField('server-host', server.host || '');
     setField('server-port', server.port != null ? server.port : '');
+
+    // Search
+    const search = s.search || {};
+    setField('search-cache-check-limit', search.cache_check_limit != null ? search.cache_check_limit : 10);
   }
 
   function setField(id, value) {
@@ -828,6 +870,12 @@
           }
         };
       }
+      case 'search':
+        return {
+          search: {
+            cache_check_limit: (() => { const v = parseInt(document.getElementById('search-cache-check-limit').value); return isNaN(v) ? 10 : v; })(),
+          }
+        };
       default:
         return {};
     }

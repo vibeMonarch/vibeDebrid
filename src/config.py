@@ -148,6 +148,10 @@ class SymlinkNamingConfig(BaseModel):
     resolution: bool = False
 
 
+class SearchConfig(BaseModel):
+    cache_check_limit: int = Field(default=10, ge=0)  # Number of search results to auto-check RD cache status
+
+
 # --- Main settings ---
 
 
@@ -185,6 +189,7 @@ class Settings(BaseSettings):
     backup: BackupConfig = BackupConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     symlink_naming: SymlinkNamingConfig = SymlinkNamingConfig()
+    search: SearchConfig = SearchConfig()
 
     @classmethod
     def load(cls) -> "Settings":

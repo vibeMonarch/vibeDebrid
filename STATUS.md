@@ -82,10 +82,11 @@
   - Fix: removed seeders display from desktop grid and mobile stats row
   - Seeders still used internally by filter_engine for scoring (up to 10 pts)
 
-- Manual RD cache check button: Add "RD Status" button per search result
-  - Currently only first 10 results get automatic cache check
-  - Allow user to manually trigger cache check on any individual result
-  - Show cached/uncached status with existing visual styling
+- ~~Manual RD cache check button~~ ✅ Added "Check RD" button per search result
+  - Configurable auto-check limit via Settings → Search → "Auto cache check limit"
+  - Results beyond limit show clickable "Check RD" button instead of "N/A"
+  - Clicking triggers `/api/check-cached`, shows spinner → cached/uncached badge
+  - Fixed: settings save now reloads in-memory singleton (all settings take effect immediately)
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - src/services/plex.py — watchlist, library scan trigger
