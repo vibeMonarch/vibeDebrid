@@ -170,7 +170,11 @@ async def _job_queue_processor() -> None:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
                         )
-                        if item.state_changed_at and item.state_changed_at <= timeout_threshold:
+                        # Normalize: SQLite-loaded datetimes are naive, in-memory ones are tz-aware
+                        sca = item.state_changed_at
+                        if sca is not None and sca.tzinfo is None:
+                            sca = sca.replace(tzinfo=timezone.utc)
+                        if sca and sca <= timeout_threshold:
                             logger.warning(
                                 "CHECKING season pack id=%d title=%r timed out after %d min, transitioning to SLEEPING",
                                 item.id, item.title, settings.retry.checking_timeout_minutes,
@@ -233,7 +237,11 @@ async def _job_queue_processor() -> None:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
                         )
-                        if item.state_changed_at and item.state_changed_at <= timeout_threshold:
+                        # Normalize: SQLite-loaded datetimes are naive, in-memory ones are tz-aware
+                        sca = item.state_changed_at
+                        if sca is not None and sca.tzinfo is None:
+                            sca = sca.replace(tzinfo=timezone.utc)
+                        if sca and sca <= timeout_threshold:
                             logger.warning(
                                 "CHECKING item id=%d title=%r timed out after %d min, transitioning to SLEEPING",
                                 item.id, item.title, settings.retry.checking_timeout_minutes,

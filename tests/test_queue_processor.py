@@ -38,7 +38,8 @@ from src.models.torrent import RdTorrent, TorrentStatus
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    """Naive UTC — matches what SQLite returns after a round-trip."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def _make_media_item(
