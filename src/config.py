@@ -39,6 +39,14 @@ class ZileanConfig(BaseModel):
     timeout_seconds: int = 10
 
 
+class TmdbConfig(BaseModel):
+    enabled: bool = True
+    api_key: str = ""
+    base_url: str = "https://api.themoviedb.org/3"
+    image_base_url: str = "https://image.tmdb.org/t/p"
+    timeout_seconds: int = 10
+
+
 class ScrapersConfig(BaseModel):
     torrentio: TorrentioConfig = TorrentioConfig()
     zilean: ZileanConfig = ZileanConfig()
@@ -190,6 +198,7 @@ class Settings(BaseSettings):
     scheduler: SchedulerConfig = SchedulerConfig()
     symlink_naming: SymlinkNamingConfig = SymlinkNamingConfig()
     search: SearchConfig = SearchConfig()
+    tmdb: TmdbConfig = TmdbConfig()
 
     @classmethod
     def load(cls) -> "Settings":

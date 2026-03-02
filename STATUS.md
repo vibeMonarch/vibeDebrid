@@ -87,6 +87,20 @@
   - Results beyond limit show clickable "Check RD" button instead of "N/A"
   - Clicking triggers `/api/check-cached`, shows spinner → cached/uncached badge
   - Fixed: settings save now reloads in-memory singleton (all settings take effect immediately)
+
+### Discovery Feature ✅
+- src/services/tmdb.py — TMDB API client (trending, top rated, genres, discover, search, external IDs)
+- src/api/routes/discover.py — 6 endpoints (trending, top_rated, genres, by-genre, search, add)
+- src/templates/discover.html — browsable discovery page with Movies/TV/Search tabs
+- Settings UI: TMDB section with API key config + connection test
+- Config: TmdbConfig with enabled, api_key, base_url, image_base_url, timeout
+- DB migration: tmdb_id index for batch lookups
+- Nav: Discover link in sidebar
+- Movies/TV tabs: trending row, top rated row, genre chip browsing (3 parallel API calls on load)
+- Genre browsing: clickable chips, poster grid with Load More pagination
+- Queue integration: "Add to Queue" resolves IMDb ID, creates WANTED item
+- 15 new tests (9 tmdb service + 6 API route)
+
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - src/services/plex.py — watchlist, library scan trigger

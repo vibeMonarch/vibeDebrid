@@ -86,6 +86,21 @@
       <span id="test-result-zilean" class="test-result text-sm"></span>
     </div>
 
+    <!-- TMDB test -->
+    <div class="flex items-center gap-3 flex-1">
+      <button onclick="runTest('tmdb', this)"
+              class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test TMDB
+      </button>
+      <span id="test-result-tmdb" class="test-result text-sm"></span>
+    </div>
+
   </div>
 </div>
 
@@ -255,6 +270,56 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
               </svg>
               Save Scrapers
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TMDB section (collapsed by default) -->
+  <div id="section-tmdb" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('tmdb')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/>
+        </svg>
+        <span class="font-semibold text-white">TMDB</span>
+      </div>
+      <svg id="chevron-tmdb" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-tmdb" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 space-y-4 border-t border-vd-border pt-4">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-sm font-semibold text-gray-300">Service</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="tmdb-enabled" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+            <span class="text-xs text-vd-muted">Enabled</span>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="tmdb-api-key">API Key (Read Access Token)</label>
+            <input type="password" id="tmdb-api-key" name="api_key" autocomplete="new-password"
+                   placeholder="Enter new value to update"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p id="tmdb-api-key-masked" class="text-xs text-vd-muted mt-1"></p>
+            <p class="text-xs text-vd-muted mt-1">Get a free Read Access Token at <a href="https://www.themoviedb.org/settings/api" target="_blank" class="text-vd-accent hover:underline">themoviedb.org/settings/api</a></p>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('tmdb')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save TMDB
             </button>
           </div>
         </div>
@@ -750,6 +815,13 @@
     // Search
     const search = s.search || {};
     setField('search-cache-check-limit', search.cache_check_limit != null ? search.cache_check_limit : 10);
+
+    // TMDB
+    if (s.tmdb) {
+      document.getElementById('tmdb-enabled').checked = s.tmdb.enabled ?? true;
+      const tmdbMasked = document.getElementById('tmdb-api-key-masked');
+      if (tmdbMasked) tmdbMasked.textContent = s.tmdb.api_key || '';
+    }
   }
 
   function setField(id, value) {
@@ -876,6 +948,15 @@
             cache_check_limit: (() => { const v = parseInt(document.getElementById('search-cache-check-limit').value); return isNaN(v) ? 10 : v; })(),
           }
         };
+      case 'tmdb': {
+        const newKey = document.getElementById('tmdb-api-key').value;
+        return {
+          tmdb: {
+            enabled: document.getElementById('tmdb-enabled').checked,
+            ...(newKey ? { api_key: newKey } : {})
+          }
+        };
+      }
       default:
         return {};
     }
@@ -910,6 +991,18 @@
           }
           // Clear the password field after a successful save
           document.getElementById('rd-api-key').value = '';
+        }
+      }
+      if (section === 'tmdb') {
+        const refreshed = await fetch('/api/settings');
+        if (refreshed.ok) {
+          const data = await refreshed.json();
+          currentSettings = data.settings || {};
+          const tmdb = currentSettings.tmdb || {};
+          const maskedEl = document.getElementById('tmdb-api-key-masked');
+          if (maskedEl) maskedEl.textContent = tmdb.api_key || '';
+          // Clear the password field after a successful save
+          document.getElementById('tmdb-api-key').value = '';
         }
       }
     } catch (err) {

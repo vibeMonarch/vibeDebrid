@@ -126,3 +126,16 @@ async def test_zilean() -> TestResult:
         )
     except Exception as exc:
         return TestResult(status="error", message=f"Connection failed: {exc}")
+
+
+@router.post("/test/tmdb")
+async def test_tmdb() -> TestResult:
+    """Test TMDB API connection."""
+    from src.services.tmdb import tmdb_client
+    try:
+        ok = await tmdb_client.test_connection()
+        if ok:
+            return TestResult(status="ok", message="TMDB API reachable and key is valid")
+        return TestResult(status="error", message="TMDB API returned an error — check your API key")
+    except Exception as exc:
+        return TestResult(status="error", message=f"Connection failed: {exc}")

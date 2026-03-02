@@ -378,12 +378,14 @@ from src.api.routes.queue import router as queue_router  # noqa: E402
 from src.api.routes.search import router as search_router  # noqa: E402
 from src.api.routes.settings import router as settings_router  # noqa: E402
 from src.api.routes.duplicates import router as duplicates_router  # noqa: E402
+from src.api.routes.discover import router as discover_router  # noqa: E402
 
 app.include_router(dashboard_router)
 app.include_router(queue_router, prefix="/api/queue", tags=["queue"])
 app.include_router(search_router, prefix="/api", tags=["search"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(duplicates_router, prefix="/api/duplicates", tags=["duplicates"])
+app.include_router(discover_router, prefix="/api/discover", tags=["discover"])
 
 
 # --- Page routes (serve Jinja2 templates) ---
@@ -425,6 +427,15 @@ async def duplicates_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("duplicates.html", {
         "request": request,
         "active_page": "duplicates",
+    })
+
+
+@app.get("/discover", response_class=HTMLResponse, tags=["pages"])
+async def discover_page(request: Request) -> HTMLResponse:
+    """Content discovery page."""
+    return templates.TemplateResponse("discover.html", {
+        "request": request,
+        "active_page": "discover",
     })
 
 

@@ -60,6 +60,18 @@ async def _migrate_add_columns() -> None:
             else:
                 logger.warning("Migration: failed to add is_season_pack column: %s", exc)
 
+        # tmdb_id index (added for discovery feature batch lookups)
+        try:
+            await conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_media_items_tmdb_id ON media_items (tmdb_id)")
+            )
+            logger.info("Migration: created tmdb_id index")
+        except Exception as exc:
+            if "already exists" in str(exc).lower():
+                pass
+            else:
+                logger.warning("Migration: failed to create tmdb_id index: %s", exc)
+
 
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""
