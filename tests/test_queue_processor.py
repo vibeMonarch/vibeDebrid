@@ -38,7 +38,7 @@ from src.models.torrent import RdTorrent, TorrentStatus
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def _make_media_item(
@@ -826,3 +826,186 @@ class TestStage3EdgeCases:
         await session.refresh(missing_item)
         assert found_item.state == QueueState.COMPLETE
         assert missing_item.state == QueueState.CHECKING
+
+
+# ---------------------------------------------------------------------------
+# Group 7: Stage 3 — CHECKING timeout (empty mount + state_changed_at age)
+# ---------------------------------------------------------------------------
+
+
+class TestStage3CheckingTimeout:
+    """Stage 3: CHECKING items that are not found in the mount time out to SLEEPING.
+
+    The timeout threshold is ``settings.retry.checking_timeout_minutes`` (default 1).
+    An item whose ``state_changed_at`` is older than that threshold and still not
+    visible on the mount must transition to SLEEPING so the retry scheduler can
+    re-attempt it later.  An item that is within the threshold must be left in
+    CHECKING so the job retries it on the next cycle.
+    """
+
+    async def test_checking_timeout_exceeded_transitions_to_sleeping(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """CHECKING item not in mount with state_changed_at past the timeout → SLEEPING.
+
+        The default ``checking_timeout_minutes`` is 30.  Setting ``state_changed_at``
+        to 31 minutes ago guarantees the threshold is crossed.
+        """
+        past_timeout = _utcnow() - timedelta(minutes=31)
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            state_changed_at=past_timeout,
+        )
+
+        with (
+            patch(
+                "src.main.mount_scanner.lookup",
+                new_callable=AsyncMock,
+                return_value=[],  # file not yet on the mount
+            ),
+            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.SLEEPING, (
+            "CHECKING item whose timeout has elapsed and is not on the mount "
+            "must transition to SLEEPING"
+        )
+
+    async def test_checking_under_timeout_stays_checking(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """CHECKING item not in mount with state_changed_at within the timeout → stays CHECKING.
+
+        ``state_changed_at`` is set to just now (0 seconds ago), which is well
+        within the 1-minute default timeout.
+        """
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            state_changed_at=_utcnow(),  # just entered CHECKING this cycle
+        )
+
+        with (
+            patch(
+                "src.main.mount_scanner.lookup",
+                new_callable=AsyncMock,
+                return_value=[],  # file not yet on the mount
+            ),
+            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.CHECKING, (
+            "CHECKING item within the timeout window must stay CHECKING to be "
+            "retried on the next cycle"
+        )
+
+    async def test_checking_found_in_mount_transitions_to_complete_regardless_of_age(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """CHECKING item found in mount transitions to COMPLETE even if it's very old.
+
+        A match on the mount always takes priority over the timeout; the item
+        should get a symlink and reach COMPLETE, not SLEEPING.
+        """
+        well_past_timeout = _utcnow() - timedelta(hours=24)
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            state_changed_at=well_past_timeout,
+        )
+        mount_match = _make_mount_match("/mnt/zurg/movies/Test Movie (2024)/movie.mkv")
+
+        with (
+            patch(
+                "src.main.mount_scanner.lookup",
+                new_callable=AsyncMock,
+                return_value=[mount_match],
+            ),
+            patch(
+                "src.main.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+            ) as mock_symlink,
+        ):
+            await _job_queue_processor()
+
+        mock_symlink.assert_awaited_once()
+        await session.refresh(item)
+        assert item.state == QueueState.COMPLETE, (
+            "A mount match must always yield COMPLETE regardless of how long "
+            "the item has been in CHECKING"
+        )
+
+    async def test_checking_timeout_exactly_at_boundary_transitions_to_sleeping(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """CHECKING item whose state_changed_at equals the timeout threshold → SLEEPING.
+
+        The condition in main.py is ``<=``, so an item that entered CHECKING
+        exactly ``checking_timeout_minutes`` ago (plus a 1-second buffer to
+        avoid sub-millisecond flakiness) must cross the threshold.
+        """
+        # Use the same default that the production code reads from settings.
+        from src.config import settings as app_settings
+
+        timeout_minutes = app_settings.retry.checking_timeout_minutes
+        exactly_at_boundary = _utcnow() - timedelta(minutes=timeout_minutes, seconds=1)
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            state_changed_at=exactly_at_boundary,
+        )
+
+        with (
+            patch(
+                "src.main.mount_scanner.lookup",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.SLEEPING, (
+            "An item at exactly the timeout boundary (state_changed_at <= threshold) "
+            "must transition to SLEEPING"
+        )
+
+    async def test_checking_timeout_respects_configured_value(
+        self, session: AsyncSession, job_patches: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CHECKING timeout honours a custom ``checking_timeout_minutes`` setting.
+
+        Patch the setting to 10 minutes.  An item that entered CHECKING 5 minutes
+        ago (half the configured timeout) must stay in CHECKING because the
+        threshold has not yet elapsed.
+        """
+        monkeypatch.setattr("src.main.settings.retry.checking_timeout_minutes", 10)
+
+        five_minutes_ago = _utcnow() - timedelta(minutes=5)
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            state_changed_at=five_minutes_ago,
+        )
+
+        with (
+            patch(
+                "src.main.mount_scanner.lookup",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.CHECKING, (
+            "With a 10-minute timeout, an item 5 minutes into CHECKING must not "
+            "transition to SLEEPING yet"
+        )

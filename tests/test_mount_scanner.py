@@ -124,10 +124,14 @@ class TestParseFilename:
         assert result["codec"] is None
 
     def test_ptn_failure_falls_back_to_stem(self) -> None:
-        """When PTN raises an exception the stem is used as the title fallback."""
+        """When PTN raises an exception the stem is used as the title fallback.
+
+        The stem is normalised via _normalize_title, so dots (non-alphanumeric)
+        are converted to spaces and the result is lowercased.
+        """
         with patch("src.core.mount_scanner.PTN.parse", side_effect=RuntimeError("PTN boom")):
             result = _parse_filename("my.movie.2024.mkv")
-        assert "my.movie.2024" in result["title"]
+        assert result["title"] == "my movie 2024"
         assert result["year"] is None
         assert result["resolution"] is None
 

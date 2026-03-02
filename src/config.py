@@ -100,6 +100,7 @@ class RetryConfig(BaseModel):
     dormant_recheck_days: int = 7
     max_active_retries: int = 7
     unreleased_check_hours: int = 6
+    checking_timeout_minutes: int = Field(default=30, ge=1)
 
 
 class UpgradeConfig(BaseModel):

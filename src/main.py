@@ -167,10 +167,20 @@ async def _job_queue_processor() -> None:
                         episode=None,
                     )
                     if not matches:
-                        logger.info(
-                            "CHECKING season pack id=%d title=%r not found in mount yet, will retry next cycle",
-                            item.id, item.title,
+                        timeout_threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                            minutes=settings.retry.checking_timeout_minutes
                         )
+                        if item.state_changed_at and item.state_changed_at <= timeout_threshold:
+                            logger.warning(
+                                "CHECKING season pack id=%d title=%r timed out after %d min, transitioning to SLEEPING",
+                                item.id, item.title, settings.retry.checking_timeout_minutes,
+                            )
+                            await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                        else:
+                            logger.info(
+                                "CHECKING season pack id=%d title=%r not found in mount yet, will retry next cycle",
+                                item.id, item.title,
+                            )
                         continue
 
                     # Deduplicate: pick one file per episode
@@ -220,10 +230,20 @@ async def _job_queue_processor() -> None:
                         episode=item.episode,
                     )
                     if not matches:
-                        logger.info(
-                            "CHECKING item id=%d title=%r not found in mount yet, will retry next cycle",
-                            item.id, item.title,
+                        timeout_threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                            minutes=settings.retry.checking_timeout_minutes
                         )
+                        if item.state_changed_at and item.state_changed_at <= timeout_threshold:
+                            logger.warning(
+                                "CHECKING item id=%d title=%r timed out after %d min, transitioning to SLEEPING",
+                                item.id, item.title, settings.retry.checking_timeout_minutes,
+                            )
+                            await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                        else:
+                            logger.info(
+                                "CHECKING item id=%d title=%r not found in mount yet, will retry next cycle",
+                                item.id, item.title,
+                            )
                         continue
 
                     source_path = matches[0].filepath

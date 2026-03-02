@@ -518,6 +518,17 @@ async def add_to_queue(
     )
 
     now = datetime.now(timezone.utc)
+    # TV shows default to season 1 as a season pack so the scraper starts from
+    # the right place. Movies carry no season/episode context.
+    if db_media_type == MediaType.SHOW:
+        item_season: int | None = 1
+        item_episode: int | None = None
+        item_is_season_pack: bool = True
+    else:
+        item_season = None
+        item_episode = None
+        item_is_season_pack = False
+
     item = MediaItem(
         title=body.title,
         year=body.year,
@@ -529,6 +540,9 @@ async def add_to_queue(
         added_at=now,
         state_changed_at=now,
         retry_count=0,
+        season=item_season,
+        episode=item_episode,
+        is_season_pack=item_is_season_pack,
     )
     session.add(item)
     try:

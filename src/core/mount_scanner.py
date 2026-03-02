@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +36,33 @@ from src.config import settings
 from src.models.mount_index import MountIndex
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Title normalisation
+# ---------------------------------------------------------------------------
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]+")
+_MULTI_SPACE_RE = re.compile(r" {2,}")
+
+
+def _normalize_title(title: str) -> str:
+    """Normalize a title for consistent matching.
+
+    Lowercases, strips non-alphanumeric characters (except spaces),
+    and collapses multiple spaces.
+
+    Args:
+        title: Raw title string (e.g. from TMDB or a torrent filename).
+
+    Returns:
+        Normalised lowercase string containing only alphanumerics and
+        single spaces.
+    """
+    result = title.lower().strip()
+    result = _NON_ALNUM_RE.sub(" ", result)
+    result = _MULTI_SPACE_RE.sub(" ", result)
+    return result.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +333,9 @@ class MountScanner:
         Returns:
             List of matching MountIndex rows, ordered by ``last_seen_at`` desc.
         """
+        normalized = _normalize_title(title)
         stmt = select(MountIndex).where(
-            MountIndex.parsed_title.ilike(f"%{title}%")
+            MountIndex.parsed_title.ilike(f"%{normalized}%")
         )
 
         if season is not None:
@@ -513,7 +542,7 @@ def _parse_filename(filename: str) -> dict[str, Any]:
         logger.warning("_parse_filename: PTN failed on %r — %s", filename, exc)
         stem = os.path.splitext(filename)[0]
         return {
-            "title": stem.strip().lower(),
+            "title": _normalize_title(stem),
             "year": None,
             "season": None,
             "episode": None,
@@ -524,7 +553,7 @@ def _parse_filename(filename: str) -> dict[str, Any]:
     raw_title: str = parsed.get("title") or os.path.splitext(filename)[0]
 
     return {
-        "title": raw_title.strip().lower(),
+        "title": _normalize_title(raw_title),
         "year": parsed.get("year"),
         "season": parsed.get("season"),
         "episode": parsed.get("episode"),

@@ -511,6 +511,13 @@
                      class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
               <p class="text-xs text-vd-muted mt-1">Concurrent items in SCRAPING/ADDING state.</p>
             </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="checking-timeout-minutes">Checking Timeout (minutes)</label>
+              <input type="number" id="checking-timeout-minutes" min="1" step="1"
+                     placeholder="30"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Time before a CHECKING item falls back to SLEEPING.</p>
+            </div>
           </div>
           <div class="pt-2">
             <button type="button" onclick="saveSection('retry')"
@@ -797,8 +804,9 @@
       pill.textContent = formatMinutes(min);
       scheduleEl.appendChild(pill);
     });
-    setField('retry-dormant-days', retry.dormant_recheck_days != null ? retry.dormant_recheck_days : '');
-    setField('retry-max-active',   retry.max_active_retries   != null ? retry.max_active_retries   : '');
+    setField('retry-dormant-days',        retry.dormant_recheck_days       != null ? retry.dormant_recheck_days       : '');
+    setField('retry-max-active',          retry.max_active_retries         != null ? retry.max_active_retries         : '');
+    setField('checking-timeout-minutes',  retry.checking_timeout_minutes   != null ? retry.checking_timeout_minutes   : '');
 
     // Symlink Naming
     const sn = s.symlink_naming || {};
@@ -920,8 +928,9 @@
       case 'retry': {
         return {
           retry: {
-            dormant_recheck_days: parseInt(document.getElementById('retry-dormant-days').value) || 7,
-            max_active_retries:   parseInt(document.getElementById('retry-max-active').value)   || 10,
+            dormant_recheck_days:     parseInt(document.getElementById('retry-dormant-days').value)          || 7,
+            max_active_retries:       parseInt(document.getElementById('retry-max-active').value)            || 10,
+            checking_timeout_minutes: parseInt(document.getElementById('checking-timeout-minutes').value)    || 30,
           }
         };
       }

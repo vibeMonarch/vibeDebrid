@@ -982,3 +982,130 @@ async def test_by_genre_enriches_status(http: AsyncClient, session: AsyncSession
 
     assert resp.status_code == 200
     assert resp.json()["items"][0]["queue_status"] == "in_library"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/discover/add — season pack and movie field defaults
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_tv_show_sets_season1_and_is_season_pack(
+    http: AsyncClient, session: AsyncSession
+) -> None:
+    """POST /api/discover/add with media_type='tv' sets season=1, is_season_pack=True, episode=None.
+
+    TV shows are added as season-1 packs so the scrape pipeline targets the
+    correct season from the first retry cycle.
+    """
+    from sqlalchemy import select
+
+    mock_ext_ids = TmdbExternalIds(imdb_id="tt1234500", tvdb_id=98765)
+
+    with patch(
+        "src.api.routes.discover.tmdb_client.get_external_ids",
+        new_callable=AsyncMock,
+        return_value=mock_ext_ids,
+    ):
+        resp = await http.post(
+            "/api/discover/add",
+            json={
+                "tmdb_id": 40404,
+                "media_type": "tv",
+                "title": "Season Pack Show",
+                "year": 2023,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "created"
+
+    result = await session.execute(
+        select(MediaItem).where(MediaItem.tmdb_id == "40404")
+    )
+    item = result.scalar_one_or_none()
+    assert item is not None, "MediaItem must be persisted in the database"
+    assert item.season == 1, "TV show must default to season=1"
+    assert item.is_season_pack is True, "TV show must default to is_season_pack=True"
+    assert item.episode is None, "TV show must have episode=None (season pack, not a single episode)"
+
+
+@pytest.mark.asyncio
+async def test_add_movie_keeps_default_season_episode_fields(
+    http: AsyncClient, session: AsyncSession
+) -> None:
+    """POST /api/discover/add with media_type='movie' sets season=None, is_season_pack=False, episode=None.
+
+    Movies carry no season/episode context; those fields must remain at their
+    zero-value defaults.
+    """
+    from sqlalchemy import select
+
+    mock_ext_ids = TmdbExternalIds(imdb_id="tt9876500", tvdb_id=None)
+
+    with patch(
+        "src.api.routes.discover.tmdb_client.get_external_ids",
+        new_callable=AsyncMock,
+        return_value=mock_ext_ids,
+    ):
+        resp = await http.post(
+            "/api/discover/add",
+            json={
+                "tmdb_id": 50505,
+                "media_type": "movie",
+                "title": "Plain Movie",
+                "year": 2024,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "created"
+
+    result = await session.execute(
+        select(MediaItem).where(MediaItem.tmdb_id == "50505")
+    )
+    item = result.scalar_one_or_none()
+    assert item is not None, "MediaItem must be persisted in the database"
+    assert item.season is None, "Movie must have season=None"
+    assert item.is_season_pack is False, "Movie must have is_season_pack=False"
+    assert item.episode is None, "Movie must have episode=None"
+
+
+@pytest.mark.asyncio
+async def test_add_tv_show_without_external_ids_still_sets_season_pack_fields(
+    http: AsyncClient, session: AsyncSession
+) -> None:
+    """POST /api/discover/add with media_type='tv' and no TMDB external IDs still sets season/pack fields.
+
+    The season-pack defaults are applied before the TMDB call resolves, so a
+    None return from get_external_ids must not prevent them from being set.
+    """
+    from sqlalchemy import select
+
+    with patch(
+        "src.api.routes.discover.tmdb_client.get_external_ids",
+        new_callable=AsyncMock,
+        return_value=None,  # TMDB returned nothing
+    ):
+        resp = await http.post(
+            "/api/discover/add",
+            json={
+                "tmdb_id": 60606,
+                "media_type": "tv",
+                "title": "Unknown Show",
+                "year": 2022,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "created"
+    assert resp.json()["imdb_id"] is None
+
+    result = await session.execute(
+        select(MediaItem).where(MediaItem.tmdb_id == "60606")
+    )
+    item = result.scalar_one_or_none()
+    assert item is not None
+    assert item.season == 1
+    assert item.is_season_pack is True
+    assert item.episode is None
