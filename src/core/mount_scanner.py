@@ -427,8 +427,79 @@ class MountScanner:
             return 0
 
         if not exists:
-            logger.warning("scan_directory: directory %s not found", dir_path)
-            return 0
+            logger.warning(
+                "scan_directory: directory %s not found — attempting fuzzy match",
+                dir_path,
+            )
+            normalized_input = _normalize_title(directory_name)
+            mount_root = settings.paths.zurg_mount
+
+            def _find_fuzzy_match() -> str | None:
+                try:
+                    scanner = os.scandir(mount_root)
+                except OSError as exc:
+                    logger.warning(
+                        "scan_directory: cannot list mount root %s — %s",
+                        mount_root,
+                        exc,
+                    )
+                    return None
+                # (normalized_name, original_name, full_path)
+                candidates: list[tuple[str, str, str]] = []
+                with scanner:
+                    for entry in scanner:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        norm = _normalize_title(entry.name)
+                        if not norm.startswith(normalized_input):
+                            continue
+                        # Word-boundary check: reject mid-word prefix matches
+                        # (e.g. "predator" won't match "predators"). Note: this
+                        # does NOT prevent "predator" matching "predator 2" —
+                        # disambiguation relies on the shortest-name sort below.
+                        rest = norm[len(normalized_input):]
+                        if rest and not rest.startswith(" "):
+                            continue
+                        candidates.append((norm, entry.name, entry.path))
+                if not candidates:
+                    return None
+                if len(candidates) > 1:
+                    logger.warning(
+                        "scan_directory: %d fuzzy candidates for %r: %s",
+                        len(candidates),
+                        directory_name,
+                        [c[1] for c in candidates],
+                    )
+                # Pick shortest normalized name (closest match); break ties alphabetically
+                candidates.sort(key=lambda c: (len(c[0]), c[0]))
+                return candidates[0][2]
+
+            try:
+                matched_path = await asyncio.wait_for(
+                    asyncio.to_thread(_find_fuzzy_match),
+                    timeout=_HEALTH_CHECK_TIMEOUT,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "scan_directory: fuzzy match timed out for %r — skipping",
+                    directory_name,
+                )
+                return 0
+
+            if matched_path is None:
+                logger.warning(
+                    "scan_directory: no fuzzy match found for %r in %s",
+                    directory_name,
+                    mount_root,
+                )
+                return 0
+
+            logger.info(
+                "scan_directory: fuzzy matched %r -> %s",
+                directory_name,
+                matched_path,
+            )
+            dir_path = matched_path
 
         scan_timestamp = datetime.now(timezone.utc)
 
