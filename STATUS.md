@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-02
+## Last Updated: 2026-03-04
 
 ## Completed
 
@@ -141,6 +141,14 @@
 - Discover SSE: subscribe to `VD_SSE.onStateChange()` for real-time badge updates (title-based matching)
 - Discover SSE: patches in-memory mediaCache + sessionStorage so badges survive re-renders and navigation
 - Known limitation: title-based SSE matching can false-positive for same-name media (needs `tmdb_id` in QueueEvent to fix)
+
+### Fuzzy Directory Match in scan_directory ✅ (Step 0.7)
+- RD torrent filenames may contain special chars (colons, etc.) that Zurg/rclone sanitizes on the filesystem
+- scan_directory now falls back to fuzzy matching when exact directory name not found
+- Lists mount root via os.scandir, normalizes both input and entries, startswith + word-boundary check
+- Collects all candidates, picks shortest normalized name (closest match), deterministic alphabetical tiebreaker
+- Logs warning when multiple candidates found for debugging
+- Timeout-protected FUSE I/O via asyncio.to_thread + 5s timeout
 
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling

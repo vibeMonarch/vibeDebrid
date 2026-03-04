@@ -13,6 +13,7 @@
 - Discovery feature (TMDB trending/search/top_rated/genres/discover + add to queue) — 2026-03-02
 - SSE live updates (event_bus + /api/events + queue/dashboard frontend) — 2026-03-02
 - Discover state preservation (sessionStorage cache + restore) — 2026-03-04
+- Queue detail panel fixes + Discover SSE badges + manual ScrapeLog — 2026-03-04
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
@@ -30,7 +31,21 @@ Pending: Trakt + Plex integration (Step 1)
 - SSE endpoint: `src/api/routes/sse.py` — `GET /api/events`, 30s heartbeat, None sentinel for shutdown
 - Publishing: inline imports in `queue_manager.transition()`/`force_transition()` to avoid circular deps
 - Frontend: `VD_SSE` IIFE in base.html, lazy EventSource, handler fanout
+- Discover SSE: title-based card matching (limitation: same-name media false positives, needs tmdb_id in QueueEvent)
 - `add_torrent()` in search.py still bypasses queue_manager → no SSE events for manual adds (tech debt)
+
+## Queue Detail Panel Notes
+- API returns `ItemDetailResponse { item: MediaItemResponse, scrape_logs: [], torrents: [] }`
+- Frontend flattens: `{ ...data.item, scrape_logs: data.scrape_logs, torrents: data.torrents }`
+- ScrapeLog fields: `scraper`, `query_params` (JSON string), `scraped_at`, `selected_result` (JSON string)
+- RdTorrent fields: `filename`, `filesize` (not size_bytes), `rd_id`, `resolution`, `cached` (nullable), `status`
+
+## Fuzzy Directory Match in scan_directory — 2026-03-04
+- RD filenames have special chars (colons etc.) that Zurg/rclone sanitizes on filesystem
+- `scan_directory()` fuzzy fallback: list mount root, normalize names, startswith + word-boundary check
+- Collects all candidates, shortest normalized name wins, alphabetical tiebreaker for determinism
+- `os.scandir` context manager for proper fd cleanup, 5s timeout via `asyncio.to_thread`
+- Boundary check prevents mid-word matches ("predator" ≠ "predators") but NOT sequel matches ("predator" = "predator 2") — shortest-name sort handles disambiguation
 
 ## Bugs Fixed
 - Naive vs aware datetime comparison in CHECKING timeout (`main.py` lines 170, 233) — `state_changed_at` is tz-aware when set in-memory by queue_manager but naive when loaded from SQLite. Fix: normalize naive values to tz-aware UTC before comparing. NOTE: `.replace(tzinfo=None)` approach fails for in-memory objects; adding tz to naive values handles both paths.
