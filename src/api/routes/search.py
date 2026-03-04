@@ -1,5 +1,6 @@
 """Manual search endpoints."""
 
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -12,6 +13,7 @@ from src.api.deps import get_db
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import filter_engine
 from src.models.media_item import MediaItem, MediaType, QueueState
+from src.models.scrape_result import ScrapeLog
 from src.services.real_debrid import RealDebridError, rd_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
@@ -368,6 +370,35 @@ async def add_torrent(
                 "add_torrent: registered in dedup rd_id=%s info_hash=%s",
                 rd_id,
                 info_hash,
+            )
+
+            # Record a ScrapeLog entry so the queue detail panel shows history
+            # for items added manually via the search UI.
+            query_params_payload: dict[str, str | int | None] = {
+                "query": body.title,
+                "imdb_id": body.imdb_id,
+                "media_type": body.media_type,
+                "season": body.season,
+                "episode": body.episode,
+            }
+            selected_result_payload: dict[str, str | None] = {
+                "title": body.title,
+                "info_hash": info_hash,
+                "rd_id": rd_id,
+            }
+            scrape_log = ScrapeLog(
+                media_item_id=item.id,
+                scraper="manual",
+                query_params=json.dumps(query_params_payload),
+                results_count=1,
+                results_summary=None,
+                selected_result=json.dumps(selected_result_payload),
+                duration_ms=0,
+            )
+            session.add(scrape_log)
+            logger.debug(
+                "add_torrent: created ScrapeLog entry for item_id=%d scraper=manual",
+                item.id,
             )
 
             item.state = QueueState.CHECKING

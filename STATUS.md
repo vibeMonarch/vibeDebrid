@@ -133,6 +133,15 @@
 - Turns ~15-20 min wait for cached torrents into ~1-2 seconds
 - 19 new tests (scan_directory, batch upsert, scandir_walk)
 
+### Queue Detail Panel + Discover SSE ✅ (Step 0.6)
+- Queue detail panel: fixed API response flattening (nested `item` field wasn't spread)
+- Queue detail panel: fixed field mappings (`size_bytes`→`filesize`, `cached !== undefined`→`!= null`)
+- Queue detail panel: fixed scrape log field names (`query`→`query_params`, `created_at`→`scraped_at`, removed dead `scraper_name`)
+- ScrapeLog for manual adds: `search.py:add_torrent()` now creates a `ScrapeLog(scraper="manual")` entry with query context and selected result
+- Discover SSE: subscribe to `VD_SSE.onStateChange()` for real-time badge updates (title-based matching)
+- Discover SSE: patches in-memory mediaCache + sessionStorage so badges survive re-renders and navigation
+- Known limitation: title-based SSE matching can false-positive for same-name media (needs `tmdb_id` in QueueEvent to fix)
+
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - src/services/plex.py — watchlist, library scan trigger

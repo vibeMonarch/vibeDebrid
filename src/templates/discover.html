@@ -744,6 +744,7 @@
     var card = document.createElement('div');
     card.className = 'poster-card';
     card.dataset.tmdbId = item.tmdb_id;
+    card.dataset.title = item.title;
 
     // Status badge
     var statusBadge = '';
@@ -844,6 +845,144 @@
     }
   });
 
+  // -----------------------------------------------------------------------
+  // SSE: live badge updates when queue state changes
+  // -----------------------------------------------------------------------
+
+  var LIBRARY_STATES = ['complete', 'done'];
+
+  // Derive the queue_status string from a raw state name
+  function queueStatusFromState(state) {
+    var s = state.toLowerCase();
+    if (LIBRARY_STATES.indexOf(s) !== -1) return 'in_library';
+    return 'in_queue';
+  }
+
+  // Build the badge HTML for a given queue_status
+  function badgeHtml(queueStatus) {
+    if (queueStatus === 'in_library') {
+      return '<span class="poster-badge badge-status bg-green-600 text-white">In Library</span>';
+    }
+    if (queueStatus === 'in_queue') {
+      return '<span class="poster-badge badge-status bg-blue-600 text-white">In Queue</span>';
+    }
+    return '';
+  }
+
+  // Build the add-button HTML for a given queue_status / item data
+  function addBtnHtml(queueStatus, tmdbId, mediaType, title, year) {
+    if (queueStatus === 'in_library') {
+      return '<button class="add-btn add-btn-library" disabled>In Library</button>';
+    }
+    if (queueStatus === 'in_queue') {
+      return '<button class="add-btn add-btn-queue" disabled>In Queue</button>';
+    }
+    return '<button class="add-btn add-btn-available add-btn-action" ' +
+      'data-tmdb-id="' + escAttr(String(tmdbId)) + '" ' +
+      'data-media-type="' + escAttr(mediaType) + '" ' +
+      'data-title="' + escAttr(title) + '" ' +
+      'data-year="' + escAttr(String(year || '')) + '">Add to Library</button>';
+  }
+
+  // Update every rendered card whose title matches and patch the mediaCache
+  function handleSSEStateChange(data) {
+    var title = data.title;
+    var newState = data.new_state || '';
+    var newQueueStatus = queueStatusFromState(newState);
+
+    // 1. Update all visible cards in the DOM
+    var cards = document.querySelectorAll('.poster-card[data-title]');
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      if (card.dataset.title !== title) continue;
+
+      var imgWrap = card.querySelector('.poster-img-wrap');
+      var infoDiv = card.querySelector('.poster-info');
+      if (!imgWrap || !infoDiv) continue;
+
+      // Replace / insert status badge inside the img-wrap
+      var existingBadge = imgWrap.querySelector('.badge-status');
+      var newBadgeHtml = badgeHtml(newQueueStatus);
+      if (existingBadge) {
+        if (newBadgeHtml) {
+          existingBadge.outerHTML = newBadgeHtml;
+        } else {
+          existingBadge.remove();
+        }
+      } else if (newBadgeHtml) {
+        // Insert badge as the first child of img-wrap (before the img/overlay)
+        var tmp = document.createElement('div');
+        tmp.innerHTML = newBadgeHtml;
+        imgWrap.insertBefore(tmp.firstChild, imgWrap.firstChild);
+      }
+
+      // Replace the add-button in the info div
+      var existingBtn = infoDiv.querySelector('.add-btn');
+      if (existingBtn) {
+        var tmdbId = card.dataset.tmdbId;
+        var mediaType = existingBtn.dataset.mediaType || card.dataset.mediaType || '';
+        var cardTitle = card.dataset.title || title;
+        var year = existingBtn.dataset.year || '';
+        var tmp2 = document.createElement('div');
+        tmp2.innerHTML = addBtnHtml(newQueueStatus, tmdbId, mediaType, cardTitle, year);
+        existingBtn.replaceWith(tmp2.firstChild);
+      }
+    }
+
+    // 2. Patch mediaCache so restored state has correct badges
+    var cacheKeys = ['movie', 'tv'];
+    for (var k = 0; k < cacheKeys.length; k++) {
+      var cache = mediaCache[cacheKeys[k]];
+      if (!cache) continue;
+      var arrays = ['trending', 'topRated', 'genreItems'];
+      for (var a = 0; a < arrays.length; a++) {
+        var arr = cache[arrays[a]];
+        if (!arr) continue;
+        for (var j = 0; j < arr.length; j++) {
+          if (arr[j].title === title) {
+            arr[j].queue_status = newQueueStatus;
+          }
+        }
+      }
+    }
+
+    // 3. Persist updated cache to sessionStorage so navigating away and back
+    //    preserves the new badge state
+    try {
+      var stored = sessionStorage.getItem('vd_discover_state');
+      if (stored) {
+        var parsed = JSON.parse(stored);
+        if (parsed && parsed.cache) {
+          var cacheKeys2 = ['movie', 'tv'];
+          for (var k2 = 0; k2 < cacheKeys2.length; k2++) {
+            var c = parsed.cache[cacheKeys2[k2]];
+            if (!c) continue;
+            var arrays2 = ['trending', 'topRated', 'genreItems'];
+            for (var a2 = 0; a2 < arrays2.length; a2++) {
+              var arr2 = c[arrays2[a2]];
+              if (!arr2) continue;
+              for (var j2 = 0; j2 < arr2.length; j2++) {
+                if (arr2[j2].title === title) {
+                  arr2[j2].queue_status = newQueueStatus;
+                }
+              }
+            }
+          }
+          sessionStorage.setItem('vd_discover_state', JSON.stringify(parsed));
+        }
+      }
+    } catch (e) {
+      // sessionStorage write failures are non-fatal
+    }
+  }
+
+  // Subscribe to SSE and unsubscribe on page unload to avoid memory leaks
+  var _sseUnsub = VD_SSE.onStateChange(handleSSEStateChange);
+  window.addEventListener('pagehide', function() {
+    if (_sseUnsub) { _sseUnsub(); _sseUnsub = null; }
+  });
+
+  // -----------------------------------------------------------------------
   // Utility: escape HTML text content
   function escHtml(str) {
     var div = document.createElement('div');
