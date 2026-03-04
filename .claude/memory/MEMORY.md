@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 831 tests, all passing (as of 2026-03-02)
+- 850 tests, all passing (as of 2026-03-04)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -12,9 +12,18 @@
 - Manual RD cache check button + configurable limit — 2026-03-02
 - Discovery feature (TMDB trending/search/top_rated/genres/discover + add to queue) — 2026-03-02
 - SSE live updates (event_bus + /api/events + queue/dashboard frontend) — 2026-03-02
+- Discover state preservation (sessionStorage cache + restore) — 2026-03-04
+
+## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
+- `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
+- `mount_scanner.py`: `_upsert_records()` batch helper — WHERE filepath IN batches of 500, not 1 SELECT per file
+- `mount_scanner.py`: `scan_directory(session, dir_name)` — targeted single-dir scan for fast CHECKING
+- `main.py` ADDING: captures `rd_info["filename"]` → `torrent.filename` before CHECKING transition
+- `main.py` CHECKING: targeted scan fallback — if lookup() empty, scan_directory(torrent.filename), re-lookup
+- Both `_scandir_walk` calls have timeouts (120s full scan, 30s targeted)
 
 ## STATUS.md Next Steps
-Pending: Discover state preservation (Step 0.4), Fast CHECKING resolution (Step 0.5), then Trakt + Plex integration (Step 1)
+Pending: Trakt + Plex integration (Step 1)
 
 ## SSE Feature Notes
 - Event bus: `src/core/event_bus.py` — module singleton, `put_nowait()` never blocks, maxsize=64 per client
@@ -33,7 +42,7 @@ Pending: Discover state preservation (Step 0.4), Fast CHECKING resolution (Step 
 - Genre browsing: chips from `/genres`, click loads `/by-genre` with `vote_count_gte=50` filter
 - `_enrich_with_queue_status()` does batch DB lookup for queue badges (available/in_queue/in_library)
 - "Add to Library" flow: resolve TMDB→IMDB → navigate to `/search?query=...&imdb_id=...&media_type=...&from=discover` → auto-search → user picks torrent → redirect back to `/discover` after 1.5s
-- Known issue: returning to discover loses tab/genre/scroll state (Step 0.4)
+- State preservation: sessionStorage caches full TMDB response data (both tabs) + genre items + page counters + scroll position. Restored on return from /search with zero API calls. One-shot (cleared after restore).
 
 ## Agent Routing Patterns
 - Backend changes (models, routes, pipeline): backend-dev (sequential, shared state)

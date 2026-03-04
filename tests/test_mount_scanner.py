@@ -409,21 +409,21 @@ class TestScan:
     async def test_scan_getsize_error_counted_as_error(
         self, session: AsyncSession
     ) -> None:
-        """If os.path.getsize fails for a file, it is counted as an error but the scan continues."""
+        """If stat() fails for a file, it is counted as an error but the scan continues."""
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "movie.mkv"), "wb").write(b"vid")
 
-            original_walk = scanner._walk_mount
+            original_walk = scanner._scandir_walk
 
             def _walk_with_size_error(path: str):
                 records, errors = original_walk(path)
-                # Simulate a getsize failure by bumping error count and clearing filesize
+                # Simulate a stat failure by bumping error count and clearing filesize
                 for r in records:
                     r["filesize"] = None
                 return records, errors + 1  # simulate one extra error
 
-            with patch.object(scanner, "_walk_mount", side_effect=_walk_with_size_error):
+            with patch.object(scanner, "_scandir_walk", side_effect=_walk_with_size_error):
                 with patch("src.core.mount_scanner.settings") as mock_settings:
                     mock_settings.paths.zurg_mount = tmpdir
                     result = await scanner.scan(session)
@@ -759,3 +759,355 @@ class TestModuleSingleton:
     def test_singleton_is_mount_scanner_instance(self) -> None:
         """The module-level singleton must be a MountScanner."""
         assert isinstance(mount_scanner, MountScanner)
+
+
+# ---------------------------------------------------------------------------
+# Group 11: scan_directory
+# ---------------------------------------------------------------------------
+
+
+class TestScanDirectory:
+    """Tests for MountScanner.scan_directory — targeted single-subdir indexing."""
+
+    async def test_scan_directory_indexes_video_files(
+        self, session: AsyncSession
+    ) -> None:
+        """Video files inside the named subdirectory are inserted into the index."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "ShowFolder")
+            os.makedirs(subdir)
+            open(os.path.join(subdir, "Movie.2021.1080p.mkv"), "wb").write(b"v")
+            open(os.path.join(subdir, "Show.S01E01.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                count = await scanner.scan_directory(session, "ShowFolder")
+
+        assert count == 2
+
+        # Confirm the DB was populated.
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == 2
+
+    async def test_scan_directory_returns_zero_for_nonexistent(
+        self, session: AsyncSession
+    ) -> None:
+        """scan_directory returns 0 without error when the subdirectory does not exist."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                count = await scanner.scan_directory(session, "does_not_exist")
+
+        assert count == 0
+
+    async def test_scan_directory_returns_zero_for_empty_dir(
+        self, session: AsyncSession
+    ) -> None:
+        """scan_directory returns 0 when the named subdirectory contains no video files."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "EmptyFolder")
+            os.makedirs(subdir)
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                count = await scanner.scan_directory(session, "EmptyFolder")
+
+        assert count == 0
+
+    async def test_scan_directory_handles_nested_subdirs(
+        self, session: AsyncSession
+    ) -> None:
+        """Video files in nested subdirectories are all indexed."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            top = os.path.join(tmpdir, "ShowFolder")
+            s1 = os.path.join(top, "Season 1")
+            s2 = os.path.join(top, "Season 2")
+            os.makedirs(s1)
+            os.makedirs(s2)
+            open(os.path.join(s1, "Show.S01E01.mkv"), "wb").write(b"v")
+            open(os.path.join(s1, "Show.S01E02.mkv"), "wb").write(b"v")
+            open(os.path.join(s2, "Show.S02E01.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                count = await scanner.scan_directory(session, "ShowFolder")
+
+        assert count == 3
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == 3
+
+    async def test_scan_directory_updates_existing_entries(
+        self, session: AsyncSession
+    ) -> None:
+        """Re-scanning a directory updates pre-existing rows instead of duplicating them."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "MovieFolder")
+            os.makedirs(subdir)
+            filepath = os.path.join(subdir, "Movie.2024.mkv")
+            open(filepath, "wb").write(b"v")
+
+            # Pre-seed the DB with the same filepath so it already exists.
+            await _insert_entry(session, filepath=filepath, filename="Movie.2024.mkv")
+            await session.flush()
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                count = await scanner.scan_directory(session, "MovieFolder")
+
+        # 1 file total: it was updated (not inserted as a duplicate).
+        assert count == 1
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == 1
+
+    async def test_scan_directory_timeout_returns_zero(
+        self, session: AsyncSession
+    ) -> None:
+        """When the existence check times out, scan_directory returns 0 gracefully."""
+        scanner = MountScanner()
+        with patch("asyncio.wait_for", side_effect=TimeoutError("simulated hang")):
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = "/some/mount"
+                count = await scanner.scan_directory(session, "any_dir")
+
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Group 12: _upsert_records
+# ---------------------------------------------------------------------------
+
+
+def _make_record(filepath: str, filename: str | None = None) -> dict:
+    """Build a minimal file-record dict suitable for _upsert_records."""
+    name = filename or os.path.basename(filepath)
+    return {
+        "filepath": filepath,
+        "filename": name,
+        "parsed_title": os.path.splitext(name)[0].lower(),
+        "parsed_year": None,
+        "parsed_season": None,
+        "parsed_episode": None,
+        "parsed_resolution": None,
+        "parsed_codec": None,
+        "filesize": 1024,
+    }
+
+
+class TestBatchUpsert:
+    """Tests for MountScanner._upsert_records — the batch insert/update helper."""
+
+    async def test_batch_upsert_inserts_new_records(
+        self, session: AsyncSession
+    ) -> None:
+        """Calling _upsert_records with new filepaths returns correct added count."""
+        scanner = MountScanner()
+        records = [
+            _make_record("/mnt/movie.a.mkv"),
+            _make_record("/mnt/movie.b.mkv"),
+            _make_record("/mnt/movie.c.mkv"),
+        ]
+        ts = _utcnow()
+        added, updated, errors = await scanner._upsert_records(session, records, ts)
+
+        assert added == 3
+        assert updated == 0
+        assert errors == 0
+
+    async def test_batch_upsert_updates_existing_records(
+        self, session: AsyncSession
+    ) -> None:
+        """Re-upserting identical filepaths increments updated, not added."""
+        scanner = MountScanner()
+        fp = "/mnt/existing.mkv"
+        await _insert_entry(session, filepath=fp, filename="existing.mkv")
+        await session.flush()
+
+        records = [_make_record(fp)]
+        ts = _utcnow()
+        added, updated, errors = await scanner._upsert_records(session, records, ts)
+
+        assert added == 0
+        assert updated == 1
+        assert errors == 0
+
+    async def test_batch_upsert_large_batch(self, session: AsyncSession) -> None:
+        """Batches larger than 500 records are all inserted correctly."""
+        scanner = MountScanner()
+        n = 620
+        records = [_make_record(f"/mnt/file{i:04d}.mkv") for i in range(n)]
+        ts = _utcnow()
+        added, updated, errors = await scanner._upsert_records(session, records, ts)
+
+        assert added == n
+        assert updated == 0
+        assert errors == 0
+
+        # Verify they're all in the DB.
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == n
+
+    async def test_batch_upsert_mixed_insert_and_update(
+        self, session: AsyncSession
+    ) -> None:
+        """Mix of new and pre-existing filepaths splits correctly into added/updated."""
+        scanner = MountScanner()
+        existing_fp = "/mnt/already.mkv"
+        await _insert_entry(session, filepath=existing_fp, filename="already.mkv")
+        await session.flush()
+
+        records = [
+            _make_record(existing_fp),          # pre-existing → updated
+            _make_record("/mnt/brand_new_a.mkv"),  # new → added
+            _make_record("/mnt/brand_new_b.mkv"),  # new → added
+        ]
+        ts = _utcnow()
+        added, updated, errors = await scanner._upsert_records(session, records, ts)
+
+        assert added == 2
+        assert updated == 1
+        assert errors == 0
+
+    async def test_batch_upsert_empty_list_returns_zeros(
+        self, session: AsyncSession
+    ) -> None:
+        """Passing an empty records list returns (0, 0, 0) without touching the DB."""
+        scanner = MountScanner()
+        ts = _utcnow()
+        added, updated, errors = await scanner._upsert_records(session, [], ts)
+
+        assert added == 0
+        assert updated == 0
+        assert errors == 0
+
+
+# ---------------------------------------------------------------------------
+# Group 13: _scandir_walk
+# ---------------------------------------------------------------------------
+
+
+class TestScandirWalk:
+    """Tests for MountScanner._scandir_walk — the synchronous filesystem walker."""
+
+    def test_scandir_walk_finds_video_files(self) -> None:
+        """Video files in a directory are returned as records."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "Movie.2024.1080p.mkv"), "wb").write(b"v")
+            open(os.path.join(tmpdir, "Show.S01E01.mkv"), "wb").write(b"v")
+
+            records, errors = scanner._scandir_walk(tmpdir)
+
+        assert errors == 0
+        filenames = {r["filename"] for r in records}
+        assert "Movie.2024.1080p.mkv" in filenames
+        assert "Show.S01E01.mkv" in filenames
+        assert len(records) == 2
+
+    def test_scandir_walk_skips_hidden_and_nonvideo(self) -> None:
+        """Hidden files and non-video extensions are excluded from results."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, ".hidden.mkv"), "wb").write(b"v")
+            open(os.path.join(tmpdir, "readme.txt"), "w").write("text")
+            open(os.path.join(tmpdir, "poster.jpg"), "wb").write(b"img")
+            open(os.path.join(tmpdir, "visible.mkv"), "wb").write(b"v")
+
+            records, errors = scanner._scandir_walk(tmpdir)
+
+        assert errors == 0
+        assert len(records) == 1
+        assert records[0]["filename"] == "visible.mkv"
+
+    def test_scandir_walk_skips_special_dirs(self) -> None:
+        """__MACOSX and .Trash-1000 directories are skipped entirely."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mac_dir = os.path.join(tmpdir, "__MACOSX")
+            trash_dir = os.path.join(tmpdir, ".Trash-1000")
+            os.makedirs(mac_dir)
+            os.makedirs(trash_dir)
+            open(os.path.join(mac_dir, "mac_meta.mkv"), "wb").write(b"v")
+            open(os.path.join(trash_dir, "deleted.mkv"), "wb").write(b"v")
+            open(os.path.join(tmpdir, "real.mkv"), "wb").write(b"v")
+
+            records, errors = scanner._scandir_walk(tmpdir)
+
+        assert errors == 0
+        assert len(records) == 1
+        assert records[0]["filename"] == "real.mkv"
+
+    def test_scandir_walk_recursive(self) -> None:
+        """Video files in nested subdirectories are all discovered."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s1 = os.path.join(tmpdir, "Season 1")
+            s2 = os.path.join(tmpdir, "Season 2")
+            deep = os.path.join(s2, "extras")
+            os.makedirs(s1)
+            os.makedirs(deep)
+            open(os.path.join(s1, "Show.S01E01.mkv"), "wb").write(b"v")
+            open(os.path.join(s1, "Show.S01E02.mkv"), "wb").write(b"v")
+            open(os.path.join(deep, "Show.S02E01.Extras.mkv"), "wb").write(b"v")
+
+            records, errors = scanner._scandir_walk(tmpdir)
+
+        assert errors == 0
+        assert len(records) == 3
+        filenames = {r["filename"] for r in records}
+        assert "Show.S01E01.mkv" in filenames
+        assert "Show.S01E02.mkv" in filenames
+        assert "Show.S02E01.Extras.mkv" in filenames
+
+    def test_scandir_walk_record_has_required_keys(self) -> None:
+        """Every record dict contains all required metadata keys."""
+        scanner = MountScanner()
+        required_keys = {
+            "filepath", "filename", "parsed_title", "parsed_year",
+            "parsed_season", "parsed_episode", "parsed_resolution",
+            "parsed_codec", "filesize",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "Movie.2024.mkv"), "wb").write(b"v")
+            records, _ = scanner._scandir_walk(tmpdir)
+
+        assert len(records) == 1
+        assert required_keys.issubset(records[0].keys())
+
+    def test_scandir_walk_filepath_is_absolute(self) -> None:
+        """The filepath in each record is an absolute path."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "file.mkv"), "wb").write(b"v")
+            records, _ = scanner._scandir_walk(tmpdir)
+
+        assert len(records) == 1
+        assert os.path.isabs(records[0]["filepath"])
+
+    def test_scandir_walk_empty_dir_returns_empty_list(self) -> None:
+        """Walking an empty directory returns an empty list with zero errors."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            records, errors = scanner._scandir_walk(tmpdir)
+
+        assert records == []
+        assert errors == 0
+
+    def test_scandir_walk_skips_hidden_subdir(self) -> None:
+        """Hidden subdirectories (starting with '.') are not descended into."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hidden_subdir = os.path.join(tmpdir, ".hidden_dir")
+            os.makedirs(hidden_subdir)
+            open(os.path.join(hidden_subdir, "secret.mkv"), "wb").write(b"v")
+            open(os.path.join(tmpdir, "visible.mkv"), "wb").write(b"v")
+
+            records, errors = scanner._scandir_walk(tmpdir)
+
+        assert errors == 0
+        assert len(records) == 1
+        assert records[0]["filename"] == "visible.mkv"

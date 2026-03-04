@@ -142,6 +142,13 @@ async def _job_queue_processor() -> None:
                 )
 
                 if rd_status == "downloaded":
+                    rd_filename = rd_info.get("filename")
+                    if rd_filename and torrent.filename != rd_filename:
+                        torrent.filename = rd_filename
+                        logger.info(
+                            "ADDING item id=%d: captured RD filename %r",
+                            item.id, rd_filename,
+                        )
                     await queue_manager.transition(session, item.id, QueueState.CHECKING)
             except Exception:
                 logger.exception(
@@ -166,6 +173,24 @@ async def _job_queue_processor() -> None:
                         season=item.season,
                         episode=None,
                     )
+                    if not matches:
+                        # Targeted scan: check if the RD torrent directory exists on mount
+                        torrent_result = await session.execute(
+                            select(RdTorrent).where(
+                                RdTorrent.media_item_id == item.id,
+                                RdTorrent.status == TorrentStatus.ACTIVE,
+                            )
+                        )
+                        torrent = torrent_result.scalar_one_or_none()
+                        if torrent and torrent.filename:
+                            indexed = await mount_scanner.scan_directory(session, torrent.filename)
+                            if indexed > 0:
+                                matches = await mount_scanner.lookup(
+                                    session,
+                                    title=item.title,
+                                    season=item.season,
+                                    episode=None,
+                                )
                     if not matches:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
@@ -233,6 +258,24 @@ async def _job_queue_processor() -> None:
                         season=item.season,
                         episode=item.episode,
                     )
+                    if not matches:
+                        # Targeted scan: check if the RD torrent directory exists on mount
+                        torrent_result = await session.execute(
+                            select(RdTorrent).where(
+                                RdTorrent.media_item_id == item.id,
+                                RdTorrent.status == TorrentStatus.ACTIVE,
+                            )
+                        )
+                        torrent = torrent_result.scalar_one_or_none()
+                        if torrent and torrent.filename:
+                            indexed = await mount_scanner.scan_directory(session, torrent.filename)
+                            if indexed > 0:
+                                matches = await mount_scanner.lookup(
+                                    session,
+                                    title=item.title,
+                                    season=item.season,
+                                    episode=item.episode,
+                                )
                     if not matches:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes

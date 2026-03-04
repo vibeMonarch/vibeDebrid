@@ -51,7 +51,7 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 831 tests, all passing**
+**Total: 850 tests, all passing**
 
 ### Symlink Naming Convention ✅
 - SymlinkNamingConfig: date_prefix, release_year, resolution toggles
@@ -123,11 +123,15 @@
 - try/catch on sessionStorage.setItem for QuotaExceededError safety
 - Input validation: tab value whitelist, genre ID regex, JSON.parse error handling
 
-### Step 0.5: Fast CHECKING Resolution
-- Problem: cached RD torrents are instantly available on Zurg mount, but CHECKING items must wait for the next mount_scan scheduler cycle before files are found and symlinked
-- Goal: items that are already in RD cache should complete within ~1 minute (mount scan + symlink + COMPLETE), not wait for the full scheduler interval
-- Approach: trigger a targeted mount scan (or direct filesystem lookup) during CHECKING stage when mount index has no matches, so newly added cached torrents are found immediately
-- This avoids the multi-minute gap between ADDING→CHECKING and the next mount_scan cycle
+### Step 0.5: Fast CHECKING Resolution + Mount Scan Performance ✅
+- Mount scanner: `_scandir_walk()` replaces `os.walk` + `os.path.getsize` with `os.scandir` + `DirEntry.stat()` (fewer FUSE syscalls)
+- Mount scanner: `_upsert_records()` batch helper — `WHERE filepath IN` batches of 500, not 1 SELECT per file
+- Mount scanner: `scan_directory(session, dir_name)` — targeted single-dir scan (additive, no stale deletion)
+- Both scandir walks have FUSE hang protection (120s full scan, 30s targeted scan timeouts)
+- ADDING stage: captures `rd_info["filename"]` → `torrent.filename` (actual Zurg directory name)
+- CHECKING stage: targeted scan fallback — if `lookup()` empty, `scan_directory(torrent.filename)`, re-lookup
+- Turns ~15-20 min wait for cached torrents into ~1-2 seconds
+- 19 new tests (scan_directory, batch upsert, scandir_walk)
 
 ### Step 1: Trakt + Plex Integration
 - src/services/trakt.py — OAuth, watchlist polling

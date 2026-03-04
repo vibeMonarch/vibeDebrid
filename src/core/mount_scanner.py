@@ -222,62 +222,29 @@ class MountScanner:
 
         logger.info("scan: starting mount walk at %s", settings.paths.zurg_mount)
 
-        # --- Phase 1: walk filesystem in thread ---
-        file_records, walk_errors = await asyncio.to_thread(
-            self._walk_mount, settings.paths.zurg_mount
-        )
+        # --- Phase 1: walk filesystem in thread (120s timeout guards FUSE hangs) ---
+        try:
+            file_records, walk_errors = await asyncio.wait_for(
+                asyncio.to_thread(self._scandir_walk, settings.paths.zurg_mount),
+                timeout=120.0,
+            )
+        except TimeoutError:
+            logger.error(
+                "scan: filesystem walk timed out after 120s — mount may be hanging"
+            )
+            return ScanResult(
+                files_found=0, files_added=0, files_updated=0,
+                files_removed=0, duration_ms=int((time.monotonic() - start_time) * 1000),
+                errors=1,
+            )
 
         files_found = len(file_records)
         logger.info("scan: discovered %d video files (%d errors during walk)", files_found, walk_errors)
 
         # --- Phase 2: upsert records into DB ---
-        files_added = 0
-        files_updated = 0
-        upsert_errors = 0
-
-        for record in file_records:
-            try:
-                result = await session.execute(
-                    select(MountIndex).where(MountIndex.filepath == record["filepath"])
-                )
-                existing = result.scalar_one_or_none()
-
-                if existing is None:
-                    new_entry = MountIndex(
-                        filepath=record["filepath"],
-                        filename=record["filename"],
-                        parsed_title=record["parsed_title"],
-                        parsed_year=record["parsed_year"],
-                        parsed_season=record["parsed_season"],
-                        parsed_episode=record["parsed_episode"],
-                        parsed_resolution=record["parsed_resolution"],
-                        parsed_codec=record["parsed_codec"],
-                        filesize=record["filesize"],
-                        last_seen_at=scan_started_at,
-                    )
-                    session.add(new_entry)
-                    files_added += 1
-                else:
-                    existing.filename = record["filename"]
-                    existing.parsed_title = record["parsed_title"]
-                    existing.parsed_year = record["parsed_year"]
-                    existing.parsed_season = record["parsed_season"]
-                    existing.parsed_episode = record["parsed_episode"]
-                    existing.parsed_resolution = record["parsed_resolution"]
-                    existing.parsed_codec = record["parsed_codec"]
-                    existing.filesize = record["filesize"]
-                    existing.last_seen_at = scan_started_at
-                    files_updated += 1
-
-            except Exception as exc:  # noqa: BLE001 — broad catch intentional for per-file resilience
-                logger.warning(
-                    "scan: DB upsert failed for %r — %s",
-                    record.get("filepath", "<unknown>"),
-                    exc,
-                )
-                upsert_errors += 1
-
-        await session.flush()
+        files_added, files_updated, upsert_errors = await self._upsert_records(
+            session, file_records, scan_started_at
+        )
 
         # --- Phase 3: remove stale entries ---
         stale_result = await session.execute(
@@ -427,39 +394,216 @@ class MountScanner:
         logger.warning("clear_index: deleted %d rows from mount_index", count)
         return count
 
+    async def scan_directory(self, session: AsyncSession, directory_name: str) -> int:
+        """Index all video files under a single named subdirectory of the mount.
+
+        Unlike ``scan()``, this method is additive — it never deletes stale
+        rows.  It is intended for targeted refreshes (e.g. after a new torrent
+        is added to RD) rather than full periodic sweeps.
+
+        Args:
+            session: Active async SQLAlchemy session.  The caller owns the
+                transaction and must call ``await session.commit()`` afterward.
+            directory_name: Basename of the subdirectory inside the Zurg mount
+                root (e.g. ``"__all__"`` or a specific show folder).
+
+        Returns:
+            Number of files successfully indexed (inserted or updated).
+            Returns 0 if the directory does not exist or the existence check
+            times out.
+        """
+        dir_path = os.path.join(settings.paths.zurg_mount, directory_name, "")
+
+        try:
+            exists = await asyncio.wait_for(
+                asyncio.to_thread(os.path.isdir, dir_path),
+                timeout=_HEALTH_CHECK_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "scan_directory: existence check timed out for %r — skipping",
+                dir_path,
+            )
+            return 0
+
+        if not exists:
+            logger.warning("scan_directory: directory %s not found", dir_path)
+            return 0
+
+        scan_timestamp = datetime.now(timezone.utc)
+
+        try:
+            file_records, walk_errors = await asyncio.wait_for(
+                asyncio.to_thread(self._scandir_walk, dir_path),
+                timeout=30.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "scan_directory: walk timed out after 30s for %s", dir_path,
+            )
+            return 0
+
+        if walk_errors:
+            logger.warning(
+                "scan_directory: %d errors during walk of %s", walk_errors, dir_path
+            )
+
+        files_added, files_updated, upsert_errors = await self._upsert_records(
+            session, file_records, scan_timestamp
+        )
+
+        total_indexed = files_added + files_updated
+        logger.info(
+            "scan_directory: indexed %d files from %s (added=%d updated=%d errors=%d)",
+            total_indexed,
+            dir_path,
+            files_added,
+            files_updated,
+            upsert_errors,
+        )
+        return total_indexed
+
+    # ------------------------------------------------------------------
+    # Private helpers — async DB
+    # ------------------------------------------------------------------
+
+    async def _upsert_records(
+        self,
+        session: AsyncSession,
+        records: list[dict[str, Any]],
+        scan_timestamp: datetime,
+    ) -> tuple[int, int, int]:
+        """Batch-upsert file records into mount_index.
+
+        Fetches all pre-existing rows whose ``filepath`` matches any record in
+        the provided list using batched ``WHERE filepath IN (...)`` queries
+        (batch size 500).  Set-based lookups then determine whether each record
+        needs an INSERT or an UPDATE, avoiding N individual SELECT queries.
+
+        Args:
+            session: Active async SQLAlchemy session.
+            records: List of file metadata dicts as produced by
+                ``_scandir_walk``.  Each dict must have a ``"filepath"`` key.
+            scan_timestamp: Timestamp to write into ``last_seen_at`` for every
+                touched row.
+
+        Returns:
+            A 3-tuple ``(files_added, files_updated, upsert_errors)``.
+        """
+        if not records:
+            return 0, 0, 0
+
+        _BATCH_SIZE = 500
+
+        # Build a filepath -> record map for fast lookup.
+        record_map: dict[str, dict[str, Any]] = {r["filepath"]: r for r in records}
+        all_filepaths = list(record_map.keys())
+
+        # Fetch existing rows in batches.
+        existing_map: dict[str, MountIndex] = {}
+        for i in range(0, len(all_filepaths), _BATCH_SIZE):
+            batch = all_filepaths[i : i + _BATCH_SIZE]
+            result = await session.execute(
+                select(MountIndex).where(MountIndex.filepath.in_(batch))
+            )
+            for row in result.scalars().all():
+                existing_map[row.filepath] = row
+
+        files_added = 0
+        files_updated = 0
+        upsert_errors = 0
+
+        for filepath, record in record_map.items():
+            try:
+                existing = existing_map.get(filepath)
+                if existing is None:
+                    new_entry = MountIndex(
+                        filepath=record["filepath"],
+                        filename=record["filename"],
+                        parsed_title=record["parsed_title"],
+                        parsed_year=record["parsed_year"],
+                        parsed_season=record["parsed_season"],
+                        parsed_episode=record["parsed_episode"],
+                        parsed_resolution=record["parsed_resolution"],
+                        parsed_codec=record["parsed_codec"],
+                        filesize=record["filesize"],
+                        last_seen_at=scan_timestamp,
+                    )
+                    session.add(new_entry)
+                    files_added += 1
+                else:
+                    existing.filename = record["filename"]
+                    existing.parsed_title = record["parsed_title"]
+                    existing.parsed_year = record["parsed_year"]
+                    existing.parsed_season = record["parsed_season"]
+                    existing.parsed_episode = record["parsed_episode"]
+                    existing.parsed_resolution = record["parsed_resolution"]
+                    existing.parsed_codec = record["parsed_codec"]
+                    existing.filesize = record["filesize"]
+                    existing.last_seen_at = scan_timestamp
+                    files_updated += 1
+            except Exception as exc:  # noqa: BLE001 — per-file resilience
+                logger.warning(
+                    "_upsert_records: DB upsert failed for %r — %s",
+                    filepath,
+                    exc,
+                )
+                upsert_errors += 1
+
+        await session.flush()
+        return files_added, files_updated, upsert_errors
+
     # ------------------------------------------------------------------
     # Private helpers (run in thread)
     # ------------------------------------------------------------------
 
-    def _walk_mount(
-        self, mount_path: str
+    def _scandir_walk(
+        self, dir_path: str
     ) -> tuple[list[dict[str, Any]], int]:
-        """Walk the mount directory tree and parse all video filenames.
+        """Recursively walk a directory tree using ``os.scandir`` and parse video filenames.
+
+        Prefer ``os.scandir`` over ``os.walk`` because ``DirEntry.stat()``
+        reuses inode metadata already fetched by the underlying ``readdir``
+        syscall on Linux, avoiding one extra FUSE round-trip per file compared
+        to a separate ``os.path.getsize`` call.
 
         This method is designed to run inside ``asyncio.to_thread`` — it is
         synchronous and may block on I/O.
 
         Args:
-            mount_path: Absolute path to the Zurg mount root (the ``__all__``
-                directory or equivalent).
+            dir_path: Absolute path to start the recursive walk from.
 
         Returns:
             A 2-tuple ``(records, error_count)`` where ``records`` is a list
             of dicts containing parsed file metadata, and ``error_count`` is
             the number of individual file errors encountered (file skipped but
-            scan continues).
+            scan continues).  Each dict has keys: ``filepath``, ``filename``,
+            ``parsed_title``, ``parsed_year``, ``parsed_season``,
+            ``parsed_episode``, ``parsed_resolution``, ``parsed_codec``,
+            ``filesize``.
         """
         records: list[dict[str, Any]] = []
         error_count = 0
+        stack: list[str] = [dir_path]
 
-        for dirpath, dirnames, filenames in os.walk(mount_path):
-            # Prune directories in-place so os.walk skips them entirely.
-            dirnames[:] = [
-                d for d in dirnames
-                if not self._should_skip_dir(d)
-            ]
+        while stack:
+            current_dir = stack.pop()
+            try:
+                entries = list(os.scandir(current_dir))
+            except OSError as exc:
+                logger.warning("_scandir_walk: cannot scandir %r — %s", current_dir, exc)
+                error_count += 1
+                continue
 
-            for filename in filenames:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    if not self._should_skip_dir(entry.name):
+                        stack.append(entry.path)
+                    continue
+
+                # Regular file (or symlink to file — follow it).
+                filename = entry.name
+
                 # Skip hidden files.
                 if filename.startswith("."):
                     continue
@@ -468,18 +612,18 @@ class MountScanner:
                 if ext not in VIDEO_EXTENSIONS:
                     continue
 
-                filepath = os.path.join(dirpath, filename)
-
                 try:
-                    filesize: int | None = os.path.getsize(filepath)
+                    filesize: int | None = entry.stat(follow_symlinks=True).st_size
                 except OSError as exc:
-                    logger.warning("_walk_mount: cannot get size for %r — %s", filepath, exc)
+                    logger.warning(
+                        "_scandir_walk: cannot stat %r — %s", entry.path, exc
+                    )
                     filesize = None
                     error_count += 1
 
                 parsed = _parse_filename(filename)
                 record: dict[str, Any] = {
-                    "filepath": filepath,
+                    "filepath": entry.path,
                     "filename": filename,
                     "parsed_title": parsed.get("title"),
                     "parsed_year": parsed.get("year"),
