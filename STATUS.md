@@ -113,10 +113,15 @@
 - Fixed: naive vs aware datetime comparison bug in CHECKING timeout
 - 21 new tests (19 event_bus + 2 queue_manager integration)
 
-### Step 0.4: Discover Page State Preservation
-- Problem: when user clicks "Add to Library" on a genre browsing page, they navigate to search. After adding a torrent, they return to /discover but lose their position — active tab, selected genre, scroll position, and loaded genre results are all reset
-- Goal: returning from search should restore the exact discover page state (tab, genre, scroll)
-- Possible approaches: URL-based state (encode tab/genre/page in discover URL + pass as return_to), sessionStorage, or open search in a modal/overlay instead of full navigation
+### Discover Page State Preservation ✅ (Step 0.4)
+- sessionStorage-based state preservation for discover page round-trips
+- Saves full TMDB response data (trending, top rated, genre chips, genre results) — zero API calls on restore
+- Both tab caches saved/restored — switching tabs after return needs no re-fetch
+- Genre page counter + total pages restored — Load More continues from correct page
+- Scroll position restored via setTimeout(100ms) after layout settles
+- One-shot: sessionStorage cleared immediately after restore, refresh starts fresh
+- try/catch on sessionStorage.setItem for QuotaExceededError safety
+- Input validation: tab value whitelist, genre ID regex, JSON.parse error handling
 
 ### Step 0.5: Fast CHECKING Resolution
 - Problem: cached RD torrents are instantly available on Zurg mount, but CHECKING items must wait for the next mount_scan scheduler cycle before files are found and symlinked

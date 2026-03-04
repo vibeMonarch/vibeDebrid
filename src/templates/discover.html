@@ -299,6 +299,170 @@
   let lastQuery = '';
   let lastMediaType = 'multi';
 
+  // Cache of loaded data per media type for state preservation
+  let mediaCache = {
+    movie: null,  // { trending: [], topRated: [], genres: [], genreItems: [], genreTitle: '' }
+    tv: null
+  };
+
+  // Save discover state before navigating away
+  function saveDiscoverState() {
+    var state = {
+      tab: currentTab,
+      activeGenre: { movie: activeGenre.movie, tv: activeGenre.tv },
+      genrePage: { movie: genrePage.movie, tv: genrePage.tv },
+      genreTotalPages: { movie: genreTotalPages.movie, tv: genreTotalPages.tv },
+      scrollY: window.scrollY,
+      cache: { movie: mediaCache.movie, tv: mediaCache.tv }
+    };
+    try {
+      sessionStorage.setItem('vd_discover_state', JSON.stringify(state));
+    } catch (e) {
+      // QuotaExceededError — proceed without saving
+    }
+  }
+
+  // Restore discover state from sessionStorage
+  async function restoreDiscoverState(state) {
+    // Switch to the saved tab (validate value)
+    var tab = state.tab || 'movies';
+    if (['movies', 'tv', 'search'].indexOf(tab) === -1) tab = 'movies';
+    currentTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    document.querySelectorAll('.tab-content').forEach(function(el) {
+      el.classList.add('hidden');
+    });
+    document.getElementById('tab-' + tab).classList.remove('hidden');
+
+    if (tab === 'movies' || tab === 'tv') {
+      var mediaType = tab === 'movies' ? 'movie' : 'tv';
+      var otherType = mediaType === 'movie' ? 'tv' : 'movie';
+      var tabCache = state.cache ? state.cache[mediaType] : null;
+      var otherCache = state.cache ? state.cache[otherType] : null;
+
+      // Pre-load the other tab's cache so switching tabs won't re-fetch
+      if (otherCache) {
+        renderFromCache(otherType, otherCache);
+      }
+
+      // Use cached data if available, otherwise fetch from API
+      if (tabCache) {
+        renderFromCache(mediaType, tabCache);
+      } else {
+        await loadMediaTab(mediaType);
+      }
+
+      // Restore active genre
+      var savedGenreId = state.activeGenre ? state.activeGenre[mediaType] : null;
+      if (savedGenreId !== null && savedGenreId !== undefined && /^\d+$/.test(String(savedGenreId))) {
+        var prefix = mediaType === 'movie' ? 'movies' : 'tv';
+
+        // Activate the genre chip visually
+        var chip = document.querySelector('#' + prefix + '-genre-chips .genre-chip[data-genre-id="' + savedGenreId + '"]');
+        if (chip) {
+          // If we have cached genre items, render them directly instead of re-fetching
+          if (tabCache && tabCache.genreItems && tabCache.genreItems.length > 0) {
+            // Deselect any previous chip, activate this one
+            document.querySelectorAll('#' + prefix + '-genre-chips .genre-chip').forEach(function(c) {
+              c.classList.remove('active');
+            });
+            chip.classList.add('active');
+            activeGenre[mediaType] = savedGenreId;
+
+            // Render cached genre results
+            var genreSection = document.getElementById(prefix + '-genre-section');
+            var genreGrid = document.getElementById(prefix + '-genre-grid');
+            var genreTitle = document.getElementById(prefix + '-genre-title');
+
+            genreTitle.textContent = tabCache.genreTitle || chip.textContent;
+            genreGrid.innerHTML = '';
+            renderGrid(genreGrid, tabCache.genreItems, false);
+            genreSection.classList.remove('hidden');
+
+            // Restore page counters
+            genrePage[mediaType] = state.genrePage ? (state.genrePage[mediaType] || 1) : 1;
+            genreTotalPages[mediaType] = state.genreTotalPages ? (state.genreTotalPages[mediaType] || 1) : 1;
+
+            // Show load more only if there are more pages
+            var loadMoreDiv = document.getElementById(prefix + '-genre-load-more');
+            if (genrePage[mediaType] < genreTotalPages[mediaType]) {
+              loadMoreDiv.classList.remove('hidden');
+              var pageInfo = document.getElementById(prefix + '-genre-page-info');
+              pageInfo.textContent = 'Page ' + genrePage[mediaType] + ' of ' + genreTotalPages[mediaType];
+            } else {
+              loadMoreDiv.classList.add('hidden');
+            }
+          } else {
+            // No cached genre items, fetch fresh
+            await selectGenre(mediaType, savedGenreId, chip);
+          }
+        }
+      }
+    }
+
+    // Restore scroll position after layout settles
+    if (state.scrollY) {
+      setTimeout(function() {
+        window.scrollTo(0, state.scrollY);
+      }, 100);
+    }
+  }
+
+  // Render a media tab from cached data (no API calls)
+  function renderFromCache(mediaType, cache) {
+    var prefix = mediaType === 'movie' ? 'movies' : 'tv';
+    var loading = document.getElementById(prefix + '-loading');
+    var sections = document.getElementById(prefix + '-sections');
+
+    loading.classList.add('hidden');
+
+    // Render trending
+    var trendingRow = document.getElementById(prefix + '-trending-row');
+    if (cache.trending && cache.trending.length > 0) {
+      renderRow(trendingRow, cache.trending);
+    } else {
+      trendingRow.innerHTML = '<p class="text-vd-muted text-sm py-4">No trending items found.</p>';
+    }
+
+    // Render top rated
+    var topRatedRow = document.getElementById(prefix + '-top-rated-row');
+    if (cache.topRated && cache.topRated.length > 0) {
+      renderRow(topRatedRow, cache.topRated);
+    } else {
+      topRatedRow.innerHTML = '<p class="text-vd-muted text-sm py-4">No top rated items found.</p>';
+    }
+
+    // Render genre chips
+    var genresList = cache.genres || [];
+    if (mediaType === 'movie') movieGenres = genresList;
+    else tvGenres = genresList;
+
+    var chipsContainer = document.getElementById(prefix + '-genre-chips');
+    chipsContainer.innerHTML = '';
+    for (var i = 0; i < genresList.length; i++) {
+      var genre = genresList[i];
+      var chip = document.createElement('button');
+      chip.className = 'genre-chip';
+      chip.textContent = genre.name;
+      chip.dataset.genreId = genre.id;
+      chip.dataset.mediaType = mediaType;
+      chip.addEventListener('click', function() {
+        selectGenre(this.dataset.mediaType, parseInt(this.dataset.genreId), this);
+      });
+      chipsContainer.appendChild(chip);
+    }
+
+    sections.classList.remove('hidden');
+
+    if (mediaType === 'movie') moviesLoaded = true;
+    else tvLoaded = true;
+
+    // Store in mediaCache so future saves work
+    mediaCache[mediaType] = cache;
+  }
+
   // Tab switching
   window.switchTab = function(tab) {
     currentTab = tab;
@@ -347,6 +511,15 @@
       var trendingData = results[0];
       var topRatedData = results[1];
       var genresData = results[2];
+
+      // Cache the loaded data for state preservation
+      mediaCache[mediaType] = {
+        trending: trendingData.items || [],
+        topRated: topRatedData.items || [],
+        genres: genresData.genres || [],
+        genreItems: [],
+        genreTitle: ''
+      };
 
       loading.classList.add('hidden');
 
@@ -398,7 +571,7 @@
   }
 
   // Select a genre chip
-  function selectGenre(mediaType, genreId, chipEl) {
+  async function selectGenre(mediaType, genreId, chipEl) {
     var prefix = mediaType === 'movie' ? 'movies' : 'tv';
     var chipsContainer = document.getElementById(prefix + '-genre-chips');
     var genreSection = document.getElementById(prefix + '-genre-section');
@@ -427,7 +600,7 @@
     genreTitle.textContent = chipEl.textContent;
     genreSection.classList.remove('hidden');
 
-    fetchGenreResults(mediaType, genreId, 1, false);
+    await fetchGenreResults(mediaType, genreId, 1, false);
   }
 
   // Fetch genre results
@@ -455,6 +628,17 @@
 
       renderGrid(genreGrid, data.items, false);
       genreTotalPages[mediaType] = data.total_pages;
+
+      // Cache genre results for state preservation
+      if (mediaCache[mediaType]) {
+        if (!append) {
+          mediaCache[mediaType].genreItems = data.items.slice();
+        } else {
+          mediaCache[mediaType].genreItems = mediaCache[mediaType].genreItems.concat(data.items);
+        }
+        var prefix2 = mediaType === 'movie' ? 'movies' : 'tv';
+        mediaCache[mediaType].genreTitle = document.getElementById(prefix2 + '-genre-title').textContent;
+      }
 
       if (page < data.total_pages) {
         loadMoreDiv.classList.remove('hidden');
@@ -650,6 +834,7 @@
       params.set('media_type', mediaType === 'tv' ? 'show' : 'movie');
       params.set('from', 'discover');
 
+      saveDiscoverState();
       window.location.href = '/search?' + params.toString();
     } catch (err) {
       showToast('Failed to resolve: ' + err.message, 'error');
@@ -676,8 +861,21 @@
       .replace(/>/g, '&gt;');
   }
 
-  // Load Movies tab on page load
-  loadMediaTab('movie');
+  // Restore state if returning from search, otherwise load default
+  var savedState = sessionStorage.getItem('vd_discover_state');
+  if (savedState) {
+    sessionStorage.removeItem('vd_discover_state');
+    try {
+      var parsed = JSON.parse(savedState);
+      restoreDiscoverState(parsed).catch(function() {
+        switchTab('movies');
+      });
+    } catch (e) {
+      loadMediaTab('movie');
+    }
+  } else {
+    loadMediaTab('movie');
+  }
 })();
 </script>
 {% endblock %}
