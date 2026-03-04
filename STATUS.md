@@ -51,7 +51,7 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 850 tests, all passing**
+**Total: 862 tests, all passing**
 
 ### Symlink Naming Convention ✅
 - SymlinkNamingConfig: date_prefix, release_year, resolution toggles
@@ -150,9 +150,17 @@
 - Logs warning when multiple candidates found for debugging
 - Timeout-protected FUSE I/O via asyncio.to_thread + 5s timeout
 
-### Step 1: Trakt + Plex Integration
+### Plex Integration ✅ (Step 1a)
+- src/services/plex.py — stateless PlexClient (test_connection, get_libraries, scan_section, create_pin, check_pin)
+- OAuth PIN-based auth flow: create_pin → browser popup → poll check_pin → save token
+- Settings UI: Plex test button, OAuth connect flow, library section checkboxes, scan toggle
+- 4 new API endpoints: POST /test/plex, POST /plex/auth/start, POST /plex/auth/check/{pin_id}, GET /plex/libraries
+- Auto scan trigger: after COMPLETE transition, scans configured movie/show Plex sections
+- Config lock: asyncio.Lock prevents race condition on concurrent config.json writes
+- 12 new tests (mocked httpx transport)
+
+### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling
-- src/services/plex.py — watchlist, library scan trigger
 - Wire into scheduler with config intervals
 
 

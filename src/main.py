@@ -304,6 +304,24 @@ async def _job_queue_processor() -> None:
                     await symlink_manager.create_symlink(session, item, source_path)
 
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
+
+                # Trigger Plex library scan if configured
+                try:
+                    if settings.plex.enabled and settings.plex.scan_after_symlink and settings.plex.token:
+                        from src.services.plex import plex_client
+                        section_ids = (
+                            settings.plex.movie_section_ids
+                            if item.media_type == "movie"
+                            else settings.plex.show_section_ids
+                        )
+                        if not section_ids:
+                            logger.debug("Plex scan enabled but no section IDs configured for media_type=%s", item.media_type)
+                        for sid in section_ids:
+                            await plex_client.scan_section(sid)
+                            logger.info("Triggered Plex scan for section %d (item id=%d)", sid, item.id)
+                except Exception:
+                    logger.exception("Plex scan trigger failed for item id=%d (non-fatal)", item.id)
+
             except Exception:
                 logger.exception(
                     "Failed to process CHECKING item id=%d title=%s",

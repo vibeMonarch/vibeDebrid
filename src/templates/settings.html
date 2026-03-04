@@ -101,6 +101,21 @@
       <span id="test-result-tmdb" class="test-result text-sm"></span>
     </div>
 
+    <!-- Plex test -->
+    <div class="flex items-center gap-3 flex-1">
+      <button onclick="runTest('plex', this)"
+              class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test Plex
+      </button>
+      <span id="test-result-plex" class="test-result text-sm text-vd-muted"></span>
+    </div>
+
   </div>
 </div>
 
@@ -689,6 +704,117 @@
     </div>
   </div>
 
+  <!-- Plex section (collapsed by default) -->
+  <div id="section-plex" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('plex')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+        </svg>
+        <span class="font-semibold text-white">Plex</span>
+      </div>
+      <svg id="chevron-plex" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-plex" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 space-y-4 border-t border-vd-border pt-4">
+
+          <!-- Enabled toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-400" for="plex-enabled">Enabled</label>
+              <p class="text-xs text-vd-muted">Enable Plex integration for library scans</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-4">
+              <input type="checkbox" id="plex-enabled" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Server URL -->
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="plex-url">Server URL</label>
+            <input type="url" id="plex-url"
+                   placeholder="http://localhost:32400"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Base URL of your Plex Media Server.</p>
+          </div>
+
+          <!-- Token row -->
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="plex-token-display">Plex Token</label>
+            <div class="flex items-center gap-3">
+              <input type="text" id="plex-token-display" readonly
+                     placeholder="Not connected"
+                     class="flex-1 bg-vd-bg border border-vd-border text-gray-400 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none placeholder-gray-600 cursor-default">
+              <button type="button" onclick="startPlexAuth()"
+                      class="flex items-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap"
+                      style="background-color: #E5A00D;">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                </svg>
+                Connect to Plex
+              </button>
+            </div>
+            <p class="text-xs text-vd-muted mt-1">Authenticate with your Plex account to obtain a token. The token is stored server-side.</p>
+          </div>
+
+          <!-- Scan After Symlink toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-400" for="plex-scan-after-symlink">Scan After Symlink</label>
+              <p class="text-xs text-vd-muted">Trigger a Plex library scan each time a new symlink is created</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-4">
+              <input type="checkbox" id="plex-scan-after-symlink" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Libraries -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <p class="text-sm text-gray-400">Libraries</p>
+              <button type="button" onclick="fetchPlexLibraries()"
+                      class="flex items-center gap-1.5 px-3 py-1.5 bg-vd-bg border border-vd-border hover:border-vd-accent text-gray-300 text-xs font-medium rounded-lg transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                Refresh Libraries
+              </button>
+            </div>
+            <p class="text-xs text-vd-muted mb-3">Select which Plex libraries to scan when new media is added.</p>
+            <div id="plex-libraries-container" class="bg-vd-bg border border-vd-border rounded-lg p-3 min-h-[3rem]">
+              <p class="text-sm text-vd-muted">Click "Refresh Libraries" to load your Plex libraries.</p>
+            </div>
+            <!-- Hidden inputs to persist selected section IDs as comma-separated values -->
+            <input type="hidden" id="plex-movie-section-ids" value="">
+            <input type="hidden" id="plex-show-section-ids" value="">
+          </div>
+
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('plex')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Plex
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- #settings-form -->
 {% endblock %}
 
@@ -830,6 +956,16 @@
       const tmdbMasked = document.getElementById('tmdb-api-key-masked');
       if (tmdbMasked) tmdbMasked.textContent = s.tmdb.api_key || '';
     }
+
+    // Plex
+    if (s.plex) {
+      document.getElementById('plex-enabled').checked = s.plex.enabled || false;
+      document.getElementById('plex-url').value = s.plex.url || 'http://localhost:32400';
+      document.getElementById('plex-token-display').value = s.plex.token || '';
+      document.getElementById('plex-scan-after-symlink').checked = s.plex.scan_after_symlink !== false;
+      document.getElementById('plex-movie-section-ids').value = (s.plex.movie_section_ids || []).join(',');
+      document.getElementById('plex-show-section-ids').value = (s.plex.show_section_ids || []).join(',');
+    }
   }
 
   function setField(id, value) {
@@ -963,6 +1099,18 @@
           tmdb: {
             enabled: document.getElementById('tmdb-enabled').checked,
             ...(newKey ? { api_key: newKey } : {})
+          }
+        };
+      }
+      case 'plex': {
+        return {
+          plex: {
+            enabled:            document.getElementById('plex-enabled').checked,
+            url:                document.getElementById('plex-url').value.trim(),
+            // INTENTIONALLY omit token — don't send the masked/display value back to the server
+            scan_after_symlink: document.getElementById('plex-scan-after-symlink').checked,
+            movie_section_ids:  document.getElementById('plex-movie-section-ids').value.split(',').filter(Boolean).map(Number),
+            show_section_ids:   document.getElementById('plex-show-section-ids').value.split(',').filter(Boolean).map(Number),
           }
         };
       }
@@ -1111,6 +1259,111 @@
     preview.innerHTML =
       '<div>movies/' + escapeHtml(movieDir) + '/The.Matrix.1999.2160p.mkv</div>' +
       '<div>shows/' + escapeHtml(showDir) + '/Season 01/' + epPrefix + 'Breaking.Bad.S01E01.mkv</div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plex authentication + library helpers
+  // ---------------------------------------------------------------------------
+  async function startPlexAuth() {
+    try {
+      const resp = await fetch('/api/settings/plex/auth/start', { method: 'POST' });
+      if (!resp.ok) throw new Error('Failed to start auth');
+      const data = await resp.json();
+
+      // Open popup for Plex auth
+      const popup = window.open(data.auth_url, 'plex_auth', 'width=800,height=600');
+
+      // Poll for completion every 2s
+      const pollInterval = setInterval(async () => {
+        if (popup && popup.closed) {
+          clearInterval(pollInterval);
+          return;
+        }
+        try {
+          const checkResp = await fetch(`/api/settings/plex/auth/check/${data.pin_id}`, { method: 'POST' });
+          const checkData = await checkResp.json();
+          if (checkData.status === 'authenticated') {
+            clearInterval(pollInterval);
+            if (popup && !popup.closed) popup.close();
+            document.getElementById('plex-token-display').value = checkData.token_masked;
+            showToast('Plex authenticated successfully!', 'success');
+          }
+        } catch (e) {
+          console.warn('Plex auth poll error:', e);
+        }
+      }, 2000);
+
+      // Stop polling after 5 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+      }, 300000);
+    } catch (e) {
+      showToast('Failed to start Plex auth: ' + e.message, 'error');
+    }
+  }
+
+  async function fetchPlexLibraries() {
+    try {
+      const resp = await fetch('/api/settings/plex/libraries');
+      if (!resp.ok) throw new Error('Failed to fetch libraries');
+      const data = await resp.json();
+      syncPlexSectionCheckboxes(data.sections);
+    } catch (e) {
+      showToast('Failed to fetch Plex libraries: ' + e.message, 'error');
+    }
+  }
+
+  function syncPlexSectionCheckboxes(sections) {
+    const container = document.getElementById('plex-libraries-container');
+    if (!container) return;
+
+    // Get currently selected IDs from the hidden inputs
+    const movieIds = (document.getElementById('plex-movie-section-ids')?.value || '').split(',').filter(Boolean).map(Number);
+    const showIds  = (document.getElementById('plex-show-section-ids')?.value  || '').split(',').filter(Boolean).map(Number);
+
+    const movieSections = sections.filter(s => s.type === 'movie');
+    const showSections  = sections.filter(s => s.type === 'show');
+
+    let html = '';
+
+    if (movieSections.length > 0) {
+      html += '<div class="mb-3"><p class="text-sm font-medium text-gray-300 mb-2">Movie Libraries</p>';
+      for (const s of movieSections) {
+        const checked = movieIds.includes(s.section_id) ? 'checked' : '';
+        html += `<label class="flex items-center gap-2 text-sm text-gray-300 mb-1 cursor-pointer">
+          <input type="checkbox" class="plex-movie-section" value="${s.section_id}" ${checked}
+                 onchange="updatePlexSectionIds()" />
+          ${escapeHtml(s.title)} <span class="text-vd-muted text-xs">(ID: ${s.section_id})</span>
+        </label>`;
+      }
+      html += '</div>';
+    }
+
+    if (showSections.length > 0) {
+      html += '<div class="mb-3"><p class="text-sm font-medium text-gray-300 mb-2">TV Show Libraries</p>';
+      for (const s of showSections) {
+        const checked = showIds.includes(s.section_id) ? 'checked' : '';
+        html += `<label class="flex items-center gap-2 text-sm text-gray-300 mb-1 cursor-pointer">
+          <input type="checkbox" class="plex-show-section" value="${s.section_id}" ${checked}
+                 onchange="updatePlexSectionIds()" />
+          ${escapeHtml(s.title)} <span class="text-vd-muted text-xs">(ID: ${s.section_id})</span>
+        </label>`;
+      }
+      html += '</div>';
+    }
+
+    if (!html) {
+      html = '<p class="text-sm text-vd-muted">No libraries found.</p>';
+    }
+
+    container.innerHTML = html;
+  }
+
+  function updatePlexSectionIds() {
+    const movieIds = [...document.querySelectorAll('.plex-movie-section:checked')].map(el => el.value);
+    const showIds  = [...document.querySelectorAll('.plex-show-section:checked')].map(el => el.value);
+    document.getElementById('plex-movie-section-ids').value = movieIds.join(',');
+    document.getElementById('plex-show-section-ids').value  = showIds.join(',');
   }
 
   // ---------------------------------------------------------------------------
