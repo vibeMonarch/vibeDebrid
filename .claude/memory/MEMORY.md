@@ -18,6 +18,8 @@
 - Discover page mobile/desktop UX (scroll snap, fade gradients, responsive cards, tap overlay) — 2026-03-06
 - Search UX timing (parallel scrapers, instant result render, progressive cache checks) — 2026-03-06
 - Progressive search results (two-fetch pattern, Zilean instant + Torrentio merge) — 2026-03-06
+- Search score + layout fixes (live score update on cache resolve, inline breakdown, unified button text) — 2026-03-06
+- Code review + fixes (mount scanner exact match, stuck SCRAPING recovery, CDN SRI, IMDB auto-resolve) — 2026-03-06
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
@@ -52,6 +54,13 @@
 - Torrentio timeout reduced from 30s to 10s in `TorrentioConfig`
 - `scrollIntoView({ behavior: 'instant' })` not `'smooth'` — smooth delays visibility on mobile
 
+## Search Score + Layout Fixes — 2026-03-06
+- `updateCacheBadge()` now recalculates score: finds item in `_currentResults`, updates `score_breakdown.cached` (+10 or 0), recomputes total
+- Uses `.score-value`, `.score-bar-fill`, `.score-breakdown` class hooks to update DOM (both desktop + mobile layouts)
+- Removed tooltip (`.tooltip-wrapper`/`.tooltip-box`) — was clipping inside card overflow, only showed partial breakdown
+- Desktop score breakdown shown inline (`<p class="score-breakdown">`) same as mobile
+- Button text unified to "Add" on both layouts — "Add to Real-Debrid" was misleading for cached items
+
 ## Progressive Search (Two-Fetch Pattern) — 2026-03-06
 - Backend: `scrapers: list[Literal["torrentio", "zilean"]] | None` on `SearchRequest` — `None` = both (backward-compatible)
 - Frontend fires two parallel fetches: zilean-only (fast) + torrentio-only (slow, only if `imdb_id` set)
@@ -62,6 +71,25 @@
 - Torrentio merge passes existing generation to `checkCachedProgressive` so zilean cache loop isn't cancelled
 - `showMoreResultsIndicator(false)` in `finally` block for defensive cleanup
 - `_totalFiltered` uses `torrentioData.total_filtered` not `newResults.length` (avoids "Showing 85 of 80" bug)
+
+## Code Review Fixes — 2026-03-06
+- Full codebase review: 4 parallel code-reviewer agents (core logic, services, API+main, frontend)
+- Mount scanner `lookup()`: changed from `ILIKE %title%` (substring) to `== normalized` (exact match) — prevents false COMPLETE transitions
+- Stuck SCRAPING recovery: Stage 0 in `_job_queue_processor` finds items in SCRAPING >30min, force-transitions to WANTED
+- `max_instances=1` added to mount_scan and symlink_verifier scheduler jobs (was only on queue_processor)
+- CDN: htmx pinned to exact URL with SHA-384 SRI, Alpine.js pinned from `3.x.x` to `3.15.8` with SRI
+- Search IMDB auto-resolve: `handleSearch()` calls `/api/discover/search` + `/api/discover/resolve` when no IMDB ID provided
+- Zilean limitation: can't find "xXx" (3-char non-alphanumeric title) — only Torrentio via IMDB ID works for such titles
+
+## Remaining Review Findings (not yet fixed)
+- `scrape_pipeline.py:868`: `session.rollback()` mid-pipeline can corrupt ORM state — use savepoints or re-fetch
+- `settings.py:51`: unvalidated `dict[str,Any]` body allows arbitrary key injection into config.json
+- `search.py:272`: no error handling on `check_cached` endpoint — RD down = 500 errors
+- `search.py:430-441`: direct `item.state =` bypasses queue_manager (known tech debt)
+- Services: broad `except Exception` on JSON parsing (~8 sites) — should be `except ValueError`
+- Services: duplicated language tokens/regex between torrentio.py and zilean.py
+- `filter_engine.py:287`: regex compiled inside hot loop (500+ re.compile per filter_and_rank)
+- Frontend: no CSRF protection, duplicated `escapeHtml`/`formatBytes` across templates
 
 ## STATUS.md Next Steps
 Pending: Trakt integration (Step 1b)

@@ -286,13 +286,14 @@ class MountScanner:
     ) -> list[MountIndex]:
         """Query the mount index for files matching the given title and episode info.
 
-        Performs a case-insensitive substring match on ``parsed_title``.
+        Performs a case-sensitive exact match on ``parsed_title`` (both sides are
+        already normalized to lowercase by ``_normalize_title``).
         Optionally filters by exact ``parsed_season`` and ``parsed_episode``.
         This is the fast DB-only check used before every scrape attempt.
 
         Args:
             session: Active async SQLAlchemy session.
-            title: The media title to search for (matched as a substring).
+            title: The media title to search for (exact normalized match).
             season: If provided, restrict results to this season number.
             episode: If provided, restrict results to this episode number.
                      Only meaningful when ``season`` is also provided.
@@ -302,7 +303,7 @@ class MountScanner:
         """
         normalized = _normalize_title(title)
         stmt = select(MountIndex).where(
-            MountIndex.parsed_title.ilike(f"%{normalized}%")
+            MountIndex.parsed_title == normalized
         )
 
         if season is not None:

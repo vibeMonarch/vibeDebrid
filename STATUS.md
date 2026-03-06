@@ -51,7 +51,7 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 862 tests, all passing**
+**Total: 865 tests, all passing**
 
 ### Symlink Naming Convention ✅
 - SymlinkNamingConfig: date_prefix, release_year, resolution toggles
@@ -189,6 +189,15 @@
 - Removed broken tooltip on desktop — score breakdown now shown inline (same as mobile)
 - Unified button text to "+ Add" on both desktop and mobile (was "Add to Real-Debrid" on mobile)
 - Added `.score-value`, `.score-bar-fill`, `.score-breakdown` CSS hooks for dynamic score updates
+
+### Code Review + Fixes ✅ (Step 0.12)
+- Full codebase review: 4 parallel domain-scoped agents (core, services, API, frontend)
+- Mount scanner: exact title matching replaces ILIKE substring (prevents "It" matching "It Follows")
+- Stuck SCRAPING recovery: Stage 0 in queue processor force-transitions items stale >30min back to WANTED
+- Scheduler: `max_instances=1` added to mount_scan and symlink_verifier jobs
+- CDN security: htmx pinned with SRI hash, Alpine.js pinned from `3.x.x` to `3.15.8` with SRI hash
+- Search IMDB auto-resolve: direct searches auto-resolve IMDB ID via TMDB, enabling Torrentio results
+- Known limitation: Zilean can't find titles like "xXx" (3-char non-alphanumeric) — only Torrentio (via IMDB) works
 
 ### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling

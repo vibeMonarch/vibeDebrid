@@ -323,6 +323,36 @@
       quality_profile: document.getElementById('quality_profile').value,
     };
 
+    // Auto-resolve IMDB ID from TMDB if not provided
+    if (!payload.imdb_id && payload.query) {
+      try {
+        const tmdbMediaType = payload.media_type === 'show' ? 'tv' : 'movie';
+        const searchResp = await fetch('/api/discover/search?' + new URLSearchParams({
+          q: payload.query,
+          media_type: tmdbMediaType,
+          page: '1'
+        }));
+        if (searchResp.ok) {
+          const tmdbData = await searchResp.json();
+          const items = tmdbData.items || [];
+          if (items.length > 0) {
+            const topResult = items[0];
+            const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(topResult.tmdb_id));
+            if (resolveResp.ok) {
+              const resolveData = await resolveResp.json();
+              if (resolveData.imdb_id) {
+                payload.imdb_id = resolveData.imdb_id;
+                document.getElementById('imdb_id').value = resolveData.imdb_id;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // Non-fatal — continue search without IMDB ID
+        console.debug('TMDB auto-resolve failed:', err);
+      }
+    }
+
     _lastSearchPayload = payload;
     setSearchLoading(true);
 

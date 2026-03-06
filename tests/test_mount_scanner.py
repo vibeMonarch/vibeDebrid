@@ -455,8 +455,8 @@ class TestScan:
 class TestLookup:
     """Tests for MountScanner.lookup (DB-only, no filesystem access)."""
 
-    async def test_lookup_by_title_substring(self, session: AsyncSession) -> None:
-        """Title substring match returns matching entries."""
+    async def test_lookup_by_title_exact(self, session: AsyncSession) -> None:
+        """Exact normalized title match returns the correct entry; partial words do not match."""
         await _insert_entry(
             session, filepath="/mnt/dark.knight.mkv", parsed_title="the dark knight"
         )
@@ -464,7 +464,11 @@ class TestLookup:
             session, filepath="/mnt/batman.mkv", parsed_title="batman begins"
         )
         scanner = MountScanner()
-        results = await scanner.lookup(session, "dark")
+        # Partial word "dark" must NOT match "the dark knight"
+        no_results = await scanner.lookup(session, "dark")
+        assert len(no_results) == 0
+        # Full exact title must match
+        results = await scanner.lookup(session, "the dark knight")
         assert len(results) == 1
         assert results[0].filepath == "/mnt/dark.knight.mkv"
 

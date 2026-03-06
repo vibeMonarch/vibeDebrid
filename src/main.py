@@ -82,6 +82,25 @@ async def _job_queue_processor() -> None:
         stats = await queue_manager.process_queue(session)
         logger.info("Queue transitions applied: %s", stats)
 
+        # --- Stage 0: Recover stuck SCRAPING items ---
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        result = await session.execute(
+            select(MediaItem).where(
+                MediaItem.state == QueueState.SCRAPING,
+                MediaItem.state_changed_at <= stale_cutoff,
+            )
+        )
+        stale_items = result.scalars().all()
+        for item in stale_items:
+            logger.warning(
+                "Recovering stuck SCRAPING item id=%d title=%s (stale for >30min)",
+                item.id, item.title,
+            )
+            try:
+                await queue_manager.force_transition(session, item.id, QueueState.WANTED)
+            except Exception:
+                logger.exception("Failed to recover stuck item id=%d", item.id)
+
         # --- Stage 1: WANTED → SCRAPING → pipeline ---
         result = await session.execute(
             select(MediaItem).where(MediaItem.state == QueueState.WANTED)
@@ -386,6 +405,7 @@ def _register_scheduled_jobs() -> None:
         minutes=settings.mount_scanner.scan_interval_minutes,
         id="mount_scan",
         replace_existing=True,
+        max_instances=1,
     )
     logger.info(
         "Registered job: mount_scan (every %d min)",
@@ -411,6 +431,7 @@ def _register_scheduled_jobs() -> None:
         minutes=settings.scheduler.symlink_verifier_minutes,
         id="symlink_verifier",
         replace_existing=True,
+        max_instances=1,
     )
     logger.info(
         "Registered job: symlink_verifier (every %d min)",
