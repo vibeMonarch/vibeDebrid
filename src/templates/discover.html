@@ -4,8 +4,13 @@
 
 {% block head %}
 <style>
-  /* Lock main to viewport width — prevents section-rows from pushing page wider */
-  main { overflow-x: hidden; }
+  /* Make main a fixed-height scroll container so CSS sticky works inside it */
+  main {
+    height: 100dvh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: unset; /* override base template's min-h-screen */
+  }
 
   /* Responsive card sizing */
   :root { --card-w: 140px; }
@@ -205,6 +210,26 @@
     }
     .genre-chip { flex-shrink: 0; }
   }
+  .discover-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: #0f172a;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #334155;
+  }
+  /* On mobile, add left padding to avoid overlap with hamburger button */
+  @media (max-width: 1023px) {
+    .discover-header { padding-left: 3.5rem; }
+  }
+  .genre-chips-sticky {
+    position: sticky;
+    top: var(--header-h, 8rem);
+    z-index: 19;
+    background: #0f172a;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid #334155;
+  }
   .genre-chip {
     padding: 0.375rem 0.875rem;
     font-size: 0.8125rem;
@@ -229,16 +254,16 @@
 {% endblock %}
 
 {% block content %}
-<div class="mb-6">
-  <h2 class="text-2xl font-bold text-white">Discover</h2>
-  <p class="text-vd-muted text-sm mt-1">Browse trending content and add to your library.</p>
-</div>
-
-<!-- Tabs -->
-<div class="flex gap-2 mb-6">
-  <button class="tab-btn active" data-tab="movies" onclick="switchTab('movies')">Movies</button>
-  <button class="tab-btn" data-tab="tv" onclick="switchTab('tv')">TV Shows</button>
-  <button class="tab-btn" data-tab="search" onclick="switchTab('search')">Search</button>
+<div class="discover-header" id="discover-header">
+  <div class="mb-4">
+    <h2 class="text-2xl font-bold text-white">Discover</h2>
+    <p class="text-vd-muted text-sm mt-1">Browse trending content and add to your library.</p>
+  </div>
+  <div class="flex gap-2">
+    <button class="tab-btn active" data-tab="movies" onclick="switchTab('movies')">Movies</button>
+    <button class="tab-btn" data-tab="tv" onclick="switchTab('tv')">TV Shows</button>
+    <button class="tab-btn" data-tab="search" onclick="switchTab('search')">Search</button>
+  </div>
 </div>
 
 <!-- Tab: Movies -->
@@ -259,8 +284,10 @@
       <div id="movies-top-rated-row" class="section-row"></div>
     </div>
 
-    <h3 class="section-title">Browse by Genre</h3>
-    <div id="movies-genre-chips" class="genre-chips"></div>
+    <div class="genre-chips-sticky">
+      <h3 class="section-title">Browse by Genre</h3>
+      <div id="movies-genre-chips" class="genre-chips"></div>
+    </div>
 
     <div id="movies-genre-section" class="hidden">
       <h3 class="section-title" id="movies-genre-title"></h3>
@@ -294,8 +321,10 @@
       <div id="tv-top-rated-row" class="section-row"></div>
     </div>
 
-    <h3 class="section-title">Browse by Genre</h3>
-    <div id="tv-genre-chips" class="genre-chips"></div>
+    <div class="genre-chips-sticky">
+      <h3 class="section-title">Browse by Genre</h3>
+      <div id="tv-genre-chips" class="genre-chips"></div>
+    </div>
 
     <div id="tv-genre-section" class="hidden">
       <h3 class="section-title" id="tv-genre-title"></h3>
@@ -374,7 +403,7 @@
       activeGenre: { movie: activeGenre.movie, tv: activeGenre.tv },
       genrePage: { movie: genrePage.movie, tv: genrePage.tv },
       genreTotalPages: { movie: genreTotalPages.movie, tv: genreTotalPages.tv },
-      scrollY: window.scrollY,
+      scrollY: document.querySelector('main').scrollTop,
       cache: { movie: mediaCache.movie, tv: mediaCache.tv }
     };
     try {
@@ -467,7 +496,7 @@
     // Restore scroll position after layout settles
     if (state.scrollY) {
       setTimeout(function() {
-        window.scrollTo(0, state.scrollY);
+        document.querySelector('main').scrollTop = state.scrollY;
       }, 100);
     }
   }
@@ -804,6 +833,20 @@
     row.addEventListener('scroll', update, { passive: true });
     update(); // initial state
   }
+
+  // Measure discover-header height and set CSS var for genre chips sticky offset
+  function updateHeaderHeight() {
+    var header = document.getElementById('discover-header');
+    if (header) {
+      var h = header.offsetHeight;
+      document.querySelectorAll('.genre-chips-sticky').forEach(function(el) {
+        el.style.setProperty('--header-h', h + 'px');
+      });
+    }
+  }
+  window.addEventListener('resize', updateHeaderHeight);
+  // Initial measurement after first paint
+  requestAnimationFrame(updateHeaderHeight);
 
   // Render horizontal scroll row
   function renderRow(container, items) {
