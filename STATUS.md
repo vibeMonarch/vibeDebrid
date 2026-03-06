@@ -199,6 +199,15 @@
 - Search IMDB auto-resolve: direct searches auto-resolve IMDB ID via TMDB, enabling Torrentio results
 - Known limitation: Zilean can't find titles like "xXx" (3-char non-alphanumeric) — only Torrentio (via IMDB) works
 
+### Discover Sticky Header + Genre Chips ✅ (Step 0.13)
+- Discover header (title, description, tabs) pinned at top of viewport via CSS `position: sticky`
+- Genre chips stick below the header when scrolling through genre results
+- `main` made a scroll container (`height: 100dvh; overflow-y: auto`) so sticky works despite `overflow-x: hidden`
+- JS measures header height on load/resize, sets `--header-h` CSS var for genre chips offset
+- Mobile: left padding on header avoids hamburger button overlap
+- Scroll position save/restore updated to use `main.scrollTop`
+- TODO: Apply similar sticky patterns to other pages in a future session
+
 ### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - Wire into scheduler with config intervals
