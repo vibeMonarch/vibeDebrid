@@ -184,6 +184,12 @@
 - `cacheBadgeHtml` checks cache map first (correct badges after merge re-sort)
 - 3 new tests (scrapers filtering: zilean-only, torrentio-only, default-runs-both)
 
+### Search Score + Layout Fixes ✅ (Step 0.11)
+- Score updates live when RD cache status resolves (+10 cached bonus reflected in number, bar, and breakdown)
+- Removed broken tooltip on desktop — score breakdown now shown inline (same as mobile)
+- Unified button text to "+ Add" on both desktop and mobile (was "Add to Real-Debrid" on mobile)
+- Added `.score-value`, `.score-bar-fill`, `.score-breakdown` CSS hooks for dynamic score updates
+
 ### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - Wire into scheduler with config intervals

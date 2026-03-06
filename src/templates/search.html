@@ -17,25 +17,6 @@
   .show-fields { display: none; }
   .show-fields.visible { display: flex; }
 
-  /* Tooltip container */
-  .tooltip-wrapper { position: relative; }
-  .tooltip-box {
-    display: none;
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: #0f172a;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 8px 12px;
-    white-space: nowrap;
-    z-index: 20;
-    font-size: 0.75rem;
-    min-width: 180px;
-  }
-  .tooltip-wrapper:hover .tooltip-box,
-  .tooltip-wrapper:focus-within .tooltip-box { display: block; }
 
   /* Cache-checking spinner */
   .cache-spinner {
@@ -526,6 +507,39 @@
       card.classList.remove('result-uncached');
       card.classList.add('result-cached');
     }
+
+    // Update score: add or confirm the +10 cached bonus.
+    const item = _currentResults.find(r => r.info_hash === infoHash);
+    if (item && item.score_breakdown) {
+      const oldCached = item.score_breakdown.cached || 0;
+      const newCached = cached ? 10.0 : 0.0;
+      if (oldCached !== newCached) {
+        item.score_breakdown.cached = newCached;
+        item.score = Object.values(item.score_breakdown).reduce((a, b) => a + b, 0);
+
+        // Update score display in the card.
+        const scoreClass = scoreTextColor(item.score);
+        const barClass = scoreColorClass(item.score);
+        const barWidth = Math.min(100, item.score).toFixed(1);
+        const breakdownStr = Object.entries(item.score_breakdown)
+          .map(([k, v]) => `${k}: +${v}`)
+          .join(' / ');
+
+        card.querySelectorAll('.score-value').forEach(el => {
+          el.textContent = item.score.toFixed(1);
+          el.className = el.className.replace(/text-(green|yellow|red)-400/g, '');
+          el.classList.add(scoreClass);
+        });
+        card.querySelectorAll('.score-bar-fill').forEach(el => {
+          el.className = el.className.replace(/score-bar-(high|mid|low)/g, '');
+          el.classList.add(barClass);
+          el.style.width = barWidth + '%';
+        });
+        card.querySelectorAll('.score-breakdown').forEach(el => {
+          el.textContent = breakdownStr;
+        });
+      }
+    }
   }
 
   // ─── Render results ─────────────────────────────────────────────────────────
@@ -655,19 +669,14 @@
         <div class="flex justify-center cache-badge">${badgeHtml}</div>
 
         <!-- Score -->
-        <div class="w-20 tooltip-wrapper" tabindex="0" aria-label="Score breakdown: ${escapeHtml(breakdownStr)}">
+        <div class="w-24">
           <div class="flex items-center justify-end gap-1.5 mb-1">
-            <span class="text-sm font-semibold tabular-nums ${scoreTextClass}">${score.toFixed(1)}</span>
+            <span class="score-value text-sm font-semibold tabular-nums ${scoreTextClass}">${score.toFixed(1)}</span>
           </div>
           <div class="w-full h-1.5 rounded-full bg-vd-bg overflow-hidden">
-            <div class="h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
+            <div class="score-bar-fill h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
           </div>
-          <div class="tooltip-box text-left">
-            <p class="text-gray-300 font-semibold mb-1">Score breakdown</p>
-            ${Object.entries(breakdown).map(([k, v]) =>
-              `<div class="flex justify-between gap-4"><span class="text-vd-muted">${escapeHtml(k)}</span><span class="text-white">+${v}</span></div>`
-            ).join('')}
-          </div>
+          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${escapeHtml(breakdownStr)}</p>` : ''}
         </div>
 
         <!-- Add button -->
@@ -717,12 +726,12 @@
         <div>
           <div class="flex items-center justify-between mb-1">
             <span class="text-xs text-vd-muted">Score</span>
-            <span class="text-xs font-semibold tabular-nums ${scoreTextClass}">${score.toFixed(1)}</span>
+            <span class="score-value text-xs font-semibold tabular-nums ${scoreTextClass}">${score.toFixed(1)}</span>
           </div>
           <div class="w-full h-1.5 rounded-full bg-vd-bg overflow-hidden">
-            <div class="h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
+            <div class="score-bar-fill h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
           </div>
-          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1">${escapeHtml(breakdownStr)}</p>` : ''}
+          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${escapeHtml(breakdownStr)}</p>` : ''}
         </div>
 
         <!-- Add button -->
@@ -742,7 +751,7 @@
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
           </svg>
-          Add to Real-Debrid
+          Add
         </button>
       </div>
     `;
