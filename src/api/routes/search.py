@@ -1,5 +1,6 @@
 """Manual search endpoints."""
 
+import asyncio
 import json
 import logging
 import re
@@ -123,58 +124,70 @@ async def search(body: SearchRequest) -> SearchResponse:
     Returns:
         Ranked search results with cache status and scoring breakdown.
     """
-    torrentio_results = []
-    zilean_results = []
-
-    # Query Torrentio — only when an IMDB ID is available because Torrentio's
-    # Stremio addon URLs require a valid IMDB ID to route the request.
-    if body.imdb_id:
+    # Build scraper tasks to run in parallel.
+    async def _scrape_torrentio() -> list:
+        """Query Torrentio (requires IMDB ID)."""
+        if not body.imdb_id:
+            return []
         try:
             if body.media_type == "movie":
-                torrentio_results = await torrentio_client.scrape_movie(body.imdb_id)
+                results = await torrentio_client.scrape_movie(body.imdb_id)
                 logger.debug(
                     "search: torrentio returned %d movie results for imdb_id=%s",
-                    len(torrentio_results),
+                    len(results),
                     body.imdb_id,
                 )
+                return results
             elif (
                 body.media_type == "show"
                 and body.season is not None
                 and body.episode is not None
             ):
-                torrentio_results = await torrentio_client.scrape_episode(
+                results = await torrentio_client.scrape_episode(
                     body.imdb_id, body.season, body.episode
                 )
                 logger.debug(
                     "search: torrentio returned %d episode results for imdb_id=%s S%02dE%02d",
-                    len(torrentio_results),
+                    len(results),
                     body.imdb_id,
                     body.season,
                     body.episode,
                 )
+                return results
             else:
                 logger.debug(
                     "search: skipping torrentio — media_type=%s requires season+episode for shows",
                     body.media_type,
                 )
+                return []
         except Exception as exc:
             logger.warning("search: torrentio scrape failed: %s", exc)
+            return []
 
-    # Query Zilean — works with or without an IMDB ID via keyword search.
-    try:
-        zilean_results = await zilean_client.search(
-            query=body.query,
-            season=body.season,
-            episode=body.episode,
-            imdb_id=body.imdb_id,
-        )
-        logger.debug(
-            "search: zilean returned %d results for query=%r",
-            len(zilean_results),
-            body.query,
-        )
-    except Exception as exc:
-        logger.warning("search: zilean search failed: %s", exc)
+    async def _scrape_zilean() -> list:
+        """Query Zilean (works with or without IMDB ID)."""
+        try:
+            results = await zilean_client.search(
+                query=body.query,
+                season=body.season,
+                episode=body.episode,
+                imdb_id=body.imdb_id,
+            )
+            logger.debug(
+                "search: zilean returned %d results for query=%r",
+                len(results),
+                body.query,
+            )
+            return results
+        except Exception as exc:
+            logger.warning("search: zilean search failed: %s", exc)
+            return []
+
+    # Run scrapers in parallel — Zilean returns instantly even if Torrentio
+    # is slow or timing out (522 errors from Cloudflare take ~20s).
+    torrentio_results, zilean_results = await asyncio.gather(
+        _scrape_torrentio(), _scrape_zilean()
+    )
 
     combined = torrentio_results + zilean_results  # type: ignore[operator]
     total_raw = len(combined)

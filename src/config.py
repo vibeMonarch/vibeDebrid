@@ -29,7 +29,7 @@ class TorrentioConfig(BaseModel):
     enabled: bool = True
     base_url: str = "https://torrentio.strem.fun"
     opts: str = ""
-    timeout_seconds: int = 30
+    timeout_seconds: int = 10
     max_results: int = 100
 
 

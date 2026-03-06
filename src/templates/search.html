@@ -356,6 +356,13 @@
 
       const data = await resp.json();
       renderResults(data);
+      setSearchLoading(false);
+
+      // Scroll results into view (on mobile the form pushes results below the fold).
+      document.getElementById('results-section').scrollIntoView({ behavior: 'instant', block: 'start' });
+
+      // Force a browser paint so the user sees results before cache checks start.
+      await new Promise(r => requestAnimationFrame(r));
 
       // Kick off async cache checking for the top results (non-blocking).
       const hashes = (data.results || []).slice(0, CACHE_CHECK_LIMIT).map(r => r.info_hash).filter(Boolean);
