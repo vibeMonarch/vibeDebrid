@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-04
+## Last Updated: 2026-03-06
 
 ## Completed
 
@@ -158,6 +158,31 @@
 - Auto scan trigger: after COMPLETE transition, scans configured movie/show Plex sections
 - Config lock: asyncio.Lock prevents race condition on concurrent config.json writes
 - 12 new tests (mocked httpx transport)
+
+### Discover Page Mobile/Desktop UX ✅ (Step 0.8)
+- CSS scroll snap (`scroll-snap-type: x proximity`) with `overscroll-behavior-x: contain` on section rows
+- Fade gradient scroll indicators (`::before`/`::after` pseudo-elements) with JS-driven `at-start`/`at-end` classes
+- Responsive card sizing via `--card-w` CSS variable (140px mobile, 160px desktop)
+- `main { overflow-x: hidden }` prevents horizontal page scroll from section rows on mobile
+- Tap-to-reveal overlay for touch devices (`matchMedia('(hover: none)')` detection, `.overlay-visible` class)
+- Responsive search bar (column layout on mobile) and genre chips horizontal scroll
+- Section rows wrapped in `.section-row-wrap` divs for gradient positioning
+
+### Search UX Timing Fixes ✅ (Step 0.9)
+- Parallelized Torrentio + Zilean scrapers via `asyncio.gather` (previously sequential — Torrentio 522 timeouts blocked Zilean results)
+- Reduced Torrentio timeout from 30s to 10s (`src/config.py`)
+- Frontend: results render immediately, RD cache checks run progressively after paint
+- `scrollIntoView({ behavior: 'instant', block: 'start' })` for instant result visibility on search page
+- `requestAnimationFrame` paint forcing before cache check loop
+
+### Progressive Search Results ✅ (Step 0.10)
+- Backend: `scrapers` parameter on `/api/search` (validated `Literal["torrentio", "zilean"]` list)
+- Frontend fires two parallel requests: Zilean renders instantly (~500ms), Torrentio merges in when ready
+- Results deduped by info_hash, re-sorted by score, re-rendered with cache statuses preserved
+- `_cacheStatusMap` persists RD cache check results across re-renders
+- "Loading more results from Torrentio…" indicator while slow scraper is pending
+- `cacheBadgeHtml` checks cache map first (correct badges after merge re-sort)
+- 3 new tests (scrapers filtering: zilean-only, torrentio-only, default-runs-both)
 
 ### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling

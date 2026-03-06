@@ -7,6 +7,8 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +42,7 @@ class SearchRequest(BaseModel):
     season: int | None = None
     episode: int | None = None
     quality_profile: str | None = None
+    scrapers: list[Literal["torrentio", "zilean"]] | None = None
 
 
 class SearchResultItem(BaseModel):
@@ -183,13 +186,23 @@ async def search(body: SearchRequest) -> SearchResponse:
             logger.warning("search: zilean search failed: %s", exc)
             return []
 
-    # Run scrapers in parallel — Zilean returns instantly even if Torrentio
-    # is slow or timing out (522 errors from Cloudflare take ~20s).
-    torrentio_results, zilean_results = await asyncio.gather(
-        _scrape_torrentio(), _scrape_zilean()
-    )
+    # Determine which scrapers to run based on request.
+    run_torrentio = body.scrapers is None or "torrentio" in body.scrapers
+    run_zilean = body.scrapers is None or "zilean" in body.scrapers
 
-    combined = torrentio_results + zilean_results  # type: ignore[operator]
+    tasks = []
+    if run_torrentio:
+        tasks.append(_scrape_torrentio())
+    if run_zilean:
+        tasks.append(_scrape_zilean())
+
+    if not tasks:
+        return SearchResponse(results=[], total_raw=0, total_filtered=0)
+
+    results_lists = await asyncio.gather(*tasks)
+    combined = []
+    for r in results_lists:
+        combined.extend(r)
     total_raw = len(combined)
 
     if not combined:

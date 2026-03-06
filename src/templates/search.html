@@ -307,6 +307,10 @@
 
   // Store the current search payload so add buttons can reference it.
   let _lastSearchPayload = null;
+  let _currentResults = [];      // current merged result list
+  let _totalRaw = 0;
+  let _totalFiltered = 0;
+  const _cacheStatusMap = new Map();  // info_hash → boolean, survives re-renders
 
   async function handleSearch(event) {
     event.preventDefault();
@@ -342,20 +346,45 @@
     setSearchLoading(true);
 
     try {
-      const resp = await fetch('/api/search', {
-        method:  'POST',
+      _cacheCheckGeneration++;   // invalidate any stale cache-check loops immediately
+      _cacheStatusMap.clear();
+      _currentResults = [];
+      _totalRaw = 0;
+      _totalFiltered = 0;
+
+      // Fire zilean request (fast)
+      const zileanPromise = fetch('/api/search', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, scrapers: ['zilean'] }),
+      }).then(r => {
+        if (!r.ok) throw new Error('Search failed');
+        return r.json();
       });
 
-      if (!resp.ok) {
-        let detail = 'Search failed.';
-        try { detail = (await resp.json()).detail || detail; } catch(_) {}
-        throw new Error(detail);
+      // Fire torrentio request in parallel (slow, only if imdb_id is set)
+      let torrentioPromise = null;
+      if (payload.imdb_id) {
+        torrentioPromise = fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, scrapers: ['torrentio'] }),
+        }).then(r => {
+          if (!r.ok) throw new Error('Torrentio search failed');
+          return r.json();
+        }).catch(err => {
+          console.warn('Torrentio search failed:', err);
+          return null;
+        });
       }
 
-      const data = await resp.json();
-      renderResults(data);
+      // Render zilean results immediately
+      const zileanData = await zileanPromise;
+      _currentResults = (zileanData.results || []).slice();
+      _totalRaw = zileanData.total_raw || 0;
+      _totalFiltered = zileanData.total_filtered || 0;
+
+      renderResults({ results: _currentResults, total_raw: _totalRaw, total_filtered: _totalFiltered });
       setSearchLoading(false);
 
       // Scroll results into view (on mobile the form pushes results below the fold).
@@ -364,14 +393,46 @@
       // Force a browser paint so the user sees results before cache checks start.
       await new Promise(r => requestAnimationFrame(r));
 
-      // Kick off async cache checking for the top results (non-blocking).
-      const hashes = (data.results || []).slice(0, CACHE_CHECK_LIMIT).map(r => r.info_hash).filter(Boolean);
-      checkCachedProgressive(hashes);
+      // Start cache checking for zilean results
+      const zileanHashes = _currentResults.slice(0, CACHE_CHECK_LIMIT).map(r => r.info_hash).filter(Boolean);
+      checkCachedProgressive(zileanHashes);
+
+      // Wait for torrentio results and merge
+      if (torrentioPromise) {
+        showMoreResultsIndicator(true);
+
+        const torrentioData = await torrentioPromise;
+        showMoreResultsIndicator(false);
+
+        if (torrentioData && torrentioData.results && torrentioData.results.length > 0) {
+          // Dedup by info_hash
+          const existingHashes = new Set(_currentResults.map(r => r.info_hash));
+          const newResults = torrentioData.results.filter(r => !existingHashes.has(r.info_hash));
+
+          if (newResults.length > 0) {
+            // Merge, re-sort by score, re-render
+            _currentResults = [..._currentResults, ...newResults].sort((a, b) => (b.score || 0) - (a.score || 0));
+            _totalRaw += torrentioData.total_raw || 0;
+            _totalFiltered += torrentioData.total_filtered || 0;
+
+            renderResults({ results: _currentResults, total_raw: _totalRaw, total_filtered: _totalFiltered });
+
+            // Reapply cached statuses that were already checked
+            reapplyCacheStatuses();
+
+            // Check cache for NEW torrentio hashes only (reuse current generation
+            // so we don't cancel the still-running zilean cache loop).
+            const newHashes = newResults.slice(0, CACHE_CHECK_LIMIT).map(r => r.info_hash).filter(Boolean);
+            checkCachedProgressive(newHashes, _cacheCheckGeneration);
+          }
+        }
+      }
 
     } catch (err) {
       showResultsError(err.message || 'An unexpected error occurred.');
     } finally {
       setSearchLoading(false);
+      showMoreResultsIndicator(false);
     }
   }
 
@@ -387,17 +448,44 @@
     label.textContent = loading ? 'Searching…' : 'Search';
   }
 
+  function showMoreResultsIndicator(show) {
+    let el = document.getElementById('more-results-indicator');
+    if (show && !el) {
+      el = document.createElement('div');
+      el.id = 'more-results-indicator';
+      el.className = 'flex items-center gap-2 text-sm text-vd-muted py-2';
+      el.innerHTML = '<svg class="w-4 h-4 cache-spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Loading more results from Torrentio\u2026';
+      const summary = document.getElementById('results-summary');
+      if (summary) summary.parentNode.insertBefore(el, summary.nextSibling);
+    } else if (!show && el) {
+      el.remove();
+    }
+  }
+
+  function reapplyCacheStatuses() {
+    for (const [hash, cached] of _cacheStatusMap) {
+      updateCacheBadge(hash, cached);
+    }
+  }
+
   // ─── Progressive cache checking ────────────────────────────────────────────
 
   // Incremented each search to cancel stale cache-check loops.
   let _cacheCheckGeneration = 0;
 
-  async function checkCachedProgressive(hashes) {
-    const gen = ++_cacheCheckGeneration;
+  async function checkCachedProgressive(hashes, existingGen) {
+    // existingGen is passed when merging results mid-search so the same
+    // generation token is reused and the zilean loop is not cancelled.
+    const gen = existingGen !== undefined ? existingGen : ++_cacheCheckGeneration;
 
     for (const hash of hashes) {
       // Abort if a new search was started.
       if (gen !== _cacheCheckGeneration) return;
+
+      if (_cacheStatusMap.has(hash)) {
+        updateCacheBadge(hash, _cacheStatusMap.get(hash));
+        continue;
+      }
 
       try {
         const resp = await fetch('/api/check-cached', {
@@ -416,6 +504,7 @@
   }
 
   function updateCacheBadge(infoHash, cached) {
+    _cacheStatusMap.set(infoHash, cached);
     const card = document.getElementById('result-' + infoHash);
     if (!card) return;
 
@@ -478,6 +567,18 @@
   }
 
   function cacheBadgeHtml(item, idx) {
+    // If we already know the cache status (from a previous check), show it directly.
+    if (_cacheStatusMap.has(item.info_hash)) {
+      const cached = _cacheStatusMap.get(item.info_hash);
+      if (cached) {
+        return `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-green-900/60 border border-green-700/50 text-green-300">
+            <span>&#10003;</span>Cached
+          </span>`;
+      }
+      return `<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-red-900/60 border border-red-700/50 text-red-300">
+          <span>&#10007;</span>Not Cached
+        </span>`;
+    }
     // Top CACHE_CHECK_LIMIT results will be checked — show a spinner.
     // The rest show a manual Check RD button.
     if (idx < CACHE_CHECK_LIMIT) {

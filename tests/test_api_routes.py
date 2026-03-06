@@ -1172,6 +1172,98 @@ class TestSearch:
         assert resp.status_code == 200
         mock_scrape_movie.assert_not_called()
 
+    async def test_search_scrapers_zilean_only_skips_torrentio(
+        self, http_no_db: AsyncClient
+    ) -> None:
+        """When scrapers=['zilean'], only Zilean is called even with imdb_id."""
+        mock_scrape_movie = AsyncMock(return_value=[])
+        mock_zilean_search = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "src.api.routes.search.torrentio_client.scrape_movie",
+                mock_scrape_movie,
+            ),
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                mock_zilean_search,
+            ),
+        ):
+            resp = await http_no_db.post(
+                "/api/search",
+                json={
+                    "query": "Test Movie",
+                    "imdb_id": "tt0000001",
+                    "media_type": "movie",
+                    "scrapers": ["zilean"],
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_zilean_search.assert_called_once()
+        mock_scrape_movie.assert_not_called()
+
+    async def test_search_scrapers_torrentio_only_skips_zilean(
+        self, http_no_db: AsyncClient
+    ) -> None:
+        """When scrapers=['torrentio'], only Torrentio is called and Zilean is skipped."""
+        mock_scrape_movie = AsyncMock(return_value=[])
+        mock_zilean_search = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "src.api.routes.search.torrentio_client.scrape_movie",
+                mock_scrape_movie,
+            ),
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                mock_zilean_search,
+            ),
+        ):
+            resp = await http_no_db.post(
+                "/api/search",
+                json={
+                    "query": "Test Movie",
+                    "imdb_id": "tt0000001",
+                    "media_type": "movie",
+                    "scrapers": ["torrentio"],
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_scrape_movie.assert_called_once_with("tt0000001")
+        mock_zilean_search.assert_not_called()
+
+    async def test_search_scrapers_default_runs_both(
+        self, http_no_db: AsyncClient
+    ) -> None:
+        """Omitting scrapers runs both Torrentio and Zilean (backward compatibility)."""
+        mock_scrape_movie = AsyncMock(return_value=[])
+        mock_zilean_search = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "src.api.routes.search.torrentio_client.scrape_movie",
+                mock_scrape_movie,
+            ),
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                mock_zilean_search,
+            ),
+        ):
+            resp = await http_no_db.post(
+                "/api/search",
+                json={
+                    "query": "Test Movie",
+                    "imdb_id": "tt0000001",
+                    "media_type": "movie",
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_scrape_movie.assert_called_once_with("tt0000001")
+        mock_zilean_search.assert_called_once()
+
 
 # ===========================================================================
 # Add torrent — POST /api/add

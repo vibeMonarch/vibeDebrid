@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 850 tests, all passing (as of 2026-03-04)
+- 865 tests, all passing (as of 2026-03-06)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -14,6 +14,10 @@
 - SSE live updates (event_bus + /api/events + queue/dashboard frontend) — 2026-03-02
 - Discover state preservation (sessionStorage cache + restore) — 2026-03-04
 - Queue detail panel fixes + Discover SSE badges + manual ScrapeLog — 2026-03-04
+- Plex integration (OAuth, library scan, settings UI) — 2026-03-04
+- Discover page mobile/desktop UX (scroll snap, fade gradients, responsive cards, tap overlay) — 2026-03-06
+- Search UX timing (parallel scrapers, instant result render, progressive cache checks) — 2026-03-06
+- Progressive search results (two-fetch pattern, Zilean instant + Torrentio merge) — 2026-03-06
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
@@ -23,8 +27,44 @@
 - `main.py` CHECKING: targeted scan fallback — if lookup() empty, scan_directory(torrent.filename), re-lookup
 - Both `_scandir_walk` calls have timeouts (120s full scan, 30s targeted)
 
+## Plex Integration (Step 1a) — 2026-03-04
+- `src/services/plex.py`: stateless PlexClient, per-request httpx sessions, module singleton `plex_client`
+- Exceptions: `PlexError`, `PlexAuthError`, `PlexConnectionError` (last one defined but not raised yet)
+- OAuth PIN flow: `create_pin()` → browser popup to `app.plex.tv/auth#?...` → poll `check_pin(pin_id)` every 2s
+- Client ID is a fixed UUID (`f0f4c4b8-...`), auth URL needs full `context[device]` params (product, version, platform, device, deviceName, model, screenResolution, language)
+- `_build_plex_tv_client()` — separate helper for plex.tv calls, deliberately omits `X-Plex-Token`
+- `settings.py`: 4 new endpoints + `_config_lock = asyncio.Lock()` for race-safe config.json writes
+- `main.py`: Plex scan trigger after COMPLETE transition, guarded by enabled + scan_after_symlink + token, non-fatal
+- Frontend: OAuth popup flow with 2s polling, popup-close detection, library section checkboxes, token intentionally omitted from save payload
+- 12 tests with mocked httpx transport
+
+## Discover Page Mobile UX — 2026-03-06
+- `scroll-snap-type: x proximity` (not `mandatory` — mandatory absorbs swipe momentum, gets stuck around item 13)
+- `overscroll-behavior-x: contain` prevents horizontal overscroll from blocking vertical page scroll
+- `main { overflow-x: hidden }` is critical — without it, section rows push `main` wider than viewport, breaking genre grid
+- Fade gradients: `::before`/`::after` on `.section-row-wrap`, toggled by `at-start`/`at-end` classes via scroll listener
+- Must add `at-end` class in HTML alongside `at-start` to prevent flash on empty/short rows before JS initializes
+- Touch overlay: `matchMedia('(hover: none)')` detection, delegated click handler toggles `.overlay-visible`
+- SSE badge data: store `data-media-type`/`data-year` on card element (not on disabled buttons that get replaced)
+
+## Search UX Timing — 2026-03-06
+- Torrentio 522 errors (Cloudflare) take ~20s — was blocking Zilean results when run sequentially
+- Torrentio timeout reduced from 30s to 10s in `TorrentioConfig`
+- `scrollIntoView({ behavior: 'instant' })` not `'smooth'` — smooth delays visibility on mobile
+
+## Progressive Search (Two-Fetch Pattern) — 2026-03-06
+- Backend: `scrapers: list[Literal["torrentio", "zilean"]] | None` on `SearchRequest` — `None` = both (backward-compatible)
+- Frontend fires two parallel fetches: zilean-only (fast) + torrentio-only (slow, only if `imdb_id` set)
+- Zilean results render immediately; Torrentio results deduped by `info_hash`, merged, re-sorted by score
+- `_cacheStatusMap: Map<hash, bool>` persists cache check results across re-renders
+- `cacheBadgeHtml` checks `_cacheStatusMap` first — shows resolved badge instead of stale spinner after merge re-render
+- `_cacheCheckGeneration` bumped at search start (not inside `checkCachedProgressive`) to close stale-write window
+- Torrentio merge passes existing generation to `checkCachedProgressive` so zilean cache loop isn't cancelled
+- `showMoreResultsIndicator(false)` in `finally` block for defensive cleanup
+- `_totalFiltered` uses `torrentioData.total_filtered` not `newResults.length` (avoids "Showing 85 of 80" bug)
+
 ## STATUS.md Next Steps
-Pending: Trakt + Plex integration (Step 1)
+Pending: Trakt integration (Step 1b)
 
 ## SSE Feature Notes
 - Event bus: `src/core/event_bus.py` — module singleton, `put_nowait()` never blocks, maxsize=64 per client
