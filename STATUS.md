@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-06
+## Last Updated: 2026-03-07
 
 ## Completed
 
@@ -206,7 +206,16 @@
 - JS measures header height on load/resize, sets `--header-h` CSS var for genre chips offset
 - Mobile: left padding on header avoids hamburger button overlap
 - Scroll position save/restore updated to use `main.scrollTop`
-- TODO: Apply similar sticky patterns to other pages in a future session
+
+### Sticky Headers All Pages + UX Fixes ✅ (Step 0.14)
+- `.page-header` class in `base.html`: sticky positioning, background, border, padding, mobile hamburger offset
+- Applied to all pages: dashboard, queue, search, settings, duplicates, discover (consolidated)
+- Discover: `.discover-header` now extends `.page-header` (single source of truth for sticky styles)
+- Discover: `:hover` overlay wrapped in `@media (hover: hover)` — prevents spurious overlay on touch scroll
+- Discover: touch scroll suppression via `_touchMoved` flag (touchstart/touchmove tracking)
+- Discover: genre switch scrolls chips to top via `scrollIntoView` + `scroll-margin-top`
+- Search: `scroll-margin-top: 5rem` on results section prevents scrolling behind sticky header
+- Search: IMDB auto-resolve now scores TMDB results (exact=3, startsWith=2, includes=1) instead of blind `items[0]`
 
 ### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling

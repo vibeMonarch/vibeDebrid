@@ -27,6 +27,11 @@
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
   }
+
+  /* Offset scrollIntoView so results don't hide behind sticky header */
+  #results-section {
+    scroll-margin-top: 5rem;
+  }
 </style>
 {% endblock %}
 
@@ -34,7 +39,7 @@
 <div class="space-y-6">
 
   <!-- Page header -->
-  <div>
+  <div class="page-header">
     <h2 class="text-2xl font-bold text-white">Search</h2>
     <p class="text-sm text-vd-muted mt-1">Find and add torrents directly to Real-Debrid.</p>
   </div>
@@ -336,8 +341,26 @@
           const tmdbData = await searchResp.json();
           const items = tmdbData.items || [];
           if (items.length > 0) {
-            const topResult = items[0];
-            const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(topResult.tmdb_id));
+            // Pick the best title match instead of blindly using first result
+            const queryLower = payload.query.toLowerCase();
+            let bestMatch = items[0];
+            let bestScore = 0;
+            for (const item of items) {
+              const itemTitle = (item.title || '').toLowerCase();
+              let score = 0;
+              if (itemTitle === queryLower) {
+                score = 3; // exact match
+              } else if (itemTitle.startsWith(queryLower)) {
+                score = 2; // title starts with query
+              } else if (itemTitle.includes(queryLower)) {
+                score = 1; // title contains query
+              }
+              if (score > bestScore) {
+                bestScore = score;
+                bestMatch = item;
+              }
+            }
+            const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(bestMatch.tmdb_id));
             if (resolveResp.ok) {
               const resolveData = await resolveResp.json();
               if (resolveData.imdb_id) {

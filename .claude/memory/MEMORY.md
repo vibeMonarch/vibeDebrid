@@ -20,6 +20,8 @@
 - Progressive search results (two-fetch pattern, Zilean instant + Torrentio merge) — 2026-03-06
 - Search score + layout fixes (live score update on cache resolve, inline breakdown, unified button text) — 2026-03-06
 - Code review + fixes (mount scanner exact match, stuck SCRAPING recovery, CDN SRI, IMDB auto-resolve) — 2026-03-06
+- Discover sticky header + genre chips (title/tabs/genre chips pin on scroll) — 2026-03-06
+- Sticky headers all pages + touch/IMDB fixes — 2026-03-07
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
@@ -43,11 +45,23 @@
 ## Discover Page Mobile UX — 2026-03-06
 - `scroll-snap-type: x proximity` (not `mandatory` — mandatory absorbs swipe momentum, gets stuck around item 13)
 - `overscroll-behavior-x: contain` prevents horizontal overscroll from blocking vertical page scroll
-- `main { overflow-x: hidden }` is critical — without it, section rows push `main` wider than viewport, breaking genre grid
 - Fade gradients: `::before`/`::after` on `.section-row-wrap`, toggled by `at-start`/`at-end` classes via scroll listener
 - Must add `at-end` class in HTML alongside `at-start` to prevent flash on empty/short rows before JS initializes
 - Touch overlay: `matchMedia('(hover: none)')` detection, delegated click handler toggles `.overlay-visible`
 - SSE badge data: store `data-media-type`/`data-year` on card element (not on disabled buttons that get replaced)
+
+## Sticky Headers (All Pages) — 2026-03-07
+- `main` scroll container + `.page-header` class defined in `base.html` (single source of truth)
+- `main { height: 100dvh; overflow-y: auto; overflow-x: hidden; min-height: unset; }` — required for CSS sticky
+- `.page-header`: `position: sticky; top: 0; z-index: 20; background: #0f172a; padding-top/bottom: 0.75rem; border-bottom`
+- Mobile (`max-width: 1023px`): `padding-left: 3.5rem` avoids hamburger overlap
+- Discover: `.discover-header` extends `.page-header`, only overrides `padding-bottom: 1rem`
+- `.genre-chips-sticky`: `sticky; top: var(--header-h); scroll-margin-top: var(--header-h)` — genre switch scrolls chips to top
+- `updateHeaderHeight()` JS measures header, sets `--header-h` CSS var; runs on `resize` + initial `requestAnimationFrame`
+- Scroll save/restore uses `document.querySelector('main').scrollTop` (not `window.scrollY`)
+- Touch: `:hover` overlay must be `@media (hover: hover)` — mobile browsers assign sticky `:hover` to elements under finger on render
+- Touch: `_touchMoved` flag (touchstart resets, touchmove sets) prevents scroll-triggered overlay toggles
+- `scrollIntoView({ block: 'start' })` needs `scroll-margin-top` on target to offset sticky header
 
 ## Search UX Timing — 2026-03-06
 - Torrentio 522 errors (Cloudflare) take ~20s — was blocking Zilean results when run sequentially

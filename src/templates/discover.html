@@ -4,14 +4,6 @@
 
 {% block head %}
 <style>
-  /* Make main a fixed-height scroll container so CSS sticky works inside it */
-  main {
-    height: 100dvh;
-    overflow-y: auto;
-    overflow-x: hidden;
-    min-height: unset; /* override base template's min-h-screen */
-  }
-
   /* Responsive card sizing */
   :root { --card-w: 140px; }
   @media (min-width: 640px) { :root { --card-w: 160px; } }
@@ -57,8 +49,10 @@
     line-height: 1.4;
     color: #e2e8f0;
   }
-  .poster-card:hover .poster-overlay {
-    opacity: 1;
+  @media (hover: hover) {
+    .poster-card:hover .poster-overlay {
+      opacity: 1;
+    }
   }
   .poster-card.overlay-visible .poster-overlay { opacity: 1; }
   .poster-badge {
@@ -211,16 +205,7 @@
     .genre-chip { flex-shrink: 0; }
   }
   .discover-header {
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    background: #0f172a;
     padding-bottom: 1rem;
-    border-bottom: 1px solid #334155;
-  }
-  /* On mobile, add left padding to avoid overlap with hamburger button */
-  @media (max-width: 1023px) {
-    .discover-header { padding-left: 3.5rem; }
   }
   .genre-chips-sticky {
     position: sticky;
@@ -229,6 +214,7 @@
     background: #0f172a;
     padding: 0.75rem 0;
     border-bottom: 1px solid #334155;
+    scroll-margin-top: var(--header-h, 8rem);
   }
   .genre-chip {
     padding: 0.375rem 0.875rem;
@@ -254,7 +240,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="discover-header" id="discover-header">
+<div class="page-header discover-header" id="discover-header">
   <div class="mb-4">
     <h2 class="text-2xl font-bold text-white">Discover</h2>
     <p class="text-vd-muted text-sm mt-1">Browse trending content and add to your library.</p>
@@ -696,6 +682,9 @@
     genreSection.classList.remove('hidden');
 
     await fetchGenreResults(mediaType, genreId, 1, false);
+
+    // Scroll genre chips to top so results are visible
+    chipEl.closest('.genre-chips-sticky').scrollIntoView({ behavior: 'instant', block: 'start' });
   }
 
   // Fetch genre results
@@ -942,7 +931,12 @@
   var isTouchDevice = window.matchMedia('(hover: none)').matches;
 
   if (isTouchDevice) {
+    var _touchMoved = false;
+    document.addEventListener('touchstart', function() { _touchMoved = false; }, { passive: true });
+    document.addEventListener('touchmove', function() { _touchMoved = true; }, { passive: true });
+
     document.addEventListener('click', function(e) {
+      if (_touchMoved) return;
       var card = e.target.closest('.poster-card');
 
       // Tapping inside a card's image area (not the add button)

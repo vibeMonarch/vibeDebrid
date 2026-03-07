@@ -47,6 +47,27 @@
     .badge-done { background-color: #10b981; }
     /* Transition for expand/collapse */
     [data-expand] { transition: max-height 0.2s ease-out; overflow: hidden; }
+    /* Make main a scroll container so CSS sticky works */
+    main {
+      height: 100dvh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: unset;
+    }
+    /* Sticky page header */
+    .page-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: #0f172a;
+      padding-top: 0.75rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid #334155;
+      margin-bottom: 1.5rem;
+    }
+    @media (max-width: 1023px) {
+      .page-header { padding-left: 3.5rem; }
+    }
   </style>
   {% block head %}{% endblock %}
 </head>
@@ -99,7 +120,7 @@
   </button>
 
   <!-- Main content -->
-  <main class="flex-1 lg:ml-64 min-h-screen">
+  <main class="flex-1 lg:ml-64">
     <div class="p-6 lg:p-8 max-w-7xl mx-auto">
       {% block content %}{% endblock %}
     </div>
