@@ -130,6 +130,22 @@ class ScanResult(BaseModel):
     errors: int
 
 
+class ScanDirectoryResult(BaseModel):
+    """Result of a targeted single-directory scan.
+
+    Attributes:
+        files_indexed: Number of files successfully indexed (inserted or updated).
+            Zero for all early-exit and error paths.
+        matched_dir_path: The absolute path of the directory that was actually
+            scanned.  May differ from the requested directory name when fuzzy
+            matching was used (e.g. ``"The.Mummy.1999.2160p..."`` for input
+            ``"The Mummy"``).  ``None`` when no directory was scanned.
+    """
+
+    files_indexed: int
+    matched_dir_path: str | None
+
+
 # ---------------------------------------------------------------------------
 # Internal parsed-file record (plain dict used for thread-safe transfer)
 # ---------------------------------------------------------------------------
@@ -436,12 +452,20 @@ class MountScanner:
         logger.warning("clear_index: deleted %d rows from mount_index", count)
         return count
 
-    async def scan_directory(self, session: AsyncSession, directory_name: str) -> int:
+    async def scan_directory(
+        self, session: AsyncSession, directory_name: str
+    ) -> ScanDirectoryResult:
         """Index all video files under a single named subdirectory of the mount.
 
         Unlike ``scan()``, this method is additive — it never deletes stale
         rows.  It is intended for targeted refreshes (e.g. after a new torrent
         is added to RD) rather than full periodic sweeps.
+
+        When the exact directory is not found, a fuzzy word-subsequence match
+        is attempted against all subdirectories of the mount root.  The actual
+        directory path used (which may differ from ``directory_name`` after
+        fuzzy matching) is returned in the result so the caller can use it for
+        path-prefix based lookups.
 
         Args:
             session: Active async SQLAlchemy session.  The caller owns the
@@ -450,10 +474,14 @@ class MountScanner:
                 root (e.g. ``"__all__"`` or a specific show folder).
 
         Returns:
-            Number of files successfully indexed (inserted or updated).
-            Returns 0 if the directory does not exist or the existence check
-            times out.
+            A ``ScanDirectoryResult`` with ``files_indexed`` set to the number
+            of files successfully indexed (inserted or updated) and
+            ``matched_dir_path`` set to the absolute path of the scanned
+            directory (after any fuzzy match).  Both values are ``0``/``None``
+            for all early-exit and error paths.
         """
+        _empty = ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
+
         dir_path = os.path.join(settings.paths.zurg_mount, directory_name, "")
 
         try:
@@ -466,7 +494,7 @@ class MountScanner:
                 "scan_directory: existence check timed out for %r — skipping",
                 dir_path,
             )
-            return 0
+            return _empty
 
         if not exists:
             logger.warning(
@@ -523,7 +551,7 @@ class MountScanner:
                     "scan_directory: fuzzy match timed out for %r — skipping",
                     directory_name,
                 )
-                return 0
+                return _empty
 
             if matched_path is None:
                 logger.warning(
@@ -531,7 +559,7 @@ class MountScanner:
                     directory_name,
                     mount_root,
                 )
-                return 0
+                return _empty
 
             logger.info(
                 "scan_directory: fuzzy matched %r -> %s",
@@ -551,7 +579,7 @@ class MountScanner:
             logger.warning(
                 "scan_directory: walk timed out after 30s for %s", dir_path,
             )
-            return 0
+            return _empty
 
         if walk_errors:
             logger.warning(
@@ -571,7 +599,66 @@ class MountScanner:
             files_updated,
             upsert_errors,
         )
-        return total_indexed
+        return ScanDirectoryResult(files_indexed=total_indexed, matched_dir_path=dir_path)
+
+    async def lookup_by_path_prefix(
+        self,
+        session: AsyncSession,
+        path_prefix: str,
+        season: int | None = None,
+        episode: int | None = None,
+    ) -> list[MountIndex]:
+        """Query the mount index for all files whose filepath begins with path_prefix.
+
+        This is a fallback for cases where PTN parses individual video file names
+        differently from the queue item title (e.g. BluRay disc rips with numeric
+        filenames, or episodes named by episode title instead of show title).
+        After a successful ``scan_directory`` the directory path is known, so
+        all indexed files beneath it can be retrieved directly by path prefix
+        without relying on parsed metadata.
+
+        The prefix is normalised to end with ``/`` before the LIKE query so
+        that a prefix of ``/mnt/The.Mummy.1999.../`` cannot accidentally match
+        a sibling directory like ``/mnt/The.Mummy.Returns.../``.
+
+        Args:
+            session: Active async SQLAlchemy session.
+            path_prefix: Absolute directory path to use as the prefix filter.
+                A trailing ``/`` is appended if not already present.
+            season: If provided, restrict results to this season number.
+            episode: If provided, restrict results to this episode number.
+                Only meaningful when ``season`` is also provided.
+
+        Returns:
+            List of matching MountIndex rows, ordered by ``last_seen_at`` desc.
+        """
+        if not path_prefix.endswith("/"):
+            path_prefix = path_prefix + "/"
+
+        # Escape LIKE wildcards so directory names containing literal '%' or '_'
+        # are matched as ordinary characters rather than SQL pattern tokens.
+        escaped = path_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like_pattern = escaped + "%"
+        stmt = select(MountIndex).where(
+            MountIndex.filepath.like(like_pattern, escape="\\")
+        )
+        if season is not None:
+            stmt = stmt.where(MountIndex.parsed_season == season)
+        if episode is not None:
+            stmt = stmt.where(MountIndex.parsed_episode == episode)
+        stmt = stmt.order_by(MountIndex.last_seen_at.desc())
+
+        result = await session.execute(stmt)
+        matches = list(result.scalars().all())
+        if matches:
+            logger.info(
+                "lookup_by_path_prefix: found %d result(s) for prefix %r (season=%s episode=%s)",
+                len(matches),
+                path_prefix,
+                season,
+                episode,
+            )
+        return matches
 
     # ------------------------------------------------------------------
     # Private helpers — async DB

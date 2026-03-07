@@ -11,10 +11,13 @@ Covers:
   - MountScanner.lookup: title substring, season filter, episode filter,
     case-insensitive matching, empty result
   - MountScanner.lookup_by_filepath: exact match, not found
+  - MountScanner.lookup_by_path_prefix: basic match, no match, season filter,
+    episode filter, trailing-slash normalisation, sibling-dir isolation, ordering
   - MountScanner.get_index_stats: empty DB, movies-only, episodes-only, mixed
   - MountScanner.clear_index: returns count, leaves table empty
   - MountScanner._should_skip_dir: hidden, __MACOSX, @eaDir, .Trash-*, normal
   - VIDEO_EXTENSIONS constant: spot-check known extensions
+  - ScanDirectoryResult: matched_dir_path propagation through scan_directory
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.mount_scanner import (
     VIDEO_EXTENSIONS,
     MountScanner,
+    ScanDirectoryResult,
     ScanResult,
     _parse_filename,
     mount_scanner,
@@ -820,9 +824,12 @@ class TestScanDirectory:
 
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
-                count = await scanner.scan_directory(session, "ShowFolder")
+                result = await scanner.scan_directory(session, "ShowFolder")
 
-        assert count == 2
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 2
+        assert result.matched_dir_path is not None
+        assert "ShowFolder" in result.matched_dir_path
 
         # Confirm the DB was populated.
         stats = await scanner.get_index_stats(session)
@@ -831,19 +838,21 @@ class TestScanDirectory:
     async def test_scan_directory_returns_zero_for_nonexistent(
         self, session: AsyncSession
     ) -> None:
-        """scan_directory returns 0 without error when the subdirectory does not exist."""
+        """scan_directory returns files_indexed=0/matched_dir_path=None when not found."""
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
-                count = await scanner.scan_directory(session, "does_not_exist")
+                result = await scanner.scan_directory(session, "does_not_exist")
 
-        assert count == 0
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None
 
     async def test_scan_directory_returns_zero_for_empty_dir(
         self, session: AsyncSession
     ) -> None:
-        """scan_directory returns 0 when the named subdirectory contains no video files."""
+        """scan_directory returns files_indexed=0 (with a path) for a dir with no videos."""
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             subdir = os.path.join(tmpdir, "EmptyFolder")
@@ -851,9 +860,13 @@ class TestScanDirectory:
 
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
-                count = await scanner.scan_directory(session, "EmptyFolder")
+                result = await scanner.scan_directory(session, "EmptyFolder")
 
-        assert count == 0
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 0
+        # Directory exists so matched_dir_path is set even when no files found
+        assert result.matched_dir_path is not None
+        assert "EmptyFolder" in result.matched_dir_path
 
     async def test_scan_directory_handles_nested_subdirs(
         self, session: AsyncSession
@@ -872,9 +885,11 @@ class TestScanDirectory:
 
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
-                count = await scanner.scan_directory(session, "ShowFolder")
+                result = await scanner.scan_directory(session, "ShowFolder")
 
-        assert count == 3
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 3
+        assert result.matched_dir_path is not None
         stats = await scanner.get_index_stats(session)
         assert stats["total_files"] == 3
 
@@ -895,24 +910,28 @@ class TestScanDirectory:
 
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
-                count = await scanner.scan_directory(session, "MovieFolder")
+                result = await scanner.scan_directory(session, "MovieFolder")
 
         # 1 file total: it was updated (not inserted as a duplicate).
-        assert count == 1
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 1
+        assert result.matched_dir_path is not None
         stats = await scanner.get_index_stats(session)
         assert stats["total_files"] == 1
 
     async def test_scan_directory_timeout_returns_zero(
         self, session: AsyncSession
     ) -> None:
-        """When the existence check times out, scan_directory returns 0 gracefully."""
+        """When the existence check times out, scan_directory returns files_indexed=0."""
         scanner = MountScanner()
         with patch("asyncio.wait_for", side_effect=TimeoutError("simulated hang")):
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = "/some/mount"
-                count = await scanner.scan_directory(session, "any_dir")
+                result = await scanner.scan_directory(session, "any_dir")
 
-        assert count == 0
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None
 
 
 # ---------------------------------------------------------------------------
@@ -1149,3 +1168,332 @@ class TestScandirWalk:
         assert errors == 0
         assert len(records) == 1
         assert records[0]["filename"] == "visible.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Group 14: lookup_by_path_prefix
+# ---------------------------------------------------------------------------
+
+
+class TestLookupByPathPrefix:
+    """Tests for MountScanner.lookup_by_path_prefix (DB-only, no filesystem access)."""
+
+    async def test_basic_match_returns_all_files_under_prefix(
+        self, session: AsyncSession
+    ) -> None:
+        """Files whose filepath begins with the prefix are returned."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/The.Mummy.1999.1080p/The.Mummy.1999.mkv",
+            filename="The.Mummy.1999.mkv",
+            parsed_title="the mummy",
+        )
+        await _insert_entry(
+            session,
+            filepath="/mnt/The.Mummy.1999.1080p/extras/featurette.mkv",
+            filename="featurette.mkv",
+            parsed_title="featurette",
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(
+            session, "/mnt/The.Mummy.1999.1080p"
+        )
+        assert len(results) == 2
+        paths = {r.filepath for r in results}
+        assert "/mnt/The.Mummy.1999.1080p/The.Mummy.1999.mkv" in paths
+        assert "/mnt/The.Mummy.1999.1080p/extras/featurette.mkv" in paths
+
+    async def test_no_match_returns_empty_list(self, session: AsyncSession) -> None:
+        """A prefix that matches no rows returns an empty list."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/Some.Other.Movie.2020/movie.mkv",
+            filename="movie.mkv",
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(
+            session, "/mnt/Nonexistent.Dir.2099"
+        )
+        assert results == []
+
+    async def test_season_filter_restricts_results(
+        self, session: AsyncSession
+    ) -> None:
+        """When season is provided only entries matching that season are returned."""
+        prefix = "/mnt/Breaking.Bad.S01-05.Complete"
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01/Breaking.Bad.S01E01.mkv",
+            filename="Breaking.Bad.S01E01.mkv",
+            parsed_title="breaking bad",
+            parsed_season=1,
+            parsed_episode=1,
+        )
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S02/Breaking.Bad.S02E01.mkv",
+            filename="Breaking.Bad.S02E01.mkv",
+            parsed_title="breaking bad",
+            parsed_season=2,
+            parsed_episode=1,
+        )
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S03/Breaking.Bad.S03E01.mkv",
+            filename="Breaking.Bad.S03E01.mkv",
+            parsed_title="breaking bad",
+            parsed_season=3,
+            parsed_episode=1,
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(session, prefix, season=2)
+        assert len(results) == 1
+        assert results[0].parsed_season == 2
+
+    async def test_episode_filter_restricts_results(
+        self, session: AsyncSession
+    ) -> None:
+        """When season and episode are provided only that specific episode is returned."""
+        prefix = "/mnt/Better.Call.Saul.2015"
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01/Better.Call.Saul.S01E01.mkv",
+            filename="Better.Call.Saul.S01E01.mkv",
+            parsed_title="better call saul",
+            parsed_season=1,
+            parsed_episode=1,
+        )
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01/Better.Call.Saul.S01E02.mkv",
+            filename="Better.Call.Saul.S01E02.mkv",
+            parsed_title="better call saul",
+            parsed_season=1,
+            parsed_episode=2,
+        )
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01/Better.Call.Saul.S01E03.mkv",
+            filename="Better.Call.Saul.S01E03.mkv",
+            parsed_title="better call saul",
+            parsed_season=1,
+            parsed_episode=3,
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(
+            session, prefix, season=1, episode=2
+        )
+        assert len(results) == 1
+        assert results[0].parsed_episode == 2
+
+    async def test_trailing_slash_normalisation_without_slash(
+        self, session: AsyncSession
+    ) -> None:
+        """A prefix without a trailing slash is normalised to include one before querying."""
+        prefix_no_slash = "/mnt/The.Mummy.1999.2160p"
+        await _insert_entry(
+            session,
+            filepath="/mnt/The.Mummy.1999.2160p/The.Mummy.1999.2160p.mkv",
+            filename="The.Mummy.1999.2160p.mkv",
+            parsed_title="the mummy",
+        )
+        scanner = MountScanner()
+        # Query without trailing slash — must still match.
+        results = await scanner.lookup_by_path_prefix(session, prefix_no_slash)
+        assert len(results) == 1
+        assert results[0].parsed_title == "the mummy"
+
+    async def test_trailing_slash_normalisation_with_slash(
+        self, session: AsyncSession
+    ) -> None:
+        """A prefix that already ends in '/' is not double-slashed."""
+        prefix_with_slash = "/mnt/The.Mummy.1999.2160p/"
+        await _insert_entry(
+            session,
+            filepath="/mnt/The.Mummy.1999.2160p/The.Mummy.1999.2160p.mkv",
+            filename="The.Mummy.1999.2160p.mkv",
+            parsed_title="the mummy",
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(session, prefix_with_slash)
+        assert len(results) == 1
+
+    async def test_sibling_directory_not_matched(self, session: AsyncSession) -> None:
+        """A prefix of '/mount/The.Mummy.1999' must NOT match '/mount/The.Mummy.1999.Returns/...'."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/The.Mummy.1999.1080p/The.Mummy.1999.mkv",
+            filename="The.Mummy.1999.mkv",
+            parsed_title="the mummy",
+        )
+        await _insert_entry(
+            session,
+            filepath="/mnt/The.Mummy.Returns.2001/The.Mummy.Returns.mkv",
+            filename="The.Mummy.Returns.mkv",
+            parsed_title="the mummy returns",
+        )
+        scanner = MountScanner()
+        # Prefix ends with '/' so it cannot spill into sibling dirs that happen
+        # to share the same leading characters.
+        results = await scanner.lookup_by_path_prefix(
+            session, "/mnt/The.Mummy.1999.1080p"
+        )
+        assert len(results) == 1
+        assert results[0].parsed_title == "the mummy"
+
+    async def test_results_ordered_by_last_seen_at_descending(
+        self, session: AsyncSession
+    ) -> None:
+        """Results are ordered newest-first by last_seen_at."""
+        older_ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        newer_ts = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        newest_ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+        prefix = "/mnt/Show.2024"
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01E02.mkv",
+            filename="S01E02.mkv",
+            parsed_title="show",
+            last_seen_at=older_ts,
+        )
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01E03.mkv",
+            filename="S01E03.mkv",
+            parsed_title="show",
+            last_seen_at=newest_ts,
+        )
+        await _insert_entry(
+            session,
+            filepath=f"{prefix}/S01E01.mkv",
+            filename="S01E01.mkv",
+            parsed_title="show",
+            last_seen_at=newer_ts,
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(session, prefix)
+        assert len(results) == 3
+        assert results[0].filepath == f"{prefix}/S01E03.mkv"
+        assert results[1].filepath == f"{prefix}/S01E01.mkv"
+        assert results[2].filepath == f"{prefix}/S01E02.mkv"
+
+    async def test_empty_index_returns_empty_list(self, session: AsyncSession) -> None:
+        """lookup_by_path_prefix on an empty table returns an empty list."""
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(session, "/mnt/anything")
+        assert results == []
+
+    async def test_only_files_inside_prefix_dir_returned(
+        self, session: AsyncSession
+    ) -> None:
+        """Files at mount root or in other dirs are not matched by a subdirectory prefix."""
+        # File directly in /mnt/ (not inside any subdirectory)
+        await _insert_entry(
+            session,
+            filepath="/mnt/root_level.mkv",
+            filename="root_level.mkv",
+            parsed_title="root level",
+        )
+        # File inside the target prefix
+        await _insert_entry(
+            session,
+            filepath="/mnt/ShowDir/S01E01.mkv",
+            filename="S01E01.mkv",
+            parsed_title="show",
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup_by_path_prefix(session, "/mnt/ShowDir")
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/ShowDir/S01E01.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Group 15: ScanDirectoryResult.matched_dir_path integration
+# ---------------------------------------------------------------------------
+
+
+class TestScanDirectoryResultMatchedDirPath:
+    """Verify that matched_dir_path from scan_directory is usable as a prefix for
+    lookup_by_path_prefix — the core of the path-prefix fallback in the CHECKING stage.
+    """
+
+    async def test_matched_dir_path_feeds_into_lookup_by_path_prefix(
+        self, session: AsyncSession
+    ) -> None:
+        """The matched_dir_path returned by scan_directory can be used directly
+        as the prefix for lookup_by_path_prefix to retrieve the indexed files.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "The.Mummy.1999.2160p.UHD.BluRay")
+            os.makedirs(subdir)
+            open(os.path.join(subdir, "The.Mummy.1999.mkv"), "wb").write(b"v")
+            open(os.path.join(subdir, "The.Mummy.1999.extras.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                scan_result = await scanner.scan_directory(
+                    session, "The.Mummy.1999.2160p.UHD.BluRay"
+                )
+
+        assert scan_result.files_indexed == 2
+        assert scan_result.matched_dir_path is not None
+
+        # Use matched_dir_path as the prefix for subsequent lookup.
+        prefix_results = await scanner.lookup_by_path_prefix(
+            session, scan_result.matched_dir_path
+        )
+        assert len(prefix_results) == 2
+
+    async def test_fuzzy_matched_dir_path_feeds_into_lookup_by_path_prefix(
+        self, session: AsyncSession
+    ) -> None:
+        """When scan_directory uses a fuzzy match the returned matched_dir_path
+        still works as a correct prefix for lookup_by_path_prefix.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Actual directory on filesystem has extra tokens (year, resolution, group).
+            actual_dir = os.path.join(tmpdir, "The.Mummy.1999.2160p.BluRay.HDR")
+            os.makedirs(actual_dir)
+            open(os.path.join(actual_dir, "The.Mummy.1999.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                # Request with shorter name — triggers fuzzy match inside scan_directory.
+                scan_result = await scanner.scan_directory(session, "The Mummy 1999")
+
+        assert scan_result.files_indexed == 1
+        assert scan_result.matched_dir_path is not None
+        # matched_dir_path should point to the actual (longer) directory name.
+        assert "The.Mummy.1999.2160p.BluRay.HDR" in scan_result.matched_dir_path
+
+        prefix_results = await scanner.lookup_by_path_prefix(
+            session, scan_result.matched_dir_path
+        )
+        assert len(prefix_results) == 1
+        assert prefix_results[0].filename == "The.Mummy.1999.mkv"
+
+    async def test_failed_scan_directory_matched_dir_path_is_none(
+        self, session: AsyncSession
+    ) -> None:
+        """When scan_directory finds no directory, matched_dir_path is None
+        so the caller can skip the lookup_by_path_prefix call entirely.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                scan_result = await scanner.scan_directory(
+                    session, "Completely.Nonexistent.Dir.2099"
+                )
+
+        assert scan_result.files_indexed == 0
+        assert scan_result.matched_dir_path is None
+        # Calling lookup_by_path_prefix with None would raise, so callers must guard.
+        # Verify a subsequent call with any real prefix safely returns empty.
+        results = await scanner.lookup_by_path_prefix(
+            session, "/mnt/Completely.Nonexistent.Dir.2099"
+        )
+        assert results == []

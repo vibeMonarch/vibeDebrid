@@ -203,11 +203,29 @@ async def _job_queue_processor() -> None:
                         )
                         torrent = torrent_result.scalar_one_or_none()
                         if torrent and torrent.filename:
-                            indexed = await mount_scanner.scan_directory(session, torrent.filename)
-                            if indexed > 0:
+                            scan_result = await mount_scanner.scan_directory(session, torrent.filename)
+                            if scan_result.files_indexed > 0:
                                 matches = await mount_scanner.lookup(
                                     session,
                                     title=item.title,
+                                    season=item.season,
+                                    episode=None,
+                                )
+                            # Path-based fallback: PTN may parse individual filenames
+                            # differently from the item title (e.g. disc rips, episode
+                            # title filenames), so fall back to directory prefix lookup.
+                            # Run whenever matched_dir_path is known, regardless of whether
+                            # new files were indexed (files may have been indexed by a prior
+                            # full scan).
+                            if not matches and scan_result.matched_dir_path:
+                                logger.info(
+                                    "CHECKING season pack id=%d: title lookup failed, "
+                                    "trying path prefix %r",
+                                    item.id, scan_result.matched_dir_path,
+                                )
+                                matches = await mount_scanner.lookup_by_path_prefix(
+                                    session,
+                                    scan_result.matched_dir_path,
                                     season=item.season,
                                     episode=None,
                                 )
@@ -289,11 +307,29 @@ async def _job_queue_processor() -> None:
                         )
                         torrent = torrent_result.scalar_one_or_none()
                         if torrent and torrent.filename:
-                            indexed = await mount_scanner.scan_directory(session, torrent.filename)
-                            if indexed > 0:
+                            scan_result = await mount_scanner.scan_directory(session, torrent.filename)
+                            if scan_result.files_indexed > 0:
                                 matches = await mount_scanner.lookup(
                                     session,
                                     title=item.title,
+                                    season=item.season,
+                                    episode=item.episode,
+                                )
+                            # Path-based fallback: PTN may parse individual filenames
+                            # differently from the item title (e.g. disc rips, episode
+                            # title filenames), so fall back to directory prefix lookup.
+                            # Run whenever matched_dir_path is known, regardless of whether
+                            # new files were indexed (files may have been indexed by a prior
+                            # full scan).
+                            if not matches and scan_result.matched_dir_path:
+                                logger.info(
+                                    "CHECKING item id=%d: title lookup failed, "
+                                    "trying path prefix %r",
+                                    item.id, scan_result.matched_dir_path,
+                                )
+                                matches = await mount_scanner.lookup_by_path_prefix(
+                                    session,
+                                    scan_result.matched_dir_path,
                                     season=item.season,
                                     episode=item.episode,
                                 )
