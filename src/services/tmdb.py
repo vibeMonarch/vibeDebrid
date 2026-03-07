@@ -91,6 +91,7 @@ class TmdbShowDetail(BaseModel):
     number_of_seasons: int = 0
     seasons: list[TmdbSeasonInfo] = []
     imdb_id: str | None = None
+    tvdb_id: int | None = None
     genres: list[dict] = []
     next_episode_to_air: TmdbEpisodeAirInfo | None = None
     last_episode_to_air: TmdbEpisodeAirInfo | None = None
@@ -493,7 +494,7 @@ class TmdbClient:
 
         imdb_id: str | None = data.get("imdb_id") or None
         tvdb_id_raw = data.get("tvdb_id")
-        tvdb_id: int | None = int(tvdb_id_raw) if isinstance(tvdb_id_raw, int) else None
+        tvdb_id: int | None = int(tvdb_id_raw) if isinstance(tvdb_id_raw, (int, float)) and tvdb_id_raw else None
 
         logger.debug(
             "tmdb.get_external_ids: tmdb_id=%d imdb_id=%s tvdb_id=%s",
@@ -807,9 +808,11 @@ class TmdbClient:
                 poster_path=s.get("poster_path") or None,
             ))
 
-        # Extract IMDB ID from external_ids
+        # Extract IMDB ID and TVDB ID from external_ids
         ext_ids = data.get("external_ids") or {}
         imdb_id: str | None = ext_ids.get("imdb_id") or None
+        tvdb_id_raw = ext_ids.get("tvdb_id")
+        tvdb_id: int | None = int(tvdb_id_raw) if isinstance(tvdb_id_raw, (int, float)) and tvdb_id_raw else None
 
         # Parse genres
         raw_genres = data.get("genres") or []
@@ -843,6 +846,7 @@ class TmdbClient:
             number_of_seasons=int(data.get("number_of_seasons") or 0),
             seasons=seasons,
             imdb_id=imdb_id,
+            tvdb_id=tvdb_id,
             genres=raw_genres,
             next_episode_to_air=next_episode_to_air,
             last_episode_to_air=last_episode_to_air,

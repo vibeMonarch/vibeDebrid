@@ -233,6 +233,7 @@ class ShowManager:
         request: AddSeasonsRequest,
         season_num: int,
         existing_keys: set[tuple[int | None, int | None]],
+        tvdb_id: int | None = None,
     ) -> tuple[int, int, int | None]:
         """Add individual episode items for a currently airing season.
 
@@ -293,6 +294,7 @@ class ShowManager:
                 media_type=MediaType.SHOW,
                 tmdb_id=tmdb_id_str,
                 imdb_id=request.imdb_id,
+                tvdb_id=tvdb_id,
                 state=state,
                 source="show_detail",
                 added_at=now,
@@ -356,6 +358,7 @@ class ShowManager:
         # Fetch show detail once to detect the currently airing season.
         show_detail = await tmdb_client.get_show_details(request.tmdb_id)
         airing_season_num: int | None = None
+        tvdb_id: int | None = show_detail.tvdb_id if show_detail else None
         if show_detail and show_detail.next_episode_to_air:
             airing_season_num = show_detail.next_episode_to_air.season_number
 
@@ -381,7 +384,7 @@ class ShowManager:
 
             if season_num == airing_season_num:
                 eps, unreleased, max_ep = await self._add_airing_season(
-                    session, request, season_num, existing_keys
+                    session, request, season_num, existing_keys, tvdb_id
                 )
                 created_episodes += eps
                 created_unreleased += unreleased
@@ -400,6 +403,7 @@ class ShowManager:
                     media_type=MediaType.SHOW,
                     tmdb_id=tmdb_id_str,
                     imdb_id=request.imdb_id,
+                    tvdb_id=tvdb_id,
                     state=QueueState.WANTED,
                     source="show_detail",
                     added_at=now,
@@ -607,6 +611,7 @@ class ShowManager:
         now = datetime.now(timezone.utc)
         today = datetime.now(timezone.utc).date()
         tmdb_id_str = str(show.tmdb_id)
+        tvdb_id: int | None = tmdb_show.tvdb_id
         new_items = 0
 
         # Get all existing queue items for this show
@@ -681,6 +686,7 @@ class ShowManager:
                         media_type=MediaType.SHOW,
                         tmdb_id=tmdb_id_str,
                         imdb_id=show.imdb_id,
+                        tvdb_id=tvdb_id,
                         state=QueueState.WANTED,
                         source="monitor",
                         added_at=now,
@@ -724,6 +730,7 @@ class ShowManager:
                     media_type=MediaType.SHOW,
                     tmdb_id=tmdb_id_str,
                     imdb_id=show.imdb_id,
+                    tvdb_id=tvdb_id,
                     state=QueueState.WANTED,
                     source="monitor",
                     added_at=now,

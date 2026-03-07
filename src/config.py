@@ -163,6 +163,15 @@ class SearchConfig(BaseModel):
     cache_check_limit: int = Field(default=10, ge=0)  # Number of search results to auto-check RD cache status
 
 
+class XemConfig(BaseModel):
+    """Configuration for TheXEM scene numbering service."""
+
+    enabled: bool = True
+    base_url: str = "https://thexem.info"
+    cache_hours: int = 24
+    timeout_seconds: int = 10
+
+
 # --- Main settings ---
 
 
@@ -202,6 +211,7 @@ class Settings(BaseSettings):
     symlink_naming: SymlinkNamingConfig = SymlinkNamingConfig()
     search: SearchConfig = SearchConfig()
     tmdb: TmdbConfig = TmdbConfig()
+    xem: XemConfig = XemConfig()
 
     @classmethod
     def load(cls) -> "Settings":

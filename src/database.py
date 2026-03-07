@@ -72,6 +72,14 @@ async def _migrate_add_columns() -> None:
             else:
                 logger.warning("Migration: failed to create tmdb_id index: %s", exc)
 
+        # tvdb_id (added for XEM scene numbering support)
+        try:
+            await conn.execute(text("ALTER TABLE media_items ADD COLUMN tvdb_id INTEGER"))
+            logger.info("Migration: added tvdb_id column")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.warning("Migration tvdb_id: %s", exc)
+
 
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""

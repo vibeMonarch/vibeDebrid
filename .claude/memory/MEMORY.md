@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1074 tests, all passing (as of 2026-03-07)
+- 1105 tests, all passing (as of 2026-03-07)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -22,9 +22,9 @@
 - Tools page + Library Migration tool — 2026-03-07
 - [Show Detail Page + Monitoring + Airing Seasons](show-monitoring.md) — 2026-03-07
 - Path-prefix fallback for mount lookup — 2026-03-07
+- [XEM scene numbering](xem-integration.md) — 2026-03-07
 
 ## Remaining / Future Work
-- XEM scene numbering: TMDB↔scene mapping for anime (Frieren S01E29 ≠ torrent S02E01)
 - Trakt integration (Step 1b): OAuth, watchlist polling, scheduler
 - Upgrade manager (Step 2): monitor for higher quality versions within window
 - Docker (Step 3): Dockerfile + docker-compose.yml

@@ -268,12 +268,19 @@
 - 23 new tests (airing detection, per-episode creation, auto-subscribe, monitoring dedup, schema)
 - Total: 1074 tests, all passing
 
-## Remaining / Future Work
+### XEM Scene Numbering ✅ (Step 1.8)
+- Solves anime numbering mismatch: TMDB S01E29 ≠ torrent S02E01 (e.g., Frieren)
+- `src/services/xem.py`: XEM API client (get_show_mappings, get_shows_with_mappings)
+- `src/core/xem_mapper.py`: cache-first mapper with 24h TTL in SQLite
+- `src/models/xem_cache.py`: cache table with UniqueConstraint on (tvdb_id, season, episode)
+- TVDB ID propagation: `tvdb_id` column on MediaItem, populated from TMDB external_ids
+- Scrape pipeline: XEM resolved once in `_run_pipeline`, scene numbers passed to both Torrentio + Zilean
+- Fallback: if tvdb_id missing, resolves via TMDB; if XEM down/no mapping, uses original numbers
+- Config: `xem.enabled`, `xem.base_url`, `xem.cache_hours`, `xem.timeout_seconds`
+- 31 new tests (14 client, 11 mapper/cache, 6 pipeline integration)
+- Total: 1105 tests, all passing
 
-### XEM Scene Numbering (next)
-- Anime numbering mismatch: TMDB S01E29 ≠ torrent site S02E01 (e.g., Frieren)
-- Integrate TheXEM.info for TMDB↔scene numbering mappings
-- Convert season/episode numbers before scraping when XEM mapping exists
+## Remaining / Future Work
 
 ### Trakt Integration (Step 1b)
 - src/services/trakt.py — OAuth, watchlist polling

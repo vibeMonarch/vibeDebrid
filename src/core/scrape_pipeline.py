@@ -107,13 +107,14 @@ class ScrapePipeline:
     async def run(self, session: AsyncSession, item: MediaItem) -> PipelineResult:
         """Run the full scrape-and-acquire pipeline for *item*.
 
-        Executes the six-step acquisition flow in order:
+        Executes the seven-step acquisition flow in order:
           1. Mount check — return immediately on a hit.
           2. Dedup check — return immediately when content already tracked.
-          3. Zilean scrape — swallows all errors.
-          4. Torrentio scrape — swallows all errors.
-          5. Combine, check RD cache, filter.
-          6. Add best result to Real-Debrid.
+          3. XEM scene numbering resolution (once for both scrapers).
+          4. Zilean scrape — swallows all errors.
+          5. Torrentio scrape — swallows all errors.
+          6. Combine, check RD cache, filter.
+          7. Add best result to Real-Debrid.
 
         The method never raises — every code path ends with a PipelineResult.
         State transitions (ADDING / SLEEPING) are applied here so the caller
@@ -182,19 +183,54 @@ class ScrapePipeline:
             return dedup_result
 
         # ------------------------------------------------------------------
-        # Step 3 — Zilean scrape
+        # Step 3 — Resolve scene numbering once for both scrapers
         # ------------------------------------------------------------------
-        zilean_results, zilean_duration_ms = await self._step_zilean(session, item)
+        scene_season: int | None = item.season
+        scene_episode: int | None = item.episode
+        if (
+            item.media_type == MediaType.SHOW
+            and settings.xem.enabled
+            and item.episode is not None
+            and item.season is not None
+        ):
+            from src.core.xem_mapper import xem_mapper
+
+            try:
+                mapping = await xem_mapper.get_scene_numbering_for_item(
+                    session, item.tvdb_id, item.tmdb_id, item.season, item.episode
+                )
+                if mapping is not None:
+                    scene_season, scene_episode = mapping
+                    logger.info(
+                        "scrape_pipeline: XEM mapping S%02dE%02d → S%02dE%02d for item id=%d",
+                        item.season,
+                        item.episode,
+                        scene_season,
+                        scene_episode,
+                        item.id,
+                    )
+            except Exception:
+                logger.debug(
+                    "scrape_pipeline: XEM lookup failed for item id=%d, using original numbering",
+                    item.id,
+                )
 
         # ------------------------------------------------------------------
-        # Step 4 — Torrentio scrape
+        # Step 4 — Zilean scrape
         # ------------------------------------------------------------------
-        torrentio_results, torrentio_duration_ms = await self._step_torrentio(
-            session, item
+        zilean_results, zilean_duration_ms = await self._step_zilean(
+            session, item, scene_season=scene_season, scene_episode=scene_episode
         )
 
         # ------------------------------------------------------------------
-        # Step 5 — Combine, RD cache check, filter
+        # Step 5 — Torrentio scrape
+        # ------------------------------------------------------------------
+        torrentio_results, torrentio_duration_ms = await self._step_torrentio(
+            session, item, scene_season=scene_season, scene_episode=scene_episode
+        )
+
+        # ------------------------------------------------------------------
+        # Step 6 — Combine, RD cache check, filter
         # ------------------------------------------------------------------
         combined: list[_AnyResult] = zilean_results + torrentio_results  # type: ignore[assignment]
         total_count = len(combined)
@@ -308,7 +344,7 @@ class ScrapePipeline:
             )
 
         # ------------------------------------------------------------------
-        # Step 6 — Add to Real-Debrid
+        # Step 7 — Add to Real-Debrid
         # ------------------------------------------------------------------
         return await self._step_add_to_rd(
             session,
@@ -533,7 +569,12 @@ class ScrapePipeline:
         )
 
     async def _step_zilean(
-        self, session: AsyncSession, item: MediaItem
+        self,
+        session: AsyncSession,
+        item: MediaItem,
+        *,
+        scene_season: int | None = None,
+        scene_episode: int | None = None,
     ) -> tuple[list[ZileanResult], int]:
         """Query Zilean for results.
 
@@ -543,6 +584,10 @@ class ScrapePipeline:
         Args:
             session: Caller-managed async database session.
             item: The MediaItem to search for.
+            scene_season: Pre-resolved scene season from XEM (or item.season if
+                not provided).
+            scene_episode: Pre-resolved scene episode from XEM (or item.episode
+                if not provided).
 
         Returns:
             2-tuple of (results, duration_ms).
@@ -550,11 +595,19 @@ class ScrapePipeline:
         t0 = time.monotonic()
         results: list[ZileanResult] = []
 
+        # Fall back to item's original numbering when not pre-resolved.
+        if scene_season is None:
+            scene_season = item.season
+        if scene_episode is None:
+            scene_episode = item.episode
+
         query_params = json.dumps(
             {
                 "query": item.title,
                 "season": item.season,
                 "episode": item.episode,
+                "scene_season": scene_season,
+                "scene_episode": scene_episode,
                 "year": item.year,
                 "imdb_id": item.imdb_id,
             }
@@ -563,8 +616,8 @@ class ScrapePipeline:
         try:
             results = await zilean_client.search(
                 query=item.title,
-                season=item.season,
-                episode=item.episode,
+                season=scene_season,
+                episode=scene_episode,
                 year=item.year,
                 imdb_id=item.imdb_id,
             )
@@ -596,7 +649,12 @@ class ScrapePipeline:
         return results, duration_ms
 
     async def _step_torrentio(
-        self, session: AsyncSession, item: MediaItem
+        self,
+        session: AsyncSession,
+        item: MediaItem,
+        *,
+        scene_season: int | None = None,
+        scene_episode: int | None = None,
     ) -> tuple[list[TorrentioResult], int]:
         """Query Torrentio for results using the media type to pick the correct call.
 
@@ -606,6 +664,10 @@ class ScrapePipeline:
         Args:
             session: Caller-managed async database session.
             item: The MediaItem to scrape.
+            scene_season: Pre-resolved scene season from XEM (or item.season if
+                not provided).
+            scene_episode: Pre-resolved scene episode from XEM (or item.episode
+                if not provided).
 
         Returns:
             2-tuple of (results, duration_ms).
@@ -651,17 +713,24 @@ class ScrapePipeline:
                 return results, 0
             season = item.season
             episode = item.episode if item.episode is not None else 1
+
+            # Use pre-resolved scene numbers; fall back to original when not provided.
+            eff_scene_season = scene_season if scene_season is not None else season
+            eff_scene_episode = scene_episode if scene_episode is not None else episode
+
             query_params = json.dumps(
                 {
                     "imdb_id": item.imdb_id,
                     "type": "show",
                     "season": season,
                     "episode": episode,
+                    "scene_season": eff_scene_season,
+                    "scene_episode": eff_scene_episode,
                 }
             )
             try:
                 results = await torrentio_client.scrape_episode(
-                    item.imdb_id, season, episode
+                    item.imdb_id, eff_scene_season, eff_scene_episode
                 )
                 logger.debug(
                     "scrape_pipeline: Torrentio returned %d results for episode "
