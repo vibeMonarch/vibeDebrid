@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 953 tests, all passing (as of 2026-03-07)
+- 1038 tests, all passing (as of 2026-03-07)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -23,6 +23,7 @@
 - Discover sticky header + genre chips (title/tabs/genre chips pin on scroll) — 2026-03-06
 - Sticky headers all pages + touch/IMDB fixes — 2026-03-07
 - Tools page + Library Migration tool — 2026-03-07
+- Show Detail Page + Monitoring subscriptions — 2026-03-07
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
@@ -39,7 +40,9 @@
 - Client ID is a fixed UUID (`f0f4c4b8-...`), auth URL needs full `context[device]` params (product, version, platform, device, deviceName, model, screenResolution, language)
 - `_build_plex_tv_client()` — separate helper for plex.tv calls, deliberately omits `X-Plex-Token`
 - `settings.py`: 4 new endpoints, uses shared `config_lock` from `src/config.py` for race-safe config.json writes
-- `main.py`: Plex scan trigger after COMPLETE transition, guarded by enabled + scan_after_symlink + token, non-fatal
+- `main.py`: Plex scan trigger after COMPLETE transition, guarded by enabled + scan_after_symlink + token + symlink not None, non-fatal
+- `main.py`: targeted scan — passes `os.path.dirname(symlink.target_path)` to `scan_section(path=)` instead of full library rescan
+- Season pack path: `symlink` captured from loop (last successful), `None` guard prevents UnboundLocalError
 - Frontend: OAuth popup flow with 2s polling, popup-close detection, library section checkboxes, token intentionally omitted from save payload
 - 12 tests with mocked httpx transport
 
@@ -122,8 +125,26 @@
 - 85 tests (parsing, scanning with tmp_path, preview, execute, API routes)
 - Known limitation: scene parser edge case `"1917 2019 1080p"` — use parenthesized `"1917 (2019)"` instead
 
-## STATUS.md Next Steps
-- Pending: Trakt integration (Step 1b)
+## Show Detail Page + Monitoring — 2026-03-07
+- `src/models/monitored_show.py`: `MonitoredShow` ORM — tmdb_id (unique, indexed), imdb_id, title, year, quality_profile, enabled, last_season, last_episode, last_checked_at
+- `src/core/show_manager.py`: `ShowManager` singleton — `get_show_detail()`, `add_seasons()`, `set_subscription()`, `check_monitored_shows()`
+- `src/api/routes/show.py`: GET `/api/show/{tmdb_id}`, POST `/api/show/add`, PUT `/api/show/{tmdb_id}/subscribe`
+- `src/templates/show.html`: season picker with status badges, subscribe toggle, quality dropdown, sticky add bar
+- `src/services/tmdb.py`: `get_show_details()` (uses `append_to_response=external_ids`), `get_season_details()`
+- Discover click flow: TV shows → `/show/{tmdb_id}?from=discover` (no IMDB resolve needed), movies → `/search` (unchanged)
+- Season selection: each season creates MediaItem(is_season_pack=True, episode=None, state=WANTED)
+- Subscribe: MonitoredShow record, 6h scheduler job checks TMDB for new seasons/episodes
+- Monitoring logic: new complete seasons → season pack, current season new episodes → per-episode items
+- `_parse_air_date()` helper guards against malformed TMDB air_date strings
+- `date.today()` replaced with `datetime.now(timezone.utc).date()` for UTC consistency
+- 85 tests (53 show_manager + 32 API routes)
+- Deferred: season pack exploder (fallback to individual episodes when no pack found)
+
+## Remaining / Future Work
+- Season pack exploder: when no pack found, auto-create per-episode items (deferred from show detail feature)
+- Trakt integration (Step 1b): OAuth, watchlist polling, scheduler
+- Upgrade manager (Step 2): monitor for higher quality versions within window
+- Docker (Step 3): Dockerfile + docker-compose.yml
 
 ## SSE Feature Notes
 - Event bus: `src/core/event_bus.py` — module singleton, `put_nowait()` never blocks, maxsize=64 per client
@@ -158,7 +179,8 @@
 - Frontend tabs: Movies, TV Shows, Search — each media tab loads 3 parallel fetches (trending + top_rated + genres)
 - Genre browsing: chips from `/genres`, click loads `/by-genre` with `vote_count_gte=50` filter
 - `_enrich_with_queue_status()` does batch DB lookup for queue badges (available/in_queue/in_library)
-- "Add to Library" flow: resolve TMDB→IMDB → navigate to `/search?query=...&imdb_id=...&media_type=...&from=discover` → auto-search → user picks torrent → redirect back to `/discover` after 1.5s
+- "Add to Library" flow (movies): resolve TMDB→IMDB → navigate to `/search?...&from=discover` → auto-search → user picks torrent → redirect back to `/discover` after 1.5s
+- "Add to Library" flow (TV shows): navigate to `/show/{tmdb_id}?from=discover` → season picker → add seasons → redirect back to `/discover` after 1.5s
 - State preservation: sessionStorage caches full TMDB response data (both tabs) + genre items + page counters + scroll position. Restored on return from /search with zero API calls. One-shot (cleared after restore).
 
 ## Agent Routing Patterns

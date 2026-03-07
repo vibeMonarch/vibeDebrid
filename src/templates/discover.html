@@ -965,7 +965,7 @@
     });
   }
 
-  // Add to Library — resolve IMDB ID and navigate to search page
+  // Add to Library — TV shows go to show detail page; movies resolve IMDB and go to search
   document.addEventListener('click', async function(e) {
     var btn = e.target.closest('.add-btn-action');
     if (!btn) return;
@@ -974,19 +974,25 @@
     var mediaType = btn.dataset.mediaType;
     var title = btn.dataset.title;
 
+    // TV shows go to the show detail page
+    if (mediaType === 'tv') {
+      saveDiscoverState();
+      window.location.href = '/show/' + encodeURIComponent(tmdbId) + '?from=discover';
+      return;
+    }
+
+    // Movies: resolve IMDB ID and navigate to search page (existing flow)
     btn.disabled = true;
     btn.textContent = 'Loading...';
 
     try {
-      // Resolve TMDB → IMDB ID
       var resp = await fetch('/api/discover/resolve/' + encodeURIComponent(mediaType) + '/' + encodeURIComponent(tmdbId));
       var data = resp.ok ? await resp.json() : {};
 
-      // Build search URL with pre-filled params
       var params = new URLSearchParams();
       params.set('query', title);
       if (data.imdb_id) params.set('imdb_id', data.imdb_id);
-      params.set('media_type', mediaType === 'tv' ? 'show' : 'movie');
+      params.set('media_type', 'movie');
       params.set('from', 'discover');
 
       saveDiscoverState();

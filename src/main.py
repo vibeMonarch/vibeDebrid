@@ -398,6 +398,25 @@ async def _job_symlink_verifier() -> None:
         await session.close()
 
 
+async def _job_check_monitored_shows() -> None:
+    """Scheduled job: check monitored shows for new episodes."""
+    logger.info("Scheduled job starting: check_monitored_shows")
+    session = async_session()
+    try:
+        from src.core.show_manager import show_manager
+        result = await show_manager.check_monitored_shows(session)
+        await session.commit()
+        logger.info(
+            "Scheduled job complete: check_monitored_shows checked=%d new_items=%d",
+            result["checked"], result["new_items"],
+        )
+    except Exception:
+        logger.exception("Scheduled job failed: check_monitored_shows")
+        await session.rollback()
+    finally:
+        await session.close()
+
+
 def _register_scheduled_jobs() -> None:
     """Register periodic jobs with the scheduler.
 
@@ -440,6 +459,19 @@ def _register_scheduled_jobs() -> None:
     logger.info(
         "Registered job: symlink_verifier (every %d min)",
         settings.scheduler.symlink_verifier_minutes,
+    )
+
+    scheduler.add_job(
+        _job_check_monitored_shows,
+        "interval",
+        hours=settings.scheduler.monitored_shows_hours,
+        id="check_monitored_shows",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info(
+        "Registered job: check_monitored_shows (every %d hours)",
+        settings.scheduler.monitored_shows_hours,
     )
 
 
@@ -497,6 +529,7 @@ from src.api.routes.duplicates import router as duplicates_router  # noqa: E402
 from src.api.routes.discover import router as discover_router  # noqa: E402
 from src.api.routes.sse import router as sse_router  # noqa: E402
 from src.api.routes.tools import router as tools_router  # noqa: E402
+from src.api.routes.show import router as show_router  # noqa: E402
 
 app.include_router(dashboard_router)
 app.include_router(queue_router, prefix="/api/queue", tags=["queue"])
@@ -506,6 +539,7 @@ app.include_router(duplicates_router, prefix="/api/duplicates", tags=["duplicate
 app.include_router(discover_router, prefix="/api/discover", tags=["discover"])
 app.include_router(sse_router, prefix="/api", tags=["sse"])
 app.include_router(tools_router, tags=["tools"])
+app.include_router(show_router, prefix="/api/show", tags=["show"])
 
 
 # --- Page routes (serve Jinja2 templates) ---
@@ -556,6 +590,16 @@ async def discover_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("discover.html", {
         "request": request,
         "active_page": "discover",
+    })
+
+
+@app.get("/show/{tmdb_id}", response_class=HTMLResponse, tags=["pages"])
+async def show_detail_page(request: Request, tmdb_id: int) -> HTMLResponse:
+    """Show detail page for TV shows."""
+    return templates.TemplateResponse("show.html", {
+        "request": request,
+        "active_page": "discover",
+        "tmdb_id": tmdb_id,
     })
 
 

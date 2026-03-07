@@ -150,6 +150,7 @@ class SchedulerConfig(BaseModel):
     queue_processor_minutes: int = 5
     symlink_verifier_minutes: int = 30
     unreleased_check_minutes: int = 360
+    monitored_shows_hours: int = 6
 
 
 class SymlinkNamingConfig(BaseModel):

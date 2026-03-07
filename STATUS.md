@@ -235,14 +235,38 @@
 - 85 new tests (parsing, scanning, preview, execute, API routes)
 - Total: 953 tests, all passing
 
-### Step 1b: Trakt Integration
+### Show Detail Page + Monitoring Subscriptions ✅ (Step 1.6)
+- Show detail page (`/show/{tmdb_id}`): replaces search redirect for TV shows with dedicated season picker
+- TMDB integration: `get_show_details()` (with `append_to_response=external_ids`), `get_season_details()`
+- Season picker UI: checkboxes per season with status badges (Available/In Queue/In Library/Upcoming)
+- Season selection: each season creates `MediaItem(is_season_pack=True, episode=None, state=WANTED)`
+- Subscribe toggle: creates `MonitoredShow` record for automatic new episode monitoring
+- Monitoring scheduler: 6-hour job checks TMDB for new seasons/episodes on subscribed shows
+- Monitoring logic: new complete seasons → season pack item, current season new episodes → per-episode items
+- Dedup: existing queue items checked before creating new ones (by tmdb_id + season + episode)
+- `MonitoredShow` model: tmdb_id (unique, indexed), last_season, last_episode tracking for incremental checks
+- Discover flow: TV shows navigate to `/show/{tmdb_id}?from=discover`, movies keep existing `/search` redirect
+- Return-to-discover: auto-redirect to `/discover` after adding (with sessionStorage state restore)
+- Quality profile selector + sticky bottom action bar
+- `_parse_air_date()` helper guards against malformed TMDB air_date strings
+- UTC consistency: `datetime.now(timezone.utc).date()` instead of `date.today()`
+- 85 new tests (53 show_manager + 32 API routes)
+- Total: 1038 tests, all passing
+
+## Remaining / Future Work
+
+### Season Pack Exploder (deferred)
+- When no season pack found after scraping, auto-create individual episode MediaItems as fallback
+- Requires TMDB episode count query mid-pipeline + parent-child item relationship
+
+### Trakt Integration (Step 1b)
 - src/services/trakt.py — OAuth, watchlist polling
 - Wire into scheduler with config intervals
 
-### Step 2: Upgrade Manager
+### Upgrade Manager (Step 2)
 - src/core/upgrade_manager.py — monitor for higher quality versions within window
 
-### Step 3: Docker
+### Docker (Step 3)
 - Dockerfile + docker-compose.yml alongside existing Zurg/rclone stack
 
 ## Key Files to Read

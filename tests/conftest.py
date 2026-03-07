@@ -21,6 +21,7 @@ import src.models.torrent  # noqa: F401
 import src.models.scrape_result  # noqa: F401
 import src.models.symlink  # noqa: F401
 import src.models.mount_index  # noqa: F401
+import src.models.monitored_show  # noqa: F401
 
 
 @pytest.fixture

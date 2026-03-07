@@ -60,6 +60,51 @@ class TmdbSearchResult(BaseModel):
     total_pages: int = 1
 
 
+class TmdbSeasonInfo(BaseModel):
+    """Season summary from a TMDB show detail response."""
+
+    season_number: int
+    name: str = ""
+    episode_count: int = 0
+    air_date: str | None = None
+    overview: str = ""
+    poster_path: str | None = None
+
+
+class TmdbShowDetail(BaseModel):
+    """Full show details from TMDB /tv/{id} endpoint."""
+
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    overview: str = ""
+    poster_path: str | None = None
+    backdrop_path: str | None = None
+    status: str = ""  # "Returning Series", "Ended", "Canceled", etc.
+    vote_average: float = 0.0
+    number_of_seasons: int = 0
+    seasons: list[TmdbSeasonInfo] = []
+    imdb_id: str | None = None
+    genres: list[dict] = []
+
+
+class TmdbEpisodeInfo(BaseModel):
+    """Episode info from a TMDB season detail response."""
+
+    episode_number: int
+    name: str = ""
+    air_date: str | None = None
+    overview: str = ""
+
+
+class TmdbSeasonDetail(BaseModel):
+    """Detailed season info including episodes."""
+
+    season_number: int
+    name: str = ""
+    episodes: list[TmdbEpisodeInfo] = []
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -690,6 +735,166 @@ class TmdbClient:
             "tmdb.test_connection: unexpected status %d", response.status_code
         )
         return False
+
+
+    async def get_show_details(self, tmdb_id: int) -> TmdbShowDetail | None:
+        """Fetch full TV show details including seasons and external IDs.
+
+        Uses append_to_response=external_ids to get IMDB ID in one call.
+
+        Args:
+            tmdb_id: The TMDB numeric identifier for the TV show.
+
+        Returns:
+            A TmdbShowDetail object, or None on any failure.
+        """
+        if not self._check_configured("get_show_details"):
+            return None
+
+        try:
+            async with self._build_client() as client:
+                response = await client.get(
+                    f"/tv/{tmdb_id}",
+                    params={"append_to_response": "external_ids"},
+                )
+        except httpx.ConnectError as exc:
+            logger.warning("tmdb.get_show_details: connection error tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+        except httpx.TimeoutException as exc:
+            logger.warning("tmdb.get_show_details: request timed out tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+        except httpx.RequestError as exc:
+            logger.warning("tmdb.get_show_details: network error tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+
+        if self._handle_error_status(response, "get_show_details"):
+            return None
+
+        try:
+            data: dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.error("tmdb.get_show_details: malformed JSON tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+
+        # Parse title and year
+        title = data.get("name") or ""
+        first_air = data.get("first_air_date") or ""
+        year: int | None = None
+        if first_air and len(first_air) >= 4:
+            try:
+                year = int(first_air[:4])
+            except ValueError:
+                pass
+
+        # Parse seasons — include all (caller filters season 0 if desired)
+        raw_seasons = data.get("seasons") or []
+        seasons: list[TmdbSeasonInfo] = []
+        for s in raw_seasons:
+            seasons.append(TmdbSeasonInfo(
+                season_number=s.get("season_number", 0),
+                name=s.get("name", ""),
+                episode_count=s.get("episode_count", 0),
+                air_date=s.get("air_date") or None,
+                overview=s.get("overview", ""),
+                poster_path=s.get("poster_path") or None,
+            ))
+
+        # Extract IMDB ID from external_ids
+        ext_ids = data.get("external_ids") or {}
+        imdb_id: str | None = ext_ids.get("imdb_id") or None
+
+        # Parse genres
+        raw_genres = data.get("genres") or []
+
+        result = TmdbShowDetail(
+            tmdb_id=tmdb_id,
+            title=title,
+            year=year,
+            overview=data.get("overview") or "",
+            poster_path=data.get("poster_path") or None,
+            backdrop_path=data.get("backdrop_path") or None,
+            status=data.get("status") or "",
+            vote_average=float(data.get("vote_average") or 0.0),
+            number_of_seasons=int(data.get("number_of_seasons") or 0),
+            seasons=seasons,
+            imdb_id=imdb_id,
+            genres=raw_genres,
+        )
+
+        logger.debug(
+            "tmdb.get_show_details: tmdb_id=%d title=%r seasons=%d imdb_id=%s",
+            tmdb_id, title, len(seasons), imdb_id,
+        )
+        return result
+
+    async def get_season_details(self, tmdb_id: int, season_number: int) -> TmdbSeasonDetail | None:
+        """Fetch detailed season info including episode air dates.
+
+        Args:
+            tmdb_id: The TMDB numeric identifier for the TV show.
+            season_number: The season number to fetch.
+
+        Returns:
+            A TmdbSeasonDetail object, or None on any failure.
+        """
+        if not self._check_configured("get_season_details"):
+            return None
+
+        try:
+            async with self._build_client() as client:
+                response = await client.get(f"/tv/{tmdb_id}/season/{season_number}")
+        except httpx.ConnectError as exc:
+            logger.warning(
+                "tmdb.get_season_details: connection error tmdb_id=%d s=%d (%s)",
+                tmdb_id, season_number, exc,
+            )
+            return None
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "tmdb.get_season_details: request timed out tmdb_id=%d s=%d (%s)",
+                tmdb_id, season_number, exc,
+            )
+            return None
+        except httpx.RequestError as exc:
+            logger.warning(
+                "tmdb.get_season_details: network error tmdb_id=%d s=%d (%s)",
+                tmdb_id, season_number, exc,
+            )
+            return None
+
+        if self._handle_error_status(response, "get_season_details"):
+            return None
+
+        try:
+            data: dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.error(
+                "tmdb.get_season_details: malformed JSON tmdb_id=%d s=%d (%s)",
+                tmdb_id, season_number, exc,
+            )
+            return None
+
+        raw_episodes = data.get("episodes") or []
+        episodes: list[TmdbEpisodeInfo] = []
+        for ep in raw_episodes:
+            episodes.append(TmdbEpisodeInfo(
+                episode_number=ep.get("episode_number", 0),
+                name=ep.get("name", ""),
+                air_date=ep.get("air_date") or None,
+                overview=ep.get("overview", ""),
+            ))
+
+        result = TmdbSeasonDetail(
+            season_number=int(data.get("season_number", season_number)),
+            name=data.get("name") or "",
+            episodes=episodes,
+        )
+
+        logger.debug(
+            "tmdb.get_season_details: tmdb_id=%d season=%d episodes=%d",
+            tmdb_id, season_number, len(episodes),
+        )
+        return result
 
 
 # ---------------------------------------------------------------------------
