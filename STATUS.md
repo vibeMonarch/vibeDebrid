@@ -157,6 +157,7 @@
 - Settings UI: Plex test button, OAuth connect flow, library section checkboxes, scan toggle
 - 4 new API endpoints: POST /test/plex, POST /plex/auth/start, POST /plex/auth/check/{pin_id}, GET /plex/libraries
 - Auto scan trigger: after COMPLETE transition, scans configured movie/show Plex sections
+- Targeted Plex scan: passes symlink directory path to `scan_section(path=)` instead of full library rescan (reduces FUSE/RD traffic)
 - Config lock: asyncio.Lock prevents race condition on concurrent config.json writes
 - 12 new tests (mocked httpx transport)
 

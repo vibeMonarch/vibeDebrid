@@ -1,6 +1,7 @@
 """FastAPI application entrypoint with startup/shutdown hooks and scheduler."""
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
@@ -254,9 +255,10 @@ async def _job_queue_processor() -> None:
                         item.id, len(matches), len(best_per_episode),
                     )
                     created = 0
+                    symlink = None
                     for match in best_per_episode:
                         try:
-                            await symlink_manager.create_symlink(session, item, match.filepath)
+                            symlink = await symlink_manager.create_symlink(session, item, match.filepath)
                             created += 1
                         except Exception:
                             logger.warning(
@@ -320,7 +322,7 @@ async def _job_queue_processor() -> None:
                     logger.info(
                         "CHECKING item id=%d found in mount: %s", item.id, source_path,
                     )
-                    await symlink_manager.create_symlink(session, item, source_path)
+                    symlink = await symlink_manager.create_symlink(session, item, source_path)
 
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
 
@@ -335,9 +337,11 @@ async def _job_queue_processor() -> None:
                         )
                         if not section_ids:
                             logger.debug("Plex scan enabled but no section IDs configured for media_type=%s", item.media_type)
-                        for sid in section_ids:
-                            await plex_client.scan_section(sid)
-                            logger.info("Triggered Plex scan for section %d (item id=%d)", sid, item.id)
+                        elif symlink is not None:
+                            scan_dir = os.path.dirname(symlink.target_path)
+                            for sid in section_ids:
+                                await plex_client.scan_section(sid, path=scan_dir)
+                                logger.info("Triggered Plex scan for section %d path=%s (item id=%d)", sid, scan_dir, item.id)
                 except Exception:
                     logger.exception("Plex scan trigger failed for item id=%d (non-fatal)", item.id)
 
