@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 865 tests, all passing (as of 2026-03-06)
+- 953 tests, all passing (as of 2026-03-07)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -22,6 +22,7 @@
 - Code review + fixes (mount scanner exact match, stuck SCRAPING recovery, CDN SRI, IMDB auto-resolve) — 2026-03-06
 - Discover sticky header + genre chips (title/tabs/genre chips pin on scroll) — 2026-03-06
 - Sticky headers all pages + touch/IMDB fixes — 2026-03-07
+- Tools page + Library Migration tool — 2026-03-07
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` replaces `os.walk`+`os.path.getsize` with `os.scandir`+`DirEntry.stat()` (fewer FUSE syscalls)
@@ -37,7 +38,7 @@
 - OAuth PIN flow: `create_pin()` → browser popup to `app.plex.tv/auth#?...` → poll `check_pin(pin_id)` every 2s
 - Client ID is a fixed UUID (`f0f4c4b8-...`), auth URL needs full `context[device]` params (product, version, platform, device, deviceName, model, screenResolution, language)
 - `_build_plex_tv_client()` — separate helper for plex.tv calls, deliberately omits `X-Plex-Token`
-- `settings.py`: 4 new endpoints + `_config_lock = asyncio.Lock()` for race-safe config.json writes
+- `settings.py`: 4 new endpoints, uses shared `config_lock` from `src/config.py` for race-safe config.json writes
 - `main.py`: Plex scan trigger after COMPLETE transition, guarded by enabled + scan_after_symlink + token, non-fatal
 - Frontend: OAuth popup flow with 2s polling, popup-close detection, library section checkboxes, token intentionally omitted from save payload
 - 12 tests with mocked httpx transport
@@ -105,8 +106,24 @@
 - `filter_engine.py:287`: regex compiled inside hot loop (500+ re.compile per filter_and_rank)
 - Frontend: no CSRF protection, duplicated `escapeHtml`/`formatBytes` across templates
 
+## Library Migration Tool — 2026-03-07
+- `src/core/migration.py`: filesystem scanner + migration engine, system-agnostic (no external DB dependency)
+- `src/api/routes/tools.py`: Tools page render + preview/execute API endpoints
+- `src/templates/tools.html`: two-phase wizard UI (preview → execute)
+- Parsing: 4 patterns — `Title (Year)`, `Title [Year]`, scene dots (`Title.Year.Res...`), fallback
+- `extract_imdb_id()`: regex `tt\d{7,}` from filenames (CLI Debrid embeds IMDB IDs)
+- Scan: walks movies/shows dirs, detects symlinks vs real files, extracts metadata
+- Preview: duplicate detection by source_path (exact) or normalized title+year+type+season+episode (fuzzy)
+- Execute: import as COMPLETE (source="migration"), remove dups, move unique items, update config
+- Shared `config_lock` in `src/config.py` — both settings.py and migration.py import it (was separate locks before)
+- `_migration_lock` in tools.py — 409 Conflict if migration already running
+- Session commit after execute, rollback on per-item import errors
+- Found items table capped at 50 rows in UI (expandable) for large libraries
+- 85 tests (parsing, scanning with tmp_path, preview, execute, API routes)
+- Known limitation: scene parser edge case `"1917 2019 1080p"` — use parenthesized `"1917 (2019)"` instead
+
 ## STATUS.md Next Steps
-Pending: Trakt integration (Step 1b)
+- Pending: Trakt integration (Step 1b)
 
 ## SSE Feature Notes
 - Event bus: `src/core/event_bus.py` — module singleton, `put_nowait()` never blocks, maxsize=64 per client
@@ -122,12 +139,15 @@ Pending: Trakt integration (Step 1b)
 - ScrapeLog fields: `scraper`, `query_params` (JSON string), `scraped_at`, `selected_result` (JSON string)
 - RdTorrent fields: `filename`, `filesize` (not size_bytes), `rd_id`, `resolution`, `cached` (nullable), `status`
 
-## Fuzzy Directory Match in scan_directory — 2026-03-04
+## Fuzzy Directory Match + Word Subsequence — 2026-03-07
 - RD filenames have special chars (colons etc.) that Zurg/rclone sanitizes on filesystem
-- `scan_directory()` fuzzy fallback: list mount root, normalize names, startswith + word-boundary check
-- Collects all candidates, shortest normalized name wins, alphabetical tiebreaker for determinism
-- `os.scandir` context manager for proper fd cleanup, 5s timeout via `asyncio.to_thread`
-- Boundary check prevents mid-word matches ("predator" ≠ "predators") but NOT sequel matches ("predator" = "predator 2") — shortest-name sort handles disambiguation
+- `_is_word_subsequence(query_words, target_words)` — checks all query words appear in target in order (not necessarily consecutive)
+- `scan_directory()` fuzzy fallback: list mount root, normalize names, word subsequence check (was `startswith`)
+- Handles titles with missing tokens: "Terminator Judgement Day" matches "Terminator.2.Judgement.Day.1991..."
+- `lookup()` fallback: exact match first, then SQL LIKE `%word1%word2%` + Python word-subsequence verification
+- Fallback requires 2+ query words (prevents "dark" matching "the dark knight")
+- Empty input guard in fuzzy match prevents matching all directories
+- Known limitation: sequel false positives ("Iron Man" could match "Iron Man 3" if only sequel exists)
 
 ## Bugs Fixed
 - Naive vs aware datetime comparison in CHECKING timeout (`main.py` lines 170, 233) — `state_changed_at` is tz-aware when set in-memory by queue_manager but naive when loaded from SQLite. Fix: normalize naive values to tz-aware UTC before comparing. NOTE: `.replace(tzinfo=None)` approach fails for in-memory objects; adding tz to naive values handles both paths.

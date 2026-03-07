@@ -51,7 +51,7 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 865 tests, all passing**
+**Total: 868 tests, all passing**
 
 ### Symlink Naming Convention ✅
 - SymlinkNamingConfig: date_prefix, release_year, resolution toggles
@@ -142,13 +142,14 @@
 - Discover SSE: patches in-memory mediaCache + sessionStorage so badges survive re-renders and navigation
 - Known limitation: title-based SSE matching can false-positive for same-name media (needs `tmdb_id` in QueueEvent to fix)
 
-### Fuzzy Directory Match in scan_directory ✅ (Step 0.7)
+### Fuzzy Directory Match + Word Subsequence ✅ (Step 0.7)
 - RD torrent filenames may contain special chars (colons, etc.) that Zurg/rclone sanitizes on the filesystem
-- scan_directory now falls back to fuzzy matching when exact directory name not found
-- Lists mount root via os.scandir, normalizes both input and entries, startswith + word-boundary check
+- scan_directory fuzzy match: word subsequence instead of startswith — handles missing tokens (e.g. "Terminator Judgement Day" → "Terminator.2.Judgement.Day.1991...")
+- lookup() fallback: exact match first, then SQL LIKE + Python word-subsequence verification (2+ word minimum)
+- `_is_word_subsequence()` helper: all query words must appear in target words in order
 - Collects all candidates, picks shortest normalized name (closest match), deterministic alphabetical tiebreaker
-- Logs warning when multiple candidates found for debugging
 - Timeout-protected FUSE I/O via asyncio.to_thread + 5s timeout
+- 3 new tests (subsequence fallback, order enforcement, single-word guard)
 
 ### Plex Integration ✅ (Step 1a)
 - src/services/plex.py — stateless PlexClient (test_connection, get_libraries, scan_section, create_pin, check_pin)
@@ -217,10 +218,25 @@
 - Search: `scroll-margin-top: 5rem` on results section prevents scrolling behind sticky header
 - Search: IMDB auto-resolve now scores TMDB results (exact=3, startsWith=2, includes=1) instead of blind `items[0]`
 
+### Tools Page + Library Migration (Step 1.5)
+- Tools page with wrench icon in sidebar navigation (after Settings)
+- Library Migration tool: scan any external library, import into vibeDebrid DB
+- System-agnostic: works with CLI Debrid, manual folders, or any media library (no external DB dependency)
+- Filesystem scanner: walks movies/shows dirs, parses title+year from 4 naming patterns (Plex, scene, bracket, fallback)
+- Extracts IMDB ID from filenames (CLI Debrid `ttXXXXXXX` pattern), resolution, season/episode info
+- Handles both symlinks (creates Symlink DB record) and real files (MediaItem only)
+- Two-phase UX: Preview (scan + summary + tables) → Execute (import + dedup + move + config update)
+- Duplicate detection: by symlink source_path (exact) or normalized title+year+type+season+episode (fuzzy)
+- Moves unique vibeDebrid items to new location, removes duplicates, updates config.json paths
+- Shared `config_lock` extracted to `src/config.py` — prevents concurrent config.json corruption
+- Concurrency guard: 409 Conflict if migration already running
+- Session commit after execute, rollback on import errors keeps session healthy
+- 85 new tests (parsing, scanning, preview, execute, API routes)
+- Total: 953 tests, all passing
+
 ### Step 1b: Trakt Integration
 - src/services/trakt.py — OAuth, watchlist polling
 - Wire into scheduler with config intervals
-
 
 ### Step 2: Upgrade Manager
 - src/core/upgrade_manager.py — monitor for higher quality versions within window

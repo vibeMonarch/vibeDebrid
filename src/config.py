@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables and config.json."""
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -210,3 +211,7 @@ class Settings(BaseSettings):
 
 # Module-level singleton — import `settings` from here.
 settings = Settings.load()
+
+# Shared lock for concurrent config.json writes.
+# Import this in any module that reads/writes config.json to avoid races.
+config_lock = asyncio.Lock()

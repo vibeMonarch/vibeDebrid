@@ -1,0 +1,613 @@
+{% extends "base.html" %}
+
+{% block title %}Tools - vibeDebrid{% endblock %}
+
+{% block head %}
+<style>
+  /* Collapsible section */
+  .section-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.2s ease;
+  }
+  .section-body.collapsed {
+    grid-template-rows: 0fr;
+  }
+  .section-body > div { overflow: hidden; }
+
+  /* Chevron rotation */
+  .chevron { transition: transform 0.2s ease; }
+  .chevron.rotated { transform: rotate(-90deg); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="text-2xl font-bold text-white">Tools</h2>
+  <p class="text-vd-muted text-sm mt-1">Utility tools for managing your media library.</p>
+</div>
+
+<!-- Library Migration card -->
+<div class="bg-vd-card border border-vd-border rounded-lg mb-6">
+
+  <!-- Card header -->
+  <button type="button"
+          onclick="toggleSection('migration')"
+          class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+    <div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-vd-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
+      </svg>
+      <span class="font-semibold text-white">Library Migration</span>
+    </div>
+    <svg id="chevron-migration" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+
+  <!-- Card body -->
+  <div id="body-migration" class="section-body">
+    <div>
+      <div class="px-6 pb-6 space-y-6 border-t border-vd-border pt-5">
+
+        <!-- Description -->
+        <p class="text-sm text-vd-muted leading-relaxed">
+          Scan an existing media library to import items into vibeDebrid.
+          Found items will be marked as complete.
+          Existing vibeDebrid items that overlap will be deduplicated.
+          Unique vibeDebrid items will be moved to the new location.
+          Config paths will be updated.
+        </p>
+
+        <!-- Path inputs -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label for="movies-path" class="block text-sm font-medium text-gray-300 mb-1">Movies Path</label>
+            <input id="movies-path"
+                   type="text"
+                   value="{{ current_movies_path }}"
+                   placeholder="/mnt/library/movies"
+                   class="w-full px-3 py-2 bg-vd-bg border border-vd-border rounded-lg text-sm text-gray-200 placeholder-vd-muted focus:outline-none focus:border-vd-accent font-mono">
+          </div>
+          <div>
+            <label for="shows-path" class="block text-sm font-medium text-gray-300 mb-1">Shows Path</label>
+            <input id="shows-path"
+                   type="text"
+                   value="{{ current_shows_path }}"
+                   placeholder="/mnt/library/shows"
+                   class="w-full px-3 py-2 bg-vd-bg border border-vd-border rounded-lg text-sm text-gray-200 placeholder-vd-muted focus:outline-none focus:border-vd-accent font-mono">
+          </div>
+        </div>
+
+        <!-- Scan button -->
+        <div>
+          <button id="scan-btn"
+                  type="button"
+                  onclick="runPreview()"
+                  class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <svg id="scan-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <svg id="scan-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            <span id="scan-btn-label">Scan &amp; Preview</span>
+          </button>
+        </div>
+
+        <!-- Preview results (hidden until scan completes) -->
+        <div id="preview-section" class="hidden space-y-5">
+
+          <!-- Summary stats bar -->
+          <div id="preview-summary" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <!-- Populated by JS -->
+          </div>
+
+          <!-- Found Items table -->
+          <div id="found-section" class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+            <button type="button"
+                    onclick="toggleTableSection('found')"
+                    class="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors">
+              <span class="text-sm font-semibold text-gray-300">Found Items</span>
+              <div class="flex items-center gap-2">
+                <span id="found-count-badge" class="text-xs bg-vd-card px-2 py-0.5 rounded-full text-vd-muted"></span>
+                <svg id="chevron-found" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </button>
+            <div id="body-found" class="section-body">
+              <div>
+                <div class="border-t border-vd-border overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
+                        <th class="px-4 py-2 text-left">Title</th>
+                        <th class="px-4 py-2 text-left">Year</th>
+                        <th class="px-4 py-2 text-left">Type</th>
+                        <th class="px-4 py-2 text-left">S/E</th>
+                        <th class="px-4 py-2 text-left">IMDB</th>
+                        <th class="px-4 py-2 text-left">Symlink</th>
+                        <th class="px-4 py-2 text-left">Resolution</th>
+                      </tr>
+                    </thead>
+                    <tbody id="found-tbody">
+                    </tbody>
+                  </table>
+                  <p id="found-more" class="hidden px-4 py-2 text-xs text-vd-muted italic border-t border-vd-border"></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Duplicates table (only if duplicates exist) -->
+          <div id="duplicates-section" class="hidden bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+            <button type="button"
+                    onclick="toggleTableSection('duplicates')"
+                    class="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors">
+              <span class="text-sm font-semibold text-yellow-400">Duplicates</span>
+              <div class="flex items-center gap-2">
+                <span id="duplicates-count-badge" class="text-xs bg-vd-card px-2 py-0.5 rounded-full text-vd-muted"></span>
+                <svg id="chevron-duplicates" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </button>
+            <div id="body-duplicates" class="section-body collapsed">
+              <div>
+                <div class="border-t border-vd-border overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
+                        <th class="px-4 py-2 text-left">Found Item</th>
+                        <th class="px-4 py-2 text-left">Existing Item</th>
+                        <th class="px-4 py-2 text-left">Match Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody id="duplicates-tbody">
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Items to Move table (only if items to move) -->
+          <div id="tomove-section" class="hidden bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+            <button type="button"
+                    onclick="toggleTableSection('tomove')"
+                    class="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors">
+              <span class="text-sm font-semibold text-blue-400">Items to Move</span>
+              <div class="flex items-center gap-2">
+                <span id="tomove-count-badge" class="text-xs bg-vd-card px-2 py-0.5 rounded-full text-vd-muted"></span>
+                <svg id="chevron-tomove" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </button>
+            <div id="body-tomove" class="section-body collapsed">
+              <div>
+                <div class="border-t border-vd-border overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
+                        <th class="px-4 py-2 text-left">Title</th>
+                        <th class="px-4 py-2 text-left">Year</th>
+                        <th class="px-4 py-2 text-left">Type</th>
+                        <th class="px-4 py-2 text-left">S/E</th>
+                        <th class="px-4 py-2 text-left">State</th>
+                      </tr>
+                    </thead>
+                    <tbody id="tomove-tbody">
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Errors list (only if errors) -->
+          <div id="errors-section" class="hidden bg-vd-bg border border-red-900 rounded-lg overflow-hidden">
+            <button type="button"
+                    onclick="toggleTableSection('errors')"
+                    class="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors">
+              <span class="text-sm font-semibold text-red-400">Scan Errors</span>
+              <div class="flex items-center gap-2">
+                <span id="errors-count-badge" class="text-xs bg-vd-card px-2 py-0.5 rounded-full text-vd-muted"></span>
+                <svg id="chevron-errors" class="w-4 h-4 text-vd-muted chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </button>
+            <div id="body-errors" class="section-body collapsed">
+              <div>
+                <ul id="errors-list" class="border-t border-red-900 px-4 py-3 space-y-1">
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <!-- Execute Migration button -->
+          <div class="pt-2">
+            <button id="execute-btn"
+                    type="button"
+                    onclick="runExecute()"
+                    class="flex items-center gap-2 px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <svg id="execute-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              <svg id="execute-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              <span id="execute-btn-label">Execute Migration</span>
+            </button>
+          </div>
+
+        </div><!-- /preview-section -->
+
+        <!-- Result summary (hidden until execution completes) -->
+        <div id="result-section" class="hidden">
+          <div class="bg-vd-bg border border-green-700 rounded-lg p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <span class="font-semibold text-green-400">Migration complete</span>
+            </div>
+            <div id="result-stats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <!-- Populated by JS -->
+            </div>
+            <div id="result-errors-wrap" class="hidden">
+              <p class="text-xs text-red-400 font-medium mb-1">Errors during execution:</p>
+              <ul id="result-errors-list" class="text-xs text-red-300 space-y-0.5 font-mono"></ul>
+            </div>
+          </div>
+        </div><!-- /result-section -->
+
+      </div>
+    </div>
+  </div><!-- /body-migration -->
+
+</div><!-- /migration card -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+
+  // ---------------------------------------------------------------------------
+  // Stored preview data (needed to build the confirmation message)
+  // ---------------------------------------------------------------------------
+  var _preview = null;
+
+  // ---------------------------------------------------------------------------
+  // Section toggle (card collapse)
+  // ---------------------------------------------------------------------------
+  window.toggleSection = function(id) {
+    var body = document.getElementById('body-' + id);
+    var chevron = document.getElementById('chevron-' + id);
+    if (!body) return;
+    body.classList.toggle('collapsed');
+    if (chevron) chevron.classList.toggle('rotated');
+  };
+
+  window.toggleTableSection = function(id) {
+    var body = document.getElementById('body-' + id);
+    var chevron = document.getElementById('chevron-' + id);
+    if (!body) return;
+    body.classList.toggle('collapsed');
+    if (chevron) chevron.classList.toggle('rotated');
+  };
+
+  // ---------------------------------------------------------------------------
+  // HTML escaping
+  // ---------------------------------------------------------------------------
+  function esc(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Summary stat card helper
+  // ---------------------------------------------------------------------------
+  function statCard(label, value, colorClass) {
+    return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
+      '<p class="text-xs text-vd-muted uppercase tracking-wider mb-1">' + esc(label) + '</p>' +
+      '<p class="text-2xl font-bold ' + colorClass + '">' + esc(String(value)) + '</p>' +
+      '</div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scan & Preview
+  // ---------------------------------------------------------------------------
+  window.runPreview = function() {
+    var moviesPath = document.getElementById('movies-path').value.trim();
+    var showsPath = document.getElementById('shows-path').value.trim();
+
+    if (!moviesPath || !showsPath) {
+      showToast('Please enter both paths before scanning.', 'warning');
+      return;
+    }
+
+    setScanLoading(true);
+    document.getElementById('preview-section').classList.add('hidden');
+    document.getElementById('result-section').classList.add('hidden');
+    _preview = null;
+
+    fetch('/api/tools/migration/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ movies_path: moviesPath, shows_path: showsPath })
+    })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      _preview = data;
+      renderPreview(data);
+      setScanLoading(false);
+    })
+    .catch(function(err) {
+      setScanLoading(false);
+      showToast('Scan failed: ' + err.message, 'error');
+    });
+  };
+
+  function setScanLoading(loading) {
+    var btn = document.getElementById('scan-btn');
+    var icon = document.getElementById('scan-icon');
+    var spinner = document.getElementById('scan-spinner');
+    var label = document.getElementById('scan-btn-label');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Scanning library...' : 'Scan & Preview';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render preview data
+  // ---------------------------------------------------------------------------
+  function renderPreview(data) {
+    var s = data.summary || {};
+
+    // Summary cards
+    var totalFound = (s.found_movies || 0) + (s.found_episodes || 0);
+    document.getElementById('preview-summary').innerHTML =
+      statCard('Found', totalFound, 'text-white') +
+      statCard('To Import', s.to_import_count || 0, 'text-vd-accent') +
+      statCard('Duplicates', s.duplicate_count || 0, 'text-yellow-400') +
+      statCard('To Move', s.to_move_count || 0, 'text-blue-400');
+
+    // Found items table (cap at 50 rows, show "X more" note)
+    renderFoundItems(data.found_items || []);
+
+    // Duplicates
+    renderDuplicates(data.duplicates || []);
+
+    // Items to move
+    renderToMove(data.to_move || []);
+
+    // Errors
+    renderErrors(data.errors || []);
+
+    document.getElementById('preview-section').classList.remove('hidden');
+  }
+
+  var TABLE_CAP = 50;
+
+  function renderFoundItems(items) {
+    var tbody = document.getElementById('found-tbody');
+    var moreEl = document.getElementById('found-more');
+    var badge = document.getElementById('found-count-badge');
+    var displayed = items.slice(0, TABLE_CAP);
+    var overflow = items.length - displayed.length;
+
+    badge.textContent = items.length;
+
+    var rows = displayed.map(function(fi, idx) {
+      var seInfo = fi.season != null ? 'S' + pad2(fi.season) + (fi.episode != null ? 'E' + pad2(fi.episode) : '') : '';
+      var symlinkBadge = fi.is_symlink
+        ? '<span class="text-xs text-vd-accent">symlink</span>'
+        : '<span class="text-xs text-vd-muted">file</span>';
+      var imdbLink = fi.imdb_id
+        ? '<a href="https://www.imdb.com/title/' + esc(fi.imdb_id) + '" target="_blank" rel="noopener" class="text-vd-accent hover:underline font-mono text-xs">' + esc(fi.imdb_id) + '</a>'
+        : '<span class="text-vd-muted">—</span>';
+      var rowClass = idx % 2 === 1 ? 'bg-vd-bg/30' : '';
+      return '<tr class="' + rowClass + ' border-t border-vd-border/50">' +
+        '<td class="px-4 py-1.5 text-gray-200">' + esc(fi.title) + '</td>' +
+        '<td class="px-4 py-1.5 text-vd-muted">' + (fi.year || '—') + '</td>' +
+        '<td class="px-4 py-1.5"><span class="text-xs uppercase tracking-wide ' + (fi.media_type === 'movie' ? 'text-purple-400' : 'text-teal-400') + '">' + esc(fi.media_type) + '</span></td>' +
+        '<td class="px-4 py-1.5 font-mono text-xs text-vd-muted">' + (seInfo || '—') + '</td>' +
+        '<td class="px-4 py-1.5">' + imdbLink + '</td>' +
+        '<td class="px-4 py-1.5">' + symlinkBadge + '</td>' +
+        '<td class="px-4 py-1.5 text-xs text-vd-muted">' + (fi.resolution || '—') + '</td>' +
+        '</tr>';
+    });
+
+    tbody.innerHTML = rows.join('');
+
+    if (overflow > 0) {
+      moreEl.textContent = '... and ' + overflow + ' more item' + (overflow === 1 ? '' : 's') + ' (not shown)';
+      moreEl.classList.remove('hidden');
+    } else {
+      moreEl.classList.add('hidden');
+    }
+  }
+
+  function renderDuplicates(dupes) {
+    var section = document.getElementById('duplicates-section');
+    var tbody = document.getElementById('duplicates-tbody');
+    var badge = document.getElementById('duplicates-count-badge');
+
+    if (!dupes.length) {
+      section.classList.add('hidden');
+      return;
+    }
+    section.classList.remove('hidden');
+    badge.textContent = dupes.length;
+
+    var rows = dupes.map(function(d, idx) {
+      var fi = d.found_item || {};
+      var seInfo = fi.season != null ? ' S' + pad2(fi.season) + (fi.episode != null ? 'E' + pad2(fi.episode) : '') : '';
+      var foundLabel = esc(fi.title || '') + (fi.year ? ' (' + fi.year + ')' : '') + seInfo;
+      var existingLabel = esc(d.existing_title || '') + ' <span class="text-vd-muted text-xs">#' + esc(String(d.existing_id)) + '</span>';
+      var reasonMap = {
+        'same_source_path': 'Same source file',
+        'title_year_match': 'Title + year match'
+      };
+      var reason = reasonMap[d.match_reason] || esc(d.match_reason);
+      var rowClass = idx % 2 === 1 ? 'bg-vd-bg/30' : '';
+      return '<tr class="' + rowClass + ' border-t border-vd-border/50">' +
+        '<td class="px-4 py-1.5 text-gray-200">' + foundLabel + '</td>' +
+        '<td class="px-4 py-1.5 text-gray-200">' + existingLabel + '</td>' +
+        '<td class="px-4 py-1.5 text-xs text-yellow-400">' + reason + '</td>' +
+        '</tr>';
+    });
+    tbody.innerHTML = rows.join('');
+  }
+
+  function renderToMove(items) {
+    var section = document.getElementById('tomove-section');
+    var tbody = document.getElementById('tomove-tbody');
+    var badge = document.getElementById('tomove-count-badge');
+
+    if (!items.length) {
+      section.classList.add('hidden');
+      return;
+    }
+    section.classList.remove('hidden');
+    badge.textContent = items.length;
+
+    var rows = items.map(function(item, idx) {
+      var seInfo = item.season != null ? 'S' + pad2(item.season) + (item.episode != null ? 'E' + pad2(item.episode) : '') : '—';
+      var rowClass = idx % 2 === 1 ? 'bg-vd-bg/30' : '';
+      return '<tr class="' + rowClass + ' border-t border-vd-border/50">' +
+        '<td class="px-4 py-1.5 text-gray-200">' + esc(item.title) + '</td>' +
+        '<td class="px-4 py-1.5 text-vd-muted">' + (item.year || '—') + '</td>' +
+        '<td class="px-4 py-1.5"><span class="text-xs uppercase tracking-wide ' + (item.media_type === 'movie' ? 'text-purple-400' : 'text-teal-400') + '">' + esc(item.media_type) + '</span></td>' +
+        '<td class="px-4 py-1.5 font-mono text-xs text-vd-muted">' + seInfo + '</td>' +
+        '<td class="px-4 py-1.5"><span class="badge-' + esc(item.state) + ' text-white text-xs px-2 py-0.5 rounded-full">' + esc(item.state) + '</span></td>' +
+        '</tr>';
+    });
+    tbody.innerHTML = rows.join('');
+  }
+
+  function renderErrors(errors) {
+    var section = document.getElementById('errors-section');
+    var list = document.getElementById('errors-list');
+    var badge = document.getElementById('errors-count-badge');
+
+    if (!errors.length) {
+      section.classList.add('hidden');
+      return;
+    }
+    section.classList.remove('hidden');
+    badge.textContent = errors.length;
+
+    list.innerHTML = errors.map(function(e) {
+      return '<li class="text-xs text-red-300 font-mono">' + esc(e) + '</li>';
+    }).join('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Execute Migration
+  // ---------------------------------------------------------------------------
+  window.runExecute = function() {
+    if (!_preview) return;
+
+    var s = _preview.summary || {};
+    var toImport = s.to_import_count || 0;
+    var toMove = s.to_move_count || 0;
+    var toDedupe = s.duplicate_count || 0;
+
+    var parts = [];
+    if (toImport > 0) parts.push('import ' + toImport + ' item' + (toImport === 1 ? '' : 's'));
+    if (toMove > 0) parts.push('move ' + toMove + ' item' + (toMove === 1 ? '' : 's'));
+    if (toDedupe > 0) parts.push('remove ' + toDedupe + ' duplicate' + (toDedupe === 1 ? '' : 's'));
+    parts.push('update config paths');
+
+    var msg = 'This will ' + parts.join(', ') + '. Continue?';
+    if (!confirm(msg)) return;
+
+    var moviesPath = document.getElementById('movies-path').value.trim();
+    var showsPath = document.getElementById('shows-path').value.trim();
+
+    setExecuteLoading(true);
+
+    fetch('/api/tools/migration/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ movies_path: moviesPath, shows_path: showsPath })
+    })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      setExecuteLoading(false);
+      renderResult(data);
+      showToast('Migration complete' + (data.config_updated ? ' — config paths updated!' : ''), 'success');
+    })
+    .catch(function(err) {
+      setExecuteLoading(false);
+      showToast('Migration failed: ' + err.message, 'error');
+    });
+  };
+
+  function setExecuteLoading(loading) {
+    var btn = document.getElementById('execute-btn');
+    var icon = document.getElementById('execute-icon');
+    var spinner = document.getElementById('execute-spinner');
+    var label = document.getElementById('execute-btn-label');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Running migration...' : 'Execute Migration';
+  }
+
+  function renderResult(data) {
+    var statsEl = document.getElementById('result-stats');
+    statsEl.innerHTML =
+      statCard('Imported', data.imported || 0, 'text-green-400') +
+      statCard('Moved', data.moved || 0, 'text-blue-400') +
+      statCard('Deduped', data.duplicates_removed || 0, 'text-yellow-400') +
+      statCard('Config', data.config_updated ? 'Updated' : 'Unchanged', data.config_updated ? 'text-green-400' : 'text-vd-muted');
+
+    var errorsWrap = document.getElementById('result-errors-wrap');
+    var errorsList = document.getElementById('result-errors-list');
+    if (data.errors && data.errors.length) {
+      errorsList.innerHTML = data.errors.map(function(e) {
+        return '<li>' + esc(e) + '</li>';
+      }).join('');
+      errorsWrap.classList.remove('hidden');
+    } else {
+      errorsWrap.classList.add('hidden');
+    }
+
+    document.getElementById('result-section').classList.remove('hidden');
+    document.getElementById('preview-section').classList.add('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Utility
+  // ---------------------------------------------------------------------------
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+})();
+</script>
+{% endblock %}

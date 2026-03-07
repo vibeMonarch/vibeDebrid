@@ -8,15 +8,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from src.config import CONFIG_FILE, Settings, settings
+from src.config import CONFIG_FILE, Settings, config_lock, settings
 from src.services.plex import plex_client
 from src.services.real_debrid import RealDebridAuthError, RealDebridError, rd_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
 
 logger = logging.getLogger(__name__)
-
-_config_lock = asyncio.Lock()
 
 router = APIRouter()
 
@@ -50,7 +48,7 @@ async def get_settings() -> dict[str, Any]:
 @router.put("")
 async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
     """Update configuration by writing to config.json and reloading."""
-    async with _config_lock:
+    async with config_lock:
         # Read existing config
         existing: dict[str, Any] = {}
         if CONFIG_FILE.exists():
@@ -175,7 +173,7 @@ async def plex_auth_check(pin_id: int) -> dict[str, Any]:
         return {"status": "pending"}
 
     # Save token to config.json and reload singleton
-    async with _config_lock:
+    async with config_lock:
         existing: dict[str, Any] = {}
         if CONFIG_FILE.exists():
             raw = await asyncio.to_thread(CONFIG_FILE.read_text)
