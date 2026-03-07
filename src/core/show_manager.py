@@ -161,7 +161,13 @@ class ShowManager:
             items_for_season = season_items.get(season_num, [])
             queue_item_ids = [item.id for item in items_for_season]
 
-            if any(item.state in _LIBRARY_STATES for item in items_for_season):
+            # AIRING takes priority over all queue states: a season that is
+            # currently airing may already have a partial pack or individual
+            # episode items in the library, but the user still needs to be
+            # able to select it to add newly released episodes.
+            if season_num == airing_season_num:
+                status = SeasonStatus.AIRING
+            elif any(item.state in _LIBRARY_STATES for item in items_for_season):
                 status = SeasonStatus.IN_LIBRARY
             elif items_for_season:
                 status = SeasonStatus.IN_QUEUE
@@ -172,8 +178,6 @@ class ShowManager:
                     air_date = date.fromisoformat(s.air_date)
                     if air_date > today:
                         status = SeasonStatus.UPCOMING
-                    elif season_num == airing_season_num:
-                        status = SeasonStatus.AIRING
                     else:
                         status = SeasonStatus.AVAILABLE
                 except ValueError:
@@ -233,6 +237,7 @@ class ShowManager:
         request: AddSeasonsRequest,
         season_num: int,
         existing_keys: set[tuple[int | None, int | None]],
+        existing_items: list[MediaItem],
         tvdb_id: int | None = None,
     ) -> tuple[int, int, int | None]:
         """Add individual episode items for a currently airing season.
@@ -242,12 +247,19 @@ class ShowManager:
         with air_date set so the scheduler can promote them when ready.
         Episodes with no announced air date are skipped.
 
+        When a completed season pack for this season already exists, episodes
+        whose air date falls on or before the pack's completion date are
+        considered covered by the pack and skipped.  Only episodes that aired
+        after the pack was completed (new continuation episodes) are created.
+
         Args:
             session: Async database session (caller owns the transaction).
             request: AddSeasonsRequest with show metadata and quality profile.
             season_num: The season number that is currently airing.
             existing_keys: Set of (season, episode) tuples already in the DB,
                 updated in place as new items are inserted.
+            existing_items: Full list of existing MediaItems for this show,
+                used to locate any completed season pack and derive a cutoff date.
 
         Returns:
             Tuple of (created_episodes, created_unreleased, max_aired_episode).
@@ -270,6 +282,29 @@ class ShowManager:
         created_unreleased = 0
         max_aired_episode: int | None = None
 
+        # Determine whether a completed season pack covers earlier episodes.
+        # If so, skip episodes that aired on or before the pack completion date
+        # to avoid re-downloading content already in the library.
+        pack_cutoff_date: date | None = None
+        for existing_item in existing_items:
+            if (
+                existing_item.season == season_num
+                and existing_item.episode is None
+                and existing_item.is_season_pack
+                and existing_item.state in _LIBRARY_STATES
+                and existing_item.state_changed_at is not None
+            ):
+                cutoff_dt = existing_item.state_changed_at
+                if cutoff_dt.tzinfo is None:
+                    cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
+                pack_cutoff_date = cutoff_dt.date()
+                logger.info(
+                    "show_manager._add_airing_season: completed season pack for S%02d "
+                    "found (completed %s), skipping episodes on or before cutoff",
+                    season_num, pack_cutoff_date,
+                )
+                break
+
         for ep in season_detail.episodes:
             ep_num = ep.episode_number
             key = (season_num, ep_num)
@@ -279,6 +314,15 @@ class ShowManager:
             ep_air_date = _parse_air_date(ep.air_date)
             if ep_air_date is None:
                 # TMDB hasn't announced an air date — skip for now.
+                continue
+
+            # Skip episodes covered by a completed season pack.
+            if pack_cutoff_date is not None and ep_air_date <= pack_cutoff_date:
+                logger.debug(
+                    "show_manager._add_airing_season: skipping S%02dE%02d "
+                    "(aired %s, covered by pack completed %s)",
+                    season_num, ep_num, ep_air_date, pack_cutoff_date,
+                )
                 continue
 
             if ep_air_date <= today:
@@ -373,8 +417,12 @@ class ShowManager:
 
         for season_num in request.seasons:
             # Check for any existing item for this season (pack or episode).
+            # Airing seasons are never skipped here — they pass through to
+            # _add_airing_season which handles per-episode dedup and pack
+            # cutoffs so new episodes can be added alongside an existing
+            # partial or complete season pack.
             has_any = any(s == season_num for (s, _) in existing_keys)
-            if has_any:
+            if has_any and season_num != airing_season_num:
                 skipped.append(season_num)
                 logger.info(
                     "show_manager.add_seasons: skipping season %d for tmdb_id=%s (already exists)",
@@ -384,7 +432,7 @@ class ShowManager:
 
             if season_num == airing_season_num:
                 eps, unreleased, max_ep = await self._add_airing_season(
-                    session, request, season_num, existing_keys, tvdb_id
+                    session, request, season_num, existing_keys, all_existing, tvdb_id
                 )
                 created_episodes += eps
                 created_unreleased += unreleased

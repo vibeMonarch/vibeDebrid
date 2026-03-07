@@ -1463,10 +1463,11 @@ class TestGetShowDetailAiringStatus:
             assert s.status.value != "airing"
         assert all(s.status.value == "available" for s in result.seasons)
 
-    async def test_airing_season_with_items_shows_in_queue(
+    async def test_airing_season_with_items_still_shows_airing(
         self, session: AsyncSession
     ) -> None:
-        """Existing queue items take priority over AIRING status."""
+        """AIRING takes priority over IN_QUEUE: an airing season with existing queue items
+        is still shown as AIRING so the user can select it to add newly released episodes."""
         await _make_show_item(session, season=2, state=QueueState.WANTED)
 
         sm = ShowManager()
@@ -1479,22 +1480,36 @@ class TestGetShowDetailAiringStatus:
                 season_number=2, episode_number=6, air_date="2099-06-01"
             ),
         )
+        mock_season = _make_season_detail(2, [
+            (1, "2026-01-07"), (2, "2026-01-14"), (3, "2026-01-21"),
+            (4, "2026-01-28"), (5, "2026-02-04"), (6, "2099-06-01"),
+            (7, "2099-06-08"), (8, "2099-06-15"), (9, "2099-06-22"), (10, "2099-06-29"),
+        ])
 
-        with patch(
-            "src.core.show_manager.tmdb_client.get_show_details",
-            new_callable=AsyncMock,
-            return_value=mock_show,
+        with (
+            patch(
+                "src.core.show_manager.tmdb_client.get_show_details",
+                new_callable=AsyncMock,
+                return_value=mock_show,
+            ),
+            patch(
+                "src.core.show_manager.tmdb_client.get_season_details",
+                new_callable=AsyncMock,
+                return_value=mock_season,
+            ),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
         assert result is not None
         s2 = next(s for s in result.seasons if s.season_number == 2)
-        assert s2.status.value == "in_queue"
+        assert s2.status.value == "airing"
 
-    async def test_airing_season_with_library_items_shows_in_library(
+    async def test_airing_season_with_library_items_still_shows_airing(
         self, session: AsyncSession
     ) -> None:
-        """COMPLETE items override AIRING status with IN_LIBRARY."""
+        """AIRING takes priority over IN_LIBRARY: an airing season with a completed
+        season pack (covering old episodes) is still shown as AIRING so the user
+        can select it to add new continuation episodes."""
         await _make_show_item(session, season=2, state=QueueState.COMPLETE)
 
         sm = ShowManager()
@@ -1507,17 +1522,29 @@ class TestGetShowDetailAiringStatus:
                 season_number=2, episode_number=6, air_date="2099-06-01"
             ),
         )
+        mock_season = _make_season_detail(2, [
+            (1, "2026-01-07"), (2, "2026-01-14"), (3, "2026-01-21"),
+            (4, "2026-01-28"), (5, "2026-02-04"), (6, "2099-06-01"),
+            (7, "2099-06-08"), (8, "2099-06-15"), (9, "2099-06-22"), (10, "2099-06-29"),
+        ])
 
-        with patch(
-            "src.core.show_manager.tmdb_client.get_show_details",
-            new_callable=AsyncMock,
-            return_value=mock_show,
+        with (
+            patch(
+                "src.core.show_manager.tmdb_client.get_show_details",
+                new_callable=AsyncMock,
+                return_value=mock_show,
+            ),
+            patch(
+                "src.core.show_manager.tmdb_client.get_season_details",
+                new_callable=AsyncMock,
+                return_value=mock_season,
+            ),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
         assert result is not None
         s2 = next(s for s in result.seasons if s.season_number == 2)
-        assert s2.status.value == "in_library"
+        assert s2.status.value == "airing"
 
 
 # ---------------------------------------------------------------------------
@@ -1644,19 +1671,19 @@ class TestAddSeasonsAiring:
         assert rows[0].episode is None
         assert rows[0].state == QueueState.WANTED
 
-    async def test_add_airing_season_skips_when_any_episode_exists(
+    async def test_add_airing_season_dedupes_existing_episodes(
         self, session: AsyncSession
     ) -> None:
-        """add_seasons skips an airing season entirely if any existing item is present.
+        """add_seasons for an airing season skips episodes already in the DB but
+        creates new episodes not yet present.
 
-        The `has_any` guard in add_seasons treats any pre-existing item for a
-        season (even individual episodes) as a signal that the season was already
-        added.  Per-episode dedup via existing_keys only operates within a single
-        add_seasons call, not across separate calls.
+        Airing seasons are NOT skipped wholesale even when existing items are
+        found — _add_airing_season handles per-episode dedup via existing_keys.
+        Episodes 2-5 are new (ep 1 already exists); ep 1 must not be duplicated.
         """
         from sqlalchemy import select
 
-        # Pre-create episode 1 for season 1
+        # Pre-create episode 1 for season 1 (already in DB)
         await _make_show_item(session, season=1, episode=1, is_season_pack=False)
 
         mock_show = _make_show_detail(
@@ -1667,25 +1694,44 @@ class TestAddSeasonsAiring:
                 season_number=1, episode_number=4, air_date="2099-05-01"
             ),
         )
+        # Eps 1-3 aired; ep 1 already exists.  4-5 are future.
+        mock_season = _make_season_detail(1, [
+            (1, "2026-01-07"),
+            (2, "2026-01-14"),
+            (3, "2026-01-21"),
+            (4, "2099-05-01"),
+            (5, "2099-05-08"),
+        ])
 
         sm = ShowManager()
         req = self._make_request(seasons=[1])
 
-        with patch(
-            "src.core.show_manager.tmdb_client.get_show_details",
-            new_callable=AsyncMock,
-            return_value=mock_show,
+        with (
+            patch(
+                "src.core.show_manager.tmdb_client.get_show_details",
+                new_callable=AsyncMock,
+                return_value=mock_show,
+            ),
+            patch(
+                "src.core.show_manager.tmdb_client.get_season_details",
+                new_callable=AsyncMock,
+                return_value=mock_season,
+            ),
         ):
             result = await sm.add_seasons(session, req)
 
-        # Season 1 is skipped because episode 1 already exists
-        assert result.skipped_seasons == [1]
-        assert result.created_items == 0
+        # Airing season is NOT skipped; 4 new items created (eps 2, 3 WANTED + eps 4, 5 UNRELEASED)
+        assert result.skipped_seasons == []
+        assert result.created_items == 4
+        assert result.created_episodes == 2   # eps 2 and 3 aired
+        assert result.created_unreleased == 2  # eps 4 and 5 future
         rows = list((await session.execute(
             select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
         )).scalars().all())
-        # Only the pre-existing episode remains; no new items added
-        assert len(rows) == 1
+        # 1 pre-existing + 4 new = 5 total
+        assert len(rows) == 5
+        ep_nums = {row.episode for row in rows}
+        assert ep_nums == {1, 2, 3, 4, 5}
 
     async def test_add_airing_season_skips_no_air_date_episodes(
         self, session: AsyncSession
@@ -1881,6 +1927,254 @@ class TestAddSeasonsAiring:
             select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
         )).scalars().all())
         assert len(rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: pack cutoff logic for airing seasons (Fix 3)
+# ---------------------------------------------------------------------------
+
+
+class TestAddAiringSeasonPackCutoff:
+    """Tests for completed-season-pack cutoff in _add_airing_season.
+
+    Covers the Frieren-style scenario: S01 episodes 1-28 covered by a
+    COMPLETE season pack; user adds the airing season to get episodes 29+.
+    """
+
+    def _make_request(
+        self,
+        seasons: list[int],
+        subscribe: bool = False,
+    ) -> AddSeasonsRequest:
+        return AddSeasonsRequest(
+            tmdb_id=TMDB_ID,
+            imdb_id="tt9999001",
+            title="Frieren",
+            year=2023,
+            seasons=seasons,
+            subscribe=subscribe,
+        )
+
+    async def test_pack_cutoff_skips_episodes_before_cutoff(
+        self, session: AsyncSession
+    ) -> None:
+        """When a COMPLETE season pack exists, episodes on/before pack completion are skipped.
+
+        Scenario: pack completed on 2024-03-22 (covering eps 1-28).
+        Episode 29 aired 2026-01-16 (after cutoff) → WANTED.
+        Episode 30 is future → UNRELEASED.
+        """
+        from sqlalchemy import select
+
+        # Season pack COMPLETE, completed 2024-03-22
+        pack_completed_at = datetime(2024, 3, 22, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        pack = MediaItem(
+            title="Frieren",
+            year=2023,
+            media_type=MediaType.SHOW,
+            tmdb_id=TMDB_ID_STR,
+            imdb_id="tt9999001",
+            state=QueueState.COMPLETE,
+            source="show_detail",
+            added_at=pack_completed_at,
+            state_changed_at=pack_completed_at,
+            retry_count=0,
+            season=1,
+            episode=None,
+            is_season_pack=True,
+        )
+        session.add(pack)
+        await session.flush()
+
+        mock_show = _make_show_detail(
+            title="Frieren",
+            seasons=[
+                TmdbSeasonInfo(season_number=1, name="S1", episode_count=30, air_date="2023-09-29"),
+            ],
+            next_episode_to_air=TmdbEpisodeAirInfo(
+                season_number=1, episode_number=30, air_date="2099-01-23"
+            ),
+        )
+        # Episodes 1-28 aired before cutoff; 29 after cutoff; 30 future
+        mock_season = _make_season_detail(1, [
+            *[(ep, f"2023-{9 + (ep - 1) // 4:02d}-{29 + ((ep - 1) % 4) * 7:02d}") for ep in range(1, 29)],
+            (29, "2026-01-16"),
+            (30, "2099-01-23"),
+        ])
+
+        sm = ShowManager()
+        req = self._make_request(seasons=[1])
+
+        with (
+            patch(
+                "src.core.show_manager.tmdb_client.get_show_details",
+                new_callable=AsyncMock,
+                return_value=mock_show,
+            ),
+            patch(
+                "src.core.show_manager.tmdb_client.get_season_details",
+                new_callable=AsyncMock,
+                return_value=mock_season,
+            ),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # Only ep 29 (WANTED) and ep 30 (UNRELEASED) created; eps 1-28 skipped
+        assert result.created_episodes == 1   # ep 29
+        assert result.created_unreleased == 1  # ep 30
+        assert result.created_items == 2
+
+        rows = list((await session.execute(
+            select(MediaItem).where(
+                MediaItem.tmdb_id == TMDB_ID_STR,
+                MediaItem.is_season_pack.is_(False),
+            )
+        )).scalars().all())
+        ep_nums = {row.episode for row in rows}
+        assert ep_nums == {29, 30}
+        assert 1 not in ep_nums
+        assert 28 not in ep_nums
+
+    async def test_pack_in_queue_no_cutoff_applied(
+        self, session: AsyncSession
+    ) -> None:
+        """A season pack that is still WANTED (not complete) does NOT set a cutoff.
+
+        All episodes without existing individual-episode keys are eligible for creation.
+        """
+        from sqlalchemy import select
+
+        # Season pack WANTED (not yet complete)
+        now = datetime.now(timezone.utc)
+        pack = MediaItem(
+            title="Frieren",
+            year=2023,
+            media_type=MediaType.SHOW,
+            tmdb_id=TMDB_ID_STR,
+            imdb_id="tt9999001",
+            state=QueueState.WANTED,
+            source="show_detail",
+            added_at=now,
+            state_changed_at=now,
+            retry_count=0,
+            season=1,
+            episode=None,
+            is_season_pack=True,
+        )
+        session.add(pack)
+        await session.flush()
+
+        mock_show = _make_show_detail(
+            title="Frieren",
+            seasons=[
+                TmdbSeasonInfo(season_number=1, name="S1", episode_count=5, air_date="2026-01-01"),
+            ],
+            next_episode_to_air=TmdbEpisodeAirInfo(
+                season_number=1, episode_number=4, air_date="2099-04-01"
+            ),
+        )
+        mock_season = _make_season_detail(1, [
+            (1, "2026-01-07"),
+            (2, "2026-01-14"),
+            (3, "2026-01-21"),
+            (4, "2099-04-01"),
+            (5, "2099-04-08"),
+        ])
+
+        sm = ShowManager()
+        req = self._make_request(seasons=[1])
+
+        with (
+            patch(
+                "src.core.show_manager.tmdb_client.get_show_details",
+                new_callable=AsyncMock,
+                return_value=mock_show,
+            ),
+            patch(
+                "src.core.show_manager.tmdb_client.get_season_details",
+                new_callable=AsyncMock,
+                return_value=mock_season,
+            ),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # No cutoff applied — all 5 episodes created (existing_keys has (1, None) from pack,
+        # but individual episode keys are not in existing_keys)
+        assert result.created_episodes == 3  # eps 1-3 aired
+        assert result.created_unreleased == 2  # eps 4-5 future
+        assert result.created_items == 5
+
+    async def test_pack_cutoff_on_cutoff_day_is_inclusive(
+        self, session: AsyncSession
+    ) -> None:
+        """Episodes whose air_date equals the pack cutoff date are skipped (inclusive boundary)."""
+        from sqlalchemy import select
+
+        cutoff = datetime(2024, 3, 22, 0, 0, 0, tzinfo=timezone.utc)
+        pack = MediaItem(
+            title="Test Show",
+            year=2020,
+            media_type=MediaType.SHOW,
+            tmdb_id=TMDB_ID_STR,
+            imdb_id="tt9999001",
+            state=QueueState.COMPLETE,
+            source="show_detail",
+            added_at=cutoff,
+            state_changed_at=cutoff,
+            retry_count=0,
+            season=1,
+            episode=None,
+            is_season_pack=True,
+        )
+        session.add(pack)
+        await session.flush()
+
+        mock_show = _make_show_detail(
+            seasons=[
+                TmdbSeasonInfo(season_number=1, name="S1", episode_count=3, air_date="2024-03-01"),
+            ],
+            next_episode_to_air=TmdbEpisodeAirInfo(
+                season_number=1, episode_number=3, air_date="2099-04-01"
+            ),
+        )
+        # Ep 1 aired before cutoff, ep 2 aired ON cutoff day, ep 3 after cutoff
+        mock_season = _make_season_detail(1, [
+            (1, "2024-03-15"),
+            (2, "2024-03-22"),  # exactly on cutoff — must be skipped
+            (3, "2099-04-01"),  # future and after cutoff — UNRELEASED
+        ])
+
+        sm = ShowManager()
+        req = AddSeasonsRequest(
+            tmdb_id=TMDB_ID, imdb_id="tt9999001", title="Test Show",
+            year=2020, seasons=[1],
+        )
+
+        with (
+            patch(
+                "src.core.show_manager.tmdb_client.get_show_details",
+                new_callable=AsyncMock,
+                return_value=mock_show,
+            ),
+            patch(
+                "src.core.show_manager.tmdb_client.get_season_details",
+                new_callable=AsyncMock,
+                return_value=mock_season,
+            ),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # Only ep 3 created; eps 1 and 2 skipped by cutoff
+        assert result.created_items == 1
+        rows = list((await session.execute(
+            select(MediaItem).where(
+                MediaItem.tmdb_id == TMDB_ID_STR,
+                MediaItem.is_season_pack.is_(False),
+            )
+        )).scalars().all())
+        assert len(rows) == 1
+        assert rows[0].episode == 3
 
 
 # ---------------------------------------------------------------------------
