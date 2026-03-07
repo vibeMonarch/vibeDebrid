@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 class SeasonStatus(str, Enum):
     AVAILABLE = "available"
+    AIRING = "airing"
     IN_QUEUE = "in_queue"
     IN_LIBRARY = "in_library"
     UPCOMING = "upcoming"
@@ -77,6 +78,8 @@ class AddSeasonsResult(BaseModel):
     """Result of adding seasons."""
 
     created_items: int = 0
+    created_episodes: int = 0
+    created_unreleased: int = 0
     skipped_seasons: list[int] = []
     subscription_status: str = "none"  # "created", "updated", "unchanged", "none"
 
@@ -142,12 +145,20 @@ class ShowManager:
 
         today = datetime.now(timezone.utc).date()
 
+        # Determine the currently airing season number (if any).
+        # next_episode_to_air being set means the show is still running and
+        # a future episode has been announced for that season.
+        airing_season_num: int | None = None
+        if show.next_episode_to_air is not None:
+            airing_season_num = show.next_episode_to_air.season_number
+
         seasons: list[SeasonInfo] = []
         for s in show.seasons:
             if s.season_number == 0:
                 continue  # Skip Specials
 
-            items_for_season = season_items.get(s.season_number, [])
+            season_num = s.season_number
+            items_for_season = season_items.get(season_num, [])
             queue_item_ids = [item.id for item in items_for_season]
 
             if any(item.state in _LIBRARY_STATES for item in items_for_season):
@@ -161,16 +172,33 @@ class ShowManager:
                     air_date = date.fromisoformat(s.air_date)
                     if air_date > today:
                         status = SeasonStatus.UPCOMING
+                    elif season_num == airing_season_num:
+                        status = SeasonStatus.AIRING
                     else:
                         status = SeasonStatus.AVAILABLE
                 except ValueError:
                     status = SeasonStatus.AVAILABLE
 
-            # For past seasons use episode_count directly; upcoming seasons have 0 aired
-            aired_episodes = s.episode_count if status != SeasonStatus.UPCOMING else 0
+            # For airing seasons, count only episodes that have actually aired.
+            # For upcoming seasons, 0 episodes have aired.
+            # For all other seasons, use the total episode_count as-is.
+            if status == SeasonStatus.UPCOMING:
+                aired_episodes = 0
+            elif status == SeasonStatus.AIRING:
+                # Fetch season detail to count aired episodes accurately.
+                season_detail = await tmdb_client.get_season_details(tmdb_id, season_num)
+                if season_detail:
+                    aired_episodes = sum(
+                        1 for ep in season_detail.episodes
+                        if (ad := _parse_air_date(ep.air_date)) is not None and ad <= today
+                    )
+                else:
+                    aired_episodes = s.episode_count
+            else:
+                aired_episodes = s.episode_count
 
             seasons.append(SeasonInfo(
-                season_number=s.season_number,
+                season_number=season_num,
                 name=s.name,
                 episode_count=s.episode_count,
                 aired_episodes=aired_episodes,
@@ -199,14 +227,116 @@ class ShowManager:
             default_profile=settings.quality.default_profile,
         )
 
+    async def _add_airing_season(
+        self,
+        session: AsyncSession,
+        request: AddSeasonsRequest,
+        season_num: int,
+        existing_keys: set[tuple[int | None, int | None]],
+    ) -> tuple[int, int, int | None]:
+        """Add individual episode items for a currently airing season.
+
+        For aired episodes (air_date <= today): creates WANTED items.
+        For future episodes with a known air date: creates UNRELEASED items
+        with air_date set so the scheduler can promote them when ready.
+        Episodes with no announced air date are skipped.
+
+        Args:
+            session: Async database session (caller owns the transaction).
+            request: AddSeasonsRequest with show metadata and quality profile.
+            season_num: The season number that is currently airing.
+            existing_keys: Set of (season, episode) tuples already in the DB,
+                updated in place as new items are inserted.
+
+        Returns:
+            Tuple of (created_episodes, created_unreleased, max_aired_episode).
+            max_aired_episode is the highest episode number created with state
+            WANTED, or None if no WANTED episodes were created.
+        """
+        season_detail = await tmdb_client.get_season_details(request.tmdb_id, season_num)
+        if season_detail is None:
+            logger.warning(
+                "show_manager._add_airing_season: could not fetch season detail "
+                "tmdb_id=%d season=%d",
+                request.tmdb_id, season_num,
+            )
+            return 0, 0, None
+
+        tmdb_id_str = str(request.tmdb_id)
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        created_episodes = 0
+        created_unreleased = 0
+        max_aired_episode: int | None = None
+
+        for ep in season_detail.episodes:
+            ep_num = ep.episode_number
+            key = (season_num, ep_num)
+            if key in existing_keys:
+                continue
+
+            ep_air_date = _parse_air_date(ep.air_date)
+            if ep_air_date is None:
+                # TMDB hasn't announced an air date — skip for now.
+                continue
+
+            if ep_air_date <= today:
+                state = QueueState.WANTED
+                air_date_value: date | None = None
+            else:
+                state = QueueState.UNRELEASED
+                air_date_value = ep_air_date
+
+            item = MediaItem(
+                title=request.title,
+                year=request.year,
+                media_type=MediaType.SHOW,
+                tmdb_id=tmdb_id_str,
+                imdb_id=request.imdb_id,
+                state=state,
+                source="show_detail",
+                added_at=now,
+                state_changed_at=now,
+                retry_count=0,
+                season=season_num,
+                episode=ep_num,
+                is_season_pack=False,
+                quality_profile=request.quality_profile,
+                air_date=air_date_value,
+            )
+            session.add(item)
+            existing_keys.add(key)
+
+            if state == QueueState.WANTED:
+                created_episodes += 1
+                if max_aired_episode is None or ep_num > max_aired_episode:
+                    max_aired_episode = ep_num
+                logger.info(
+                    "show_manager._add_airing_season: WANTED %s S%02dE%02d (tmdb_id=%s)",
+                    request.title, season_num, ep_num, tmdb_id_str,
+                )
+            else:
+                created_unreleased += 1
+                logger.info(
+                    "show_manager._add_airing_season: UNRELEASED %s S%02dE%02d air_date=%s (tmdb_id=%s)",
+                    request.title, season_num, ep_num, ep_air_date, tmdb_id_str,
+                )
+
+        return created_episodes, created_unreleased, max_aired_episode
+
     async def add_seasons(
         self, session: AsyncSession, request: AddSeasonsRequest
     ) -> AddSeasonsResult:
-        """Add selected seasons to queue as season pack items.
+        """Add selected seasons to queue as season pack or per-episode items.
 
-        Skips seasons that already have an existing MediaItem. Optionally
-        creates or updates a MonitoredShow subscription if request.subscribe
-        is True.
+        For seasons that are currently airing (next_episode_to_air points to
+        that season), individual episode items are created instead of a single
+        season pack.  Aired episodes become WANTED; future episodes with known
+        air dates become UNRELEASED.
+
+        Skips seasons that already have any existing MediaItem.  Optionally
+        creates or updates a MonitoredShow subscription.  Automatically enables
+        subscription when an airing season is added.
 
         Args:
             session: Async database session (caller owns the transaction).
@@ -218,60 +348,111 @@ class ShowManager:
         tmdb_id_str = str(request.tmdb_id)
         now = datetime.now(timezone.utc)
         created = 0
+        created_episodes = 0
+        created_unreleased = 0
         skipped: list[int] = []
+        airing_max_episode: int | None = None  # highest aired episode created for the airing season
+
+        # Fetch show detail once to detect the currently airing season.
+        show_detail = await tmdb_client.get_show_details(request.tmdb_id)
+        airing_season_num: int | None = None
+        if show_detail and show_detail.next_episode_to_air:
+            airing_season_num = show_detail.next_episode_to_air.season_number
+
+        # Build existing_keys from DB for duplicate episode checks.
+        result = await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == tmdb_id_str)
+        )
+        all_existing = list(result.scalars().all())
+        existing_keys: set[tuple[int | None, int | None]] = {
+            (item.season, item.episode) for item in all_existing
+        }
 
         for season_num in request.seasons:
-            # Check for existing item for this season
-            result = await session.execute(
-                select(MediaItem).where(
-                    MediaItem.tmdb_id == tmdb_id_str,
-                    MediaItem.season == season_num,
-                )
-            )
-            existing = result.scalars().first()
-            if existing is not None:
+            # Check for any existing item for this season (pack or episode).
+            has_any = any(s == season_num for (s, _) in existing_keys)
+            if has_any:
                 skipped.append(season_num)
                 logger.info(
-                    "show_manager.add_seasons: skipping season %d for tmdb_id=%s (already exists item_id=%d)",
-                    season_num, tmdb_id_str, existing.id,
+                    "show_manager.add_seasons: skipping season %d for tmdb_id=%s (already exists)",
+                    season_num, tmdb_id_str,
                 )
                 continue
 
-            item = MediaItem(
-                title=request.title,
-                year=request.year,
-                media_type=MediaType.SHOW,
-                tmdb_id=tmdb_id_str,
-                imdb_id=request.imdb_id,
-                state=QueueState.WANTED,
-                source="show_detail",
-                added_at=now,
-                state_changed_at=now,
-                retry_count=0,
-                season=season_num,
-                episode=None,
-                is_season_pack=True,
-                quality_profile=request.quality_profile,
-            )
-            session.add(item)
-            created += 1
-            logger.info(
-                "show_manager.add_seasons: created item for %s S%02d (tmdb_id=%s)",
-                request.title, season_num, tmdb_id_str,
-            )
+            if season_num == airing_season_num:
+                eps, unreleased, max_ep = await self._add_airing_season(
+                    session, request, season_num, existing_keys
+                )
+                created_episodes += eps
+                created_unreleased += unreleased
+                created += eps + unreleased
+                if max_ep is not None:
+                    airing_max_episode = max_ep
+                logger.info(
+                    "show_manager.add_seasons: airing season %d for %s — "
+                    "%d WANTED + %d UNRELEASED episodes (tmdb_id=%s)",
+                    season_num, request.title, eps, unreleased, tmdb_id_str,
+                )
+            else:
+                item = MediaItem(
+                    title=request.title,
+                    year=request.year,
+                    media_type=MediaType.SHOW,
+                    tmdb_id=tmdb_id_str,
+                    imdb_id=request.imdb_id,
+                    state=QueueState.WANTED,
+                    source="show_detail",
+                    added_at=now,
+                    state_changed_at=now,
+                    retry_count=0,
+                    season=season_num,
+                    episode=None,
+                    is_season_pack=True,
+                    quality_profile=request.quality_profile,
+                )
+                session.add(item)
+                existing_keys.add((season_num, None))
+                created += 1
+                logger.info(
+                    "show_manager.add_seasons: created season pack %s S%02d (tmdb_id=%s)",
+                    request.title, season_num, tmdb_id_str,
+                )
 
-        # Handle subscription
+        # Auto-subscribe when the user adds an airing season — they clearly
+        # want ongoing episode tracking.
+        has_airing = airing_season_num is not None and airing_season_num in request.seasons
+        should_subscribe = request.subscribe or has_airing
+
         sub_status = "none"
-        if request.subscribe:
+        if should_subscribe:
             sub_status = await self._set_subscription(
                 session, request.tmdb_id, request.imdb_id,
                 request.title, request.year, request.quality_profile, True,
             )
 
+            # Stamp the MonitoredShow with the episode position we just created so
+            # check_monitored_shows doesn't re-process the same episodes on next run.
+            if has_airing and airing_season_num is not None and airing_season_num in request.seasons:
+                sub_result = await session.execute(
+                    select(MonitoredShow).where(MonitoredShow.tmdb_id == request.tmdb_id)
+                )
+                monitored = sub_result.scalar_one_or_none()
+                if monitored is not None:
+                    monitored.last_season = airing_season_num
+                    if airing_max_episode is not None:
+                        monitored.last_episode = airing_max_episode
+                    logger.info(
+                        "show_manager.add_seasons: stamped monitored show tmdb_id=%d "
+                        "last_season=%d last_episode=%s",
+                        request.tmdb_id, airing_season_num, airing_max_episode,
+                    )
+
         await session.flush()
 
         return AddSeasonsResult(
             created_items=created,
+            created_episodes=created_episodes,
+            created_unreleased=created_unreleased,
             skipped_seasons=skipped,
             subscription_status=sub_status,
         )
@@ -527,6 +708,15 @@ class ShowManager:
                 if aired_episodes:
                     show.last_episode = max(aired_episodes)
             else:
+                # Belt-and-suspenders: if individual episode items already exist
+                # for this season (e.g. created by add_seasons for an airing
+                # season), skip creating a season pack to avoid duplicates.
+                has_episodes = any(
+                    e is not None for (s, e) in existing_keys if s == season_num
+                )
+                if has_episodes:
+                    continue
+
                 # New season we haven't tracked yet — add as season pack
                 item = MediaItem(
                     title=show.title,
@@ -562,7 +752,7 @@ class ShowManager:
                     aired_episodes = [
                         ep.episode_number
                         for ep in season_detail.episodes
-                        if _parse_air_date(ep.air_date) is not None and _parse_air_date(ep.air_date) <= today
+                        if (ad := _parse_air_date(ep.air_date)) is not None and ad <= today
                     ]
                     if aired_episodes:
                         show.last_episode = max(aired_episodes)

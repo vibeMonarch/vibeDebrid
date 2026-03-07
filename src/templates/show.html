@@ -21,6 +21,22 @@
   .status-badge-in_queue     { background-color: rgba(99,102,241,0.2); color: #818cf8; }
   .status-badge-in_library   { background-color: rgba(34,197,94,0.2); color: #22c55e; }
   .status-badge-upcoming     { background-color: rgba(245,158,11,0.2); color: #f59e0b; }
+  .status-badge-airing       { background-color: rgba(56,189,248,0.2); color: #38bdf8; }
+  .status-badge-airing::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #38bdf8;
+    margin-right: 4px;
+    animation: pulse-dot 2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
   .season-check-icon { color: #22c55e; flex-shrink: 0; }
   .season-card.status-in_queue .season-check-icon { color: #818cf8; }
 </style>
@@ -320,9 +336,14 @@
 
       const meta = document.createElement('p');
       meta.className = 'text-vd-muted text-xs';
-      const epText = s.episode_count > 0
-        ? `${s.episode_count} episode${s.episode_count !== 1 ? 's' : ''}`
-        : 'No episodes';
+      let epText;
+      if (s.status === 'airing' && s.aired_episodes > 0 && s.aired_episodes < s.episode_count) {
+        epText = `${s.aired_episodes} of ${s.episode_count} episodes aired`;
+      } else if (s.episode_count > 0) {
+        epText = `${s.episode_count} episode${s.episode_count !== 1 ? 's' : ''}`;
+      } else {
+        epText = 'No episodes';
+      }
       const airText = s.air_date ? ` · ${s.air_date.substring(0, 4)}` : '';
       meta.textContent = epText + airText;
 
@@ -375,7 +396,7 @@
     document.querySelectorAll('.season-checkbox:not(:disabled)').forEach(cb => {
       const val = parseInt(cb.value, 10);
       const season = (_showData?.seasons || []).find(s => s.season_number === val);
-      cb.checked = season && season.status === 'available';
+      cb.checked = season && (season.status === 'available' || season.status === 'airing');
     });
     updateAddBar();
   };
@@ -423,7 +444,18 @@
       const result = await resp.json();
       let msg = '';
       if (result.created_items > 0) {
-        msg += `Added ${result.created_items} season${result.created_items !== 1 ? 's' : ''} to queue. `;
+        if (result.created_episodes > 0 || result.created_unreleased > 0) {
+          const parts = [];
+          if (result.created_episodes > 0) {
+            parts.push(`${result.created_episodes} episode${result.created_episodes !== 1 ? 's' : ''}`);
+          }
+          if (result.created_unreleased > 0) {
+            parts.push(`${result.created_unreleased} upcoming`);
+          }
+          msg += `Added ${parts.join(' + ')} to queue. `;
+        } else {
+          msg += `Added ${result.created_items} season${result.created_items !== 1 ? 's' : ''} to queue. `;
+        }
       }
       if (result.skipped_seasons.length > 0) {
         msg += `Skipped S${result.skipped_seasons.map(n => String(n).padStart(2, '0')).join(', S')} (already queued). `;

@@ -253,11 +253,27 @@
 - 85 new tests (53 show_manager + 32 API routes)
 - Total: 1038 tests, all passing
 
+### Airing Season Support ✅ (Step 1.7)
+- TMDB model: `TmdbEpisodeAirInfo`, `next_episode_to_air`/`last_episode_to_air` on `TmdbShowDetail` (no extra API call)
+- `SeasonStatus.AIRING`: detected when `next_episode_to_air.season_number` matches season
+- Show detail page: airing seasons show "X of Y episodes aired" with accurate count from `get_season_details()`
+- Per-episode creation: airing seasons create individual episode items (WANTED for aired, UNRELEASED for future) instead of season pack
+- Completed seasons still create season packs (unchanged)
+- Auto-subscribe: adding an airing season auto-enables monitoring subscription
+- MonitoredShow stamping: `last_season`/`last_episode` set on auto-subscribe to prevent monitor duplicate creation
+- Belt-and-suspenders: `_check_single_show()` checks for existing episode items before creating season packs
+- `AddSeasonsResult`: new `created_episodes` and `created_unreleased` counter fields
+- Frontend: sky-blue pulsing badge for AIRING status, "Select available" includes airing seasons
+- Toast: "Added X episodes + Y upcoming to queue" for airing season adds
+- 23 new tests (airing detection, per-episode creation, auto-subscribe, monitoring dedup, schema)
+- Total: 1074 tests, all passing
+
 ## Remaining / Future Work
 
-### Season Pack Exploder (deferred)
-- When no season pack found after scraping, auto-create individual episode MediaItems as fallback
-- Requires TMDB episode count query mid-pipeline + parent-child item relationship
+### XEM Scene Numbering (next)
+- Anime numbering mismatch: TMDB S01E29 ≠ torrent site S02E01 (e.g., Frieren)
+- Integrate TheXEM.info for TMDB↔scene numbering mappings
+- Convert season/episode numbers before scraping when XEM mapping exists
 
 ### Trakt Integration (Step 1b)
 - src/services/trakt.py — OAuth, watchlist polling

@@ -71,6 +71,12 @@ class TmdbSeasonInfo(BaseModel):
     poster_path: str | None = None
 
 
+class TmdbEpisodeAirInfo(BaseModel):
+    season_number: int
+    episode_number: int
+    air_date: str | None = None
+
+
 class TmdbShowDetail(BaseModel):
     """Full show details from TMDB /tv/{id} endpoint."""
 
@@ -86,6 +92,8 @@ class TmdbShowDetail(BaseModel):
     seasons: list[TmdbSeasonInfo] = []
     imdb_id: str | None = None
     genres: list[dict] = []
+    next_episode_to_air: TmdbEpisodeAirInfo | None = None
+    last_episode_to_air: TmdbEpisodeAirInfo | None = None
 
 
 class TmdbEpisodeInfo(BaseModel):
@@ -806,6 +814,23 @@ class TmdbClient:
         # Parse genres
         raw_genres = data.get("genres") or []
 
+        # Parse next/last episode air info
+        def _parse_episode_air_info(raw: Any) -> TmdbEpisodeAirInfo | None:
+            if not isinstance(raw, dict):
+                return None
+            season_num = raw.get("season_number")
+            episode_num = raw.get("episode_number")
+            if not isinstance(season_num, int) or not isinstance(episode_num, int):
+                return None
+            return TmdbEpisodeAirInfo(
+                season_number=season_num,
+                episode_number=episode_num,
+                air_date=raw.get("air_date") or None,
+            )
+
+        next_episode_to_air = _parse_episode_air_info(data.get("next_episode_to_air"))
+        last_episode_to_air = _parse_episode_air_info(data.get("last_episode_to_air"))
+
         result = TmdbShowDetail(
             tmdb_id=tmdb_id,
             title=title,
@@ -819,6 +844,8 @@ class TmdbClient:
             seasons=seasons,
             imdb_id=imdb_id,
             genres=raw_genres,
+            next_episode_to_air=next_episode_to_air,
+            last_episode_to_air=last_episode_to_air,
         )
 
         logger.debug(
