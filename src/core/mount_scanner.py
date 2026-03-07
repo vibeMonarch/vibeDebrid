@@ -65,6 +65,17 @@ def _normalize_title(title: str) -> str:
     return result.strip()
 
 
+def _is_word_subsequence(query_words: list[str], target_words: list[str]) -> bool:
+    """Check if all query words appear in target words in order (subsequence).
+
+    Words must match exactly but need not be consecutive. For example,
+    ["terminator", "judgement", "day"] is a subsequence of
+    ["terminator", "2", "judgement", "day", "1991", ...].
+    """
+    it = iter(target_words)
+    return all(any(t == q for t in it) for q in query_words)
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -286,14 +297,15 @@ class MountScanner:
     ) -> list[MountIndex]:
         """Query the mount index for files matching the given title and episode info.
 
-        Performs a case-sensitive exact match on ``parsed_title`` (both sides are
-        already normalized to lowercase by ``_normalize_title``).
-        Optionally filters by exact ``parsed_season`` and ``parsed_episode``.
-        This is the fast DB-only check used before every scrape attempt.
+        First tries an exact match on ``parsed_title``.  If no results are found,
+        falls back to a word-subsequence search: all words from the query title
+        must appear in the ``parsed_title`` in order (via SQL LIKE).  This handles
+        cases where the queue title omits tokens present in the torrent filename
+        (e.g. "Terminator Judgement Day" vs "Terminator 2 Judgement Day").
 
         Args:
             session: Active async SQLAlchemy session.
-            title: The media title to search for (exact normalized match).
+            title: The media title to search for.
             season: If provided, restrict results to this season number.
             episode: If provided, restrict results to this episode number.
                      Only meaningful when ``season`` is also provided.
@@ -302,20 +314,49 @@ class MountScanner:
             List of matching MountIndex rows, ordered by ``last_seen_at`` desc.
         """
         normalized = _normalize_title(title)
-        stmt = select(MountIndex).where(
-            MountIndex.parsed_title == normalized
-        )
 
-        if season is not None:
-            stmt = stmt.where(MountIndex.parsed_season == season)
+        def _apply_filters(stmt):
+            if season is not None:
+                stmt = stmt.where(MountIndex.parsed_season == season)
+            if episode is not None:
+                stmt = stmt.where(MountIndex.parsed_episode == episode)
+            return stmt.order_by(MountIndex.last_seen_at.desc())
 
-        if episode is not None:
-            stmt = stmt.where(MountIndex.parsed_episode == episode)
+        # Try exact match first (fast path, prevents false positives).
+        stmt = select(MountIndex).where(MountIndex.parsed_title == normalized)
+        result = await session.execute(_apply_filters(stmt))
+        matches = list(result.scalars().all())
+        if matches:
+            return matches
 
-        stmt = stmt.order_by(MountIndex.last_seen_at.desc())
+        # Fallback: word-subsequence via LIKE — all query words must appear in order.
+        # Require at least 2 words to prevent overly broad matches (e.g. "dark" matching
+        # "the dark knight").
+        words = normalized.split()
+        if len(words) < 2:
+            return []
+        like_pattern = "%" + "%".join(words) + "%"
+        stmt = select(MountIndex).where(MountIndex.parsed_title.like(like_pattern))
+        result = await session.execute(_apply_filters(stmt))
+        matches = list(result.scalars().all())
+        if matches:
+            # Filter in Python: LIKE "%word1%word2%" matches substrings within
+            # words (e.g. "%the%" matches inside "theater"), so verify whole-word
+            # subsequence here.
+            verified = []
+            query_words = words
+            for m in matches:
+                target_words = (m.parsed_title or "").split()
+                if _is_word_subsequence(query_words, target_words):
+                    verified.append(m)
+            if verified:
+                logger.info(
+                    "lookup: exact match failed for %r, word-subsequence found %d result(s)",
+                    title, len(verified),
+                )
+            return verified
 
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return []
 
     async def lookup_by_filepath(
         self, session: AsyncSession, filepath: str
@@ -445,6 +486,9 @@ class MountScanner:
                         exc,
                     )
                     return None
+                input_words = normalized_input.split()
+                if not input_words:
+                    return None
                 # (normalized_name, original_name, full_path)
                 candidates: list[tuple[str, str, str]] = []
                 with scanner:
@@ -452,14 +496,8 @@ class MountScanner:
                         if not entry.is_dir(follow_symlinks=False):
                             continue
                         norm = _normalize_title(entry.name)
-                        if not norm.startswith(normalized_input):
-                            continue
-                        # Word-boundary check: reject mid-word prefix matches
-                        # (e.g. "predator" won't match "predators"). Note: this
-                        # does NOT prevent "predator" matching "predator 2" —
-                        # disambiguation relies on the shortest-name sort below.
-                        rest = norm[len(normalized_input):]
-                        if rest and not rest.startswith(" "):
+                        norm_words = norm.split()
+                        if not _is_word_subsequence(input_words, norm_words):
                             continue
                         candidates.append((norm, entry.name, entry.path))
                 if not candidates:

@@ -472,6 +472,40 @@ class TestLookup:
         assert len(results) == 1
         assert results[0].filepath == "/mnt/dark.knight.mkv"
 
+    async def test_lookup_word_subsequence_fallback(self, session: AsyncSession) -> None:
+        """When exact match fails, word-subsequence finds titles with extra tokens."""
+        await _insert_entry(
+            session, filepath="/mnt/terminator2.mkv",
+            parsed_title="terminator 2 judgement day",
+        )
+        scanner = MountScanner()
+        # Exact match "terminator judgement day" fails (missing "2"),
+        # but word-subsequence finds it.
+        results = await scanner.lookup(session, "Terminator Judgement Day")
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/terminator2.mkv"
+
+    async def test_lookup_word_subsequence_requires_order(self, session: AsyncSession) -> None:
+        """Word-subsequence fallback requires words in correct order."""
+        await _insert_entry(
+            session, filepath="/mnt/day.mkv",
+            parsed_title="day of judgement",
+        )
+        scanner = MountScanner()
+        # "judgement day" has words in wrong order relative to "day of judgement"
+        results = await scanner.lookup(session, "judgement day")
+        assert len(results) == 0
+
+    async def test_lookup_word_subsequence_single_word_no_fallback(self, session: AsyncSession) -> None:
+        """Single-word queries do not trigger the subsequence fallback."""
+        await _insert_entry(
+            session, filepath="/mnt/movie.mkv",
+            parsed_title="the terminator",
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup(session, "terminator")
+        assert len(results) == 0  # exact fails, and single word = no fallback
+
     async def test_lookup_case_insensitive(self, session: AsyncSession) -> None:
         """Title lookup is case-insensitive."""
         await _insert_entry(
