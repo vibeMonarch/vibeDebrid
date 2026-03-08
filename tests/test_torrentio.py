@@ -186,8 +186,10 @@ def _patch_client(
     # so that the requests_made list accumulates correctly across fallback steps.
     # Delegate to client._build_base_url() so that the opts path segment and
     # other config read from the already-patched module-level settings are used.
-    def _fake_build_client() -> httpx.AsyncClient:
-        base_url = client._build_base_url()
+    # Forward include_debrid_key so integration tests exercise URL stripping.
+    def _fake_build_client(**kwargs: object) -> httpx.AsyncClient:
+        include_debrid_key = kwargs.get("include_debrid_key", True)
+        base_url = client._build_base_url(include_debrid_key=include_debrid_key)
         return httpx.AsyncClient(
             base_url=base_url,
             transport=transport,
@@ -672,7 +674,7 @@ async def test_timeout_returns_empty_list(client: TorrentioClient) -> None:
 
     cfg = getattr(client, "_test_cfg", None) or _make_mock_cfg()
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    def _fake_build_client(**kwargs: object) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_TimeoutTransport())
 
     client._build_client = _fake_build_client  # type: ignore[method-assign]
@@ -690,7 +692,7 @@ async def test_connection_error_returns_empty_list(client: TorrentioClient) -> N
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    def _fake_build_client(**kwargs: object) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_ConnErrorTransport())
 
     client._build_client = _fake_build_client  # type: ignore[method-assign]
@@ -721,7 +723,7 @@ async def test_episode_timeout_returns_empty_list(client: TorrentioClient) -> No
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.TimeoutException("timed out", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    def _fake_build_client(**kwargs: object) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_TimeoutTransport())
 
     client._build_client = _fake_build_client  # type: ignore[method-assign]
@@ -1228,3 +1230,157 @@ def test_parse_languages_multi_tag_still_detected(client: TorrentioClient) -> No
     """'MULTI' token continues to be detected after the enhancement."""
     result = client._parse_languages("Movie.2024.1080p.MULTI.WEB-DL", {})
     assert "Multi" in result
+
+
+# ---------------------------------------------------------------------------
+# _build_base_url — include_debrid_key / opts stripping
+# ---------------------------------------------------------------------------
+
+
+class TestDebridKeyStripping:
+    """Tests for _build_base_url(include_debrid_key=True/False).
+
+    Each test patches settings.scrapers.torrentio with a specific opts string
+    and calls _build_base_url() directly.  No HTTP traffic is generated.
+    """
+
+    def _make_client(self, monkeypatch: pytest.MonkeyPatch, opts: str) -> TorrentioClient:
+        """Return a TorrentioClient with the given opts value patched in."""
+        cfg = _make_mock_cfg(opts=opts)
+        mock_settings = MagicMock()
+        mock_settings.scrapers.torrentio = cfg
+        monkeypatch.setattr("src.services.torrentio.settings", mock_settings)
+        return TorrentioClient()
+
+    # ------------------------------------------------------------------
+    # include_debrid_key=False — key is stripped
+    # ------------------------------------------------------------------
+
+    def test_key_at_end_is_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """realdebrid= at the end of opts is removed when include_debrid_key=False."""
+        client = self._make_client(monkeypatch, "sort=qualitysize|realdebrid=ABC123")
+        url = client._build_base_url(include_debrid_key=False)
+        assert "realdebrid" not in url
+        assert "sort=qualitysize" in url
+
+    def test_key_at_start_is_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """realdebrid= at the start of opts is removed when include_debrid_key=False."""
+        client = self._make_client(monkeypatch, "realdebrid=ABC123|sort=qualitysize")
+        url = client._build_base_url(include_debrid_key=False)
+        assert "realdebrid" not in url
+        assert "sort=qualitysize" in url
+
+    def test_key_in_middle_is_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """realdebrid= in the middle of opts is removed when include_debrid_key=False."""
+        client = self._make_client(
+            monkeypatch, "sort=qualitysize|realdebrid=ABC123|qualityfilter=4k"
+        )
+        url = client._build_base_url(include_debrid_key=False)
+        assert "realdebrid" not in url
+        assert "sort=qualitysize" in url
+        assert "qualityfilter=4k" in url
+
+    def test_remaining_opts_have_no_double_pipes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After stripping the middle key the two adjacent pipes are collapsed."""
+        client = self._make_client(
+            monkeypatch, "sort=qualitysize|realdebrid=ABC123|qualityfilter=4k"
+        )
+        url = client._build_base_url(include_debrid_key=False)
+        assert "||" not in url
+
+    def test_key_only_opts_produces_no_opts_segment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When opts contains only the realdebrid= key the URL has no opts path segment."""
+        base_url = "https://torrentio.strem.fun"
+        cfg = _make_mock_cfg(base_url=base_url, opts="realdebrid=ABC123")
+        mock_settings = MagicMock()
+        mock_settings.scrapers.torrentio = cfg
+        monkeypatch.setattr("src.services.torrentio.settings", mock_settings)
+        client = TorrentioClient()
+
+        url = client._build_base_url(include_debrid_key=False)
+
+        assert url == base_url
+        assert "realdebrid" not in url
+
+    def test_no_key_in_opts_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """opts with no realdebrid= segment is returned unchanged."""
+        client = self._make_client(monkeypatch, "sort=qualitysize")
+        url = client._build_base_url(include_debrid_key=False)
+        assert "sort=qualitysize" in url
+        assert "realdebrid" not in url
+
+    # ------------------------------------------------------------------
+    # include_debrid_key=True (default) — key is preserved
+    # ------------------------------------------------------------------
+
+    def test_default_keeps_key_at_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default include_debrid_key=True preserves realdebrid= at end of opts."""
+        client = self._make_client(monkeypatch, "sort=qualitysize|realdebrid=ABC123")
+        url = client._build_base_url(include_debrid_key=True)
+        assert "realdebrid=ABC123" in url
+
+    def test_default_keeps_key_at_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default include_debrid_key=True preserves realdebrid= at start of opts."""
+        client = self._make_client(monkeypatch, "realdebrid=ABC123|sort=qualitysize")
+        url = client._build_base_url(include_debrid_key=True)
+        assert "realdebrid=ABC123" in url
+
+    def test_default_keeps_key_in_middle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default include_debrid_key=True preserves realdebrid= in middle of opts."""
+        client = self._make_client(
+            monkeypatch, "sort=qualitysize|realdebrid=ABC123|qualityfilter=4k"
+        )
+        url = client._build_base_url(include_debrid_key=True)
+        assert "realdebrid=ABC123" in url
+        assert "sort=qualitysize" in url
+        assert "qualityfilter=4k" in url
+
+    def test_implicit_default_keeps_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Calling _build_base_url() with no argument keeps realdebrid= (default=True)."""
+        client = self._make_client(monkeypatch, "sort=qualitysize|realdebrid=MYKEY")
+        url = client._build_base_url()
+        assert "realdebrid=MYKEY" in url
+
+    # ------------------------------------------------------------------
+    # URL structure assertions
+    # ------------------------------------------------------------------
+
+    def test_stripped_url_opts_embedded_as_path_segment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After stripping, remaining opts are still in the path between base and /stream."""
+        base_url = "https://torrentio.strem.fun"
+        client = self._make_client(
+            monkeypatch, "sort=qualitysize|realdebrid=ABC123|qualityfilter=4k"
+        )
+        url = client._build_base_url(include_debrid_key=False)
+        # The opts are part of the path, so URL should look like:
+        # https://torrentio.strem.fun/sort=qualitysize|qualityfilter=4k
+        assert url.startswith(base_url + "/")
+        assert "sort=qualitysize" in url
+        assert "qualityfilter=4k" in url
+
+    def test_empty_opts_returns_bare_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When opts is empty, _build_base_url returns only the base URL regardless of flag."""
+        base_url = "https://torrentio.strem.fun"
+        cfg = _make_mock_cfg(base_url=base_url, opts="")
+        mock_settings = MagicMock()
+        mock_settings.scrapers.torrentio = cfg
+        monkeypatch.setattr("src.services.torrentio.settings", mock_settings)
+        client = TorrentioClient()
+
+        assert client._build_base_url(include_debrid_key=False) == base_url
+        assert client._build_base_url(include_debrid_key=True) == base_url
+
+    def test_key_value_with_special_chars_stripped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """realdebrid= value containing alphanumeric and underscore chars is fully stripped."""
+        client = self._make_client(
+            monkeypatch, "sort=qualitysize|realdebrid=My_Key_123_ABC|qualityfilter=4k"
+        )
+        url = client._build_base_url(include_debrid_key=False)
+        assert "realdebrid" not in url
+        assert "My_Key_123_ABC" not in url

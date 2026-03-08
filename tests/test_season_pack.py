@@ -581,7 +581,7 @@ class TestScrapePipelineSeasonPack:
             await scrape_pipeline.run(session, item)
 
         # episode=None → pipeline should pass episode=1 to scrape_episode
-        mock_scrape.assert_called_once_with("tt0903747", 2, 1)
+        mock_scrape.assert_called_once_with("tt0903747", 2, 1, include_debrid_key=False)
 
     async def test_regular_episode_uses_actual_episode_number(
         self, session: AsyncSession
@@ -632,7 +632,7 @@ class TestScrapePipelineSeasonPack:
         ):
             await scrape_pipeline.run(session, item)
 
-        mock_scrape.assert_called_once_with("tt0903747", 2, 7)
+        mock_scrape.assert_called_once_with("tt0903747", 2, 7, include_debrid_key=False)
 
     async def test_show_without_season_skips_torrentio(
         self, session: AsyncSession
@@ -727,7 +727,7 @@ class TestScrapePipelineSeasonPack:
             await scrape_pipeline.run(session, item)
 
         # season=4 means Torrentio SHOULD be called (with episode=1 as anchor)
-        mock_scrape.assert_called_once_with("tt0141842", 4, 1)
+        mock_scrape.assert_called_once_with("tt0141842", 4, 1, include_debrid_key=False)
 
 
 # ===========================================================================

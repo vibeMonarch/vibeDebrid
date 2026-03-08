@@ -59,6 +59,10 @@ _SEASON_ONLY_RE = re.compile(
 # Explicitly tagged "complete" season packs
 _COMPLETE_RE = re.compile(r"\b(?:complete|season\.?\d+)\b", re.IGNORECASE)
 
+# Strips the ``realdebrid=<value>`` segment from pipe-separated Torrentio opts
+# so that scrape-pipeline queries return all results, not just RD-cached ones.
+_DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")
+
 # Cached-in-RD indicator.  When the Torrentio opts URL includes an RD API key,
 # cached streams are tagged with ⚡ in the ``name`` field (e.g. "⚡ Torrentio\n1080p")
 # or with "[RD+]" / "RD+" in the title/name.  We check both fields.
@@ -166,24 +170,37 @@ class TorrentioClient:
     # URL construction
     # ------------------------------------------------------------------
 
-    def _build_base_url(self) -> str:
+    def _build_base_url(self, *, include_debrid_key: bool = True) -> str:
         """Return the Torrentio base URL, injecting opts as a path segment.
 
         If ``opts`` is set (e.g. ``"sort=seeders|qualityfilter=4k"``), the URL
         becomes ``{base_url}/{opts}``.  Otherwise it is just ``{base_url}``.
+
+        Args:
+            include_debrid_key: When ``False``, the ``realdebrid=<key>`` segment
+                is stripped from opts before building the URL.  This causes
+                Torrentio to return all results rather than only RD-cached ones,
+                which is the correct behaviour for the scrape pipeline.
         """
         cfg = settings.scrapers.torrentio
         base = cfg.base_url.rstrip("/")
         opts = cfg.opts.strip("/").strip()
+        if opts and not include_debrid_key:
+            opts = _DEBRID_OPT_RE.sub("", opts)
+            opts = re.sub(r"\|{2,}", "|", opts).strip("|")
         if opts:
             return f"{base}/{opts}"
         return base
 
-    def _build_client(self) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient pointed at the Torrentio addon."""
+    def _build_client(self, *, include_debrid_key: bool = True) -> httpx.AsyncClient:
+        """Create a new httpx.AsyncClient pointed at the Torrentio addon.
+
+        Args:
+            include_debrid_key: Forwarded to :meth:`_build_base_url`.
+        """
         cfg = settings.scrapers.torrentio
         return httpx.AsyncClient(
-            base_url=self._build_base_url(),
+            base_url=self._build_base_url(include_debrid_key=include_debrid_key),
             timeout=cfg.timeout_seconds,
             headers={"User-Agent": "vibeDebrid/0.1"},
             follow_redirects=True,
@@ -193,11 +210,15 @@ class TorrentioClient:
     # Public scraping methods
     # ------------------------------------------------------------------
 
-    async def scrape_movie(self, imdb_id: str) -> list[TorrentioResult]:
+    async def scrape_movie(
+        self, imdb_id: str, *, include_debrid_key: bool = True
+    ) -> list[TorrentioResult]:
         """Scrape Torrentio for movie results.
 
         Args:
             imdb_id: The IMDB ID, e.g. ``"tt12345678"``.
+            include_debrid_key: When ``False``, strips the ``realdebrid=`` key
+                from opts so Torrentio returns all results, not just cached ones.
 
         Returns:
             Parsed results up to ``max_results``, or an empty list on failure.
@@ -208,10 +229,15 @@ class TorrentioClient:
 
         path = f"/stream/movie/{imdb_id}.json"
         logger.debug("scrape_movie: imdb_id=%s path=%s", imdb_id, path)
-        return await self._query(path)
+        return await self._query(path, include_debrid_key=include_debrid_key)
 
     async def scrape_episode(
-        self, imdb_id: str, season: int, episode: int
+        self,
+        imdb_id: str,
+        season: int,
+        episode: int,
+        *,
+        include_debrid_key: bool = True,
     ) -> list[TorrentioResult]:
         """Scrape Torrentio for a specific episode with a two-level fallback.
 
@@ -227,6 +253,8 @@ class TorrentioClient:
             imdb_id: The IMDB ID, e.g. ``"tt12345678"``.
             season:  Season number (1-based).
             episode: Episode number (1-based).
+            include_debrid_key: When ``False``, strips the ``realdebrid=`` key
+                from opts so Torrentio returns all results, not just cached ones.
 
         Returns:
             Parsed results up to ``max_results``, or an empty list on failure.
@@ -243,7 +271,7 @@ class TorrentioClient:
             season,
             episode,
         )
-        results = await self._query(ep_path)
+        results = await self._query(ep_path, include_debrid_key=include_debrid_key)
         if results:
             logger.debug(
                 "scrape_episode: step=1 succeeded with %d results S%02dE%02d",
@@ -262,7 +290,7 @@ class TorrentioClient:
             episode,
         )
         season_path = f"/stream/series/{imdb_id}:{season}:1.json"
-        results = await self._query(season_path)
+        results = await self._query(season_path, include_debrid_key=include_debrid_key)
         if results:
             logger.info(
                 "scrape_episode: step=2 (season) succeeded with %d results "
@@ -285,12 +313,16 @@ class TorrentioClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _query(self, path: str) -> list[TorrentioResult]:
+    async def _query(
+        self, path: str, *, include_debrid_key: bool = True
+    ) -> list[TorrentioResult]:
         """Execute a single Torrentio addon request and parse the stream list.
 
         Args:
             path: URL path relative to the (optionally opts-prefixed) base URL,
                   e.g. ``"/stream/movie/tt12345678.json"``.
+            include_debrid_key: Forwarded to :meth:`_build_client`.  Pass
+                ``False`` from the scrape pipeline to obtain unfiltered results.
 
         Returns:
             List of parsed TorrentioResult objects, capped at ``max_results``.
@@ -299,7 +331,7 @@ class TorrentioClient:
         max_results = settings.scrapers.torrentio.max_results
         t0 = time.monotonic()
         try:
-            async with self._build_client() as client:
+            async with self._build_client(include_debrid_key=include_debrid_key) as client:
                 response = await client.get(path)
         except httpx.ConnectError as exc:
             logger.warning(

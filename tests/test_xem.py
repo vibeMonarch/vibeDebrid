@@ -1073,6 +1073,7 @@ class TestScrapePipelineXem:
                 item.imdb_id,
                 2,  # scene_season
                 1,  # scene_episode
+                include_debrid_key=False,
             )
 
     async def test_torrentio_no_xem_mapping_uses_original(
@@ -1095,6 +1096,7 @@ class TestScrapePipelineXem:
                 item.imdb_id,
                 1,  # original season
                 29,  # original episode
+                include_debrid_key=False,
             )
 
     async def test_torrentio_season_pack_uses_original_episode_anchor(
@@ -1130,6 +1132,7 @@ class TestScrapePipelineXem:
                 item.imdb_id,
                 2,  # original season
                 1,  # episode=1 anchor for season pack
+                include_debrid_key=False,
             )
 
     async def test_zilean_uses_scene_numbering(self, session: AsyncSession) -> None:
@@ -1196,6 +1199,7 @@ class TestScrapePipelineXem:
                 item.imdb_id,
                 1,   # original season
                 29,  # original episode
+                include_debrid_key=False,
             )
 
 

@@ -134,7 +134,7 @@ async def search(body: SearchRequest) -> SearchResponse:
             return []
         try:
             if body.media_type == "movie":
-                results = await torrentio_client.scrape_movie(body.imdb_id)
+                results = await torrentio_client.scrape_movie(body.imdb_id, include_debrid_key=False)
                 logger.debug(
                     "search: torrentio returned %d movie results for imdb_id=%s",
                     len(results),
@@ -147,7 +147,7 @@ async def search(body: SearchRequest) -> SearchResponse:
                 and body.episode is not None
             ):
                 results = await torrentio_client.scrape_episode(
-                    body.imdb_id, body.season, body.episode
+                    body.imdb_id, body.season, body.episode, include_debrid_key=False
                 )
                 logger.debug(
                     "search: torrentio returned %d episode results for imdb_id=%s S%02dE%02d",

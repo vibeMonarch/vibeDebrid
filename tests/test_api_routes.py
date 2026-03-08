@@ -1144,7 +1144,7 @@ class TestSearch:
             )
 
         assert resp.status_code == 200
-        mock_scrape_episode.assert_called_once_with("tt0903747", 1, 1)
+        mock_scrape_episode.assert_called_once_with("tt0903747", 1, 1, include_debrid_key=False)
         mock_scrape_movie.assert_not_called()
 
     async def test_search_no_imdb_id_skips_torrentio(
@@ -1231,7 +1231,7 @@ class TestSearch:
             )
 
         assert resp.status_code == 200
-        mock_scrape_movie.assert_called_once_with("tt0000001")
+        mock_scrape_movie.assert_called_once_with("tt0000001", include_debrid_key=False)
         mock_zilean_search.assert_not_called()
 
     async def test_search_scrapers_default_runs_both(
@@ -1261,7 +1261,7 @@ class TestSearch:
             )
 
         assert resp.status_code == 200
-        mock_scrape_movie.assert_called_once_with("tt0000001")
+        mock_scrape_movie.assert_called_once_with("tt0000001", include_debrid_key=False)
         mock_zilean_search.assert_called_once()
 
 

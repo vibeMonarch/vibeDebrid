@@ -734,7 +734,7 @@ class ScrapePipeline:
                 {"imdb_id": item.imdb_id, "type": "movie"}
             )
             try:
-                results = await torrentio_client.scrape_movie(item.imdb_id)
+                results = await torrentio_client.scrape_movie(item.imdb_id, include_debrid_key=False)
                 logger.debug(
                     "scrape_pipeline: Torrentio returned %d results for movie "
                     "item id=%d",
@@ -777,7 +777,8 @@ class ScrapePipeline:
             )
             try:
                 results = await torrentio_client.scrape_episode(
-                    item.imdb_id, eff_scene_season, eff_scene_episode
+                    item.imdb_id, eff_scene_season, eff_scene_episode,
+                    include_debrid_key=False,
                 )
                 logger.debug(
                     "scrape_pipeline: Torrentio returned %d results for episode "
