@@ -48,6 +48,12 @@ _SEASON_ONLY_RE = re.compile(
 # Explicitly tagged "complete" season packs
 _COMPLETE_RE = re.compile(r"\b(?:complete|season\.?\d+)\b", re.IGNORECASE)
 
+# Fallback: anime-style "S2 - 06" or "S02-E06" (PTN doesn't handle dash-separated notation)
+_SEASON_DASH_EP_RE = re.compile(
+    r"(?:\b|_)S(\d{1,2})\s*-\s*E?(\d{1,3})(?:\b|_|\[)",
+    re.IGNORECASE,
+)
+
 # Known language tokens that appear in torrent names (mirrors torrentio.py set).
 _LANGUAGE_TOKENS: dict[str, str] = {
     "FRENCH": "French",
@@ -394,6 +400,13 @@ class ZileanClient:
                 season = ptn_data.get("season")
             if episode is None:
                 episode = ptn_data.get("episode")
+
+        # Fallback: PTN doesn't handle dash-separated anime notation like "S2 - 06"
+        if episode is None:
+            m = _SEASON_DASH_EP_RE.search(raw_title)
+            if m:
+                season = int(m.group(1))
+                episode = int(m.group(2))
 
         # --- Season pack detection ---
         # A result is a season pack if:

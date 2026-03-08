@@ -148,6 +148,7 @@ class FilterEngine:
         results: list[ScrapeResult],
         profile_name: str | None = None,
         cached_hashes: set[str] | None = None,
+        prefer_season_packs: bool = True,
     ) -> list[FilteredResult]:
         """Apply Tier 1 hard filters then Tier 2 quality scoring to a result list.
 
@@ -162,6 +163,9 @@ class FilterEngine:
             cached_hashes: Set of info_hash strings known to be cached in
                 Real-Debrid.  Matching hashes earn a bonus score.  Pass
                 ``None`` or an empty set when cache status is unknown.
+            prefer_season_packs: When True, season pack results receive a +5
+                scoring bonus.  Pass False for single-episode requests so that
+                season packs do not outrank individual episode torrents.
 
         Returns:
             List of FilteredResult objects sorted by score descending.
@@ -192,7 +196,7 @@ class FilterEngine:
                 rejected_count += 1
                 continue
 
-            score, breakdown = self._calculate_score(result, profile, resolved_cached)
+            score, breakdown = self._calculate_score(result, profile, resolved_cached, prefer_season_packs)
             ranked.append(
                 FilteredResult(
                     result=result,
@@ -229,6 +233,7 @@ class FilterEngine:
         results: list[ScrapeResult],
         profile_name: str | None = None,
         cached_hashes: set[str] | None = None,
+        prefer_season_packs: bool = True,
     ) -> FilteredResult | None:
         """Return the highest-scored result, or None if all were rejected.
 
@@ -237,6 +242,8 @@ class FilterEngine:
             profile_name: Quality profile key.  Defaults to
                 ``settings.quality.default_profile``.
             cached_hashes: Set of info_hash strings known to be cached in RD.
+            prefer_season_packs: When True, season pack results receive a +5
+                scoring bonus.  Pass False for single-episode requests.
 
         Returns:
             The top-ranked FilteredResult, or None when the list is empty or
@@ -246,6 +253,7 @@ class FilterEngine:
             results,
             profile_name=profile_name,
             cached_hashes=cached_hashes,
+            prefer_season_packs=prefer_season_packs,
         )
         return ranked[0] if ranked else None
 
@@ -387,6 +395,7 @@ class FilterEngine:
         result: ScrapeResult,
         profile: QualityProfile,
         cached_hashes: set[str],
+        prefer_season_packs: bool = True,
     ) -> tuple[float, dict[str, float]]:
         """Compute the composite quality score for a result.
 
@@ -398,6 +407,9 @@ class FilterEngine:
             result: The scrape result to score.
             profile: The quality profile supplying preference lists.
             cached_hashes: Set of info_hash strings cached in Real-Debrid.
+            prefer_season_packs: When True, season pack results receive the
+                ``_SEASON_PACK_BONUS`` score increment.  Pass False for
+                single-episode requests to avoid inflating season pack ranks.
 
         Returns:
             A 2-tuple ``(total_score, breakdown)`` where ``breakdown`` maps
@@ -453,7 +465,7 @@ class FilterEngine:
         )
 
         # --- Season pack (max 5 pts) ---
-        breakdown["season_pack"] = _SEASON_PACK_BONUS if result.is_season_pack else 0.0
+        breakdown["season_pack"] = _SEASON_PACK_BONUS if (prefer_season_packs and result.is_season_pack) else 0.0
 
         # --- Language preference (max 15 pts, 0 when preferred_languages unset) ---
         breakdown["language"] = self._score_language(result.languages)

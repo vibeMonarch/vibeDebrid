@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1276 tests, all passing (as of 2026-03-08)
+- 1292 tests, all passing (as of 2026-03-08)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -56,6 +56,7 @@
 - `_cacheStatusMap` persists RD cache results across re-renders
 - `_cacheCheckGeneration` prevents stale writes
 - Torrentio timeout: 10s (reduced from 30s due to 522 errors)
+- Both pipeline and search strip `realdebrid=` from Torrentio opts (`include_debrid_key=False`) — see Torrentio RD Key Stripping
 
 ## Fuzzy Directory Match + Path-Prefix Fallback — 2026-03-07
 - `_is_word_subsequence()` for fuzzy mount directory matching
@@ -83,7 +84,9 @@
 - Season pack duplicate add + XEM scrape mapping (2026-03-08) — see below
 - Language filter Cyrillic bypass (2026-03-08): `_parse_languages()` only checked English tokens like "RUSSIAN"; Cyrillic-titled torrents had empty `languages` → assumed English → passed filter. Fix: added Cyrillic char detection (`\u0400-\u04FF`) + 11 abbreviated tokens (`RUS`,`JAP`,`JPN`,etc.) with `\b` word-boundary regex
 - Single-file mount scan (2026-03-08): `scan_directory()` only handled directories; single-file RD torrents (`.mkv` filename) couldn't be found. Fix: added `_scan_single_file()` — detects video extensions, checks file in mount root directly, with fuzzy fallback
-- Torrentio RD key filtering (2026-03-08): `realdebrid=<key>` in Torrentio opts causes addon to pre-filter results to RD-cached torrents only. For niche content (anime), this eliminates viable results. Fix: `include_debrid_key=False` in scrape pipeline strips the key from opts; search UI keeps it
+- Torrentio RD key filtering (2026-03-08): see Torrentio RD Key Stripping section below
+- Season pack false positive (2026-03-08): PTN can't parse anime `S2 - 06` notation → `_SEASON_DASH_EP_RE` regex fallback in both torrentio.py and zilean.py
+- Season pack scoring bias (2026-03-08): `prefer_season_packs` param on `filter_and_rank`; pipeline passes `item.is_season_pack` so episode items don't give +5 bonus to season pack results
 
 ## Season Pack Dedup + XEM Scrape Fix — 2026-03-08
 Three interrelated bugs when adding anime with XEM scene seasons:
@@ -125,6 +128,15 @@ Three interrelated bugs when adding anime with XEM scene seasons:
 - `_find_existing_show_dir` strips `{tmdb|tvdb|imdb-XXX}` tags before matching
 - tmdb_id validated as digits-only before embedding in path
 - Settings UI: toggle in Symlink Naming card, dims other toggles when active
+
+## Torrentio RD Key Stripping — 2026-03-08
+- `realdebrid=<key>` in Torrentio opts causes addon to pre-filter to RD-cached results only
+- For niche content (anime): 41 results without key → 3 results with key (all Russian dubs)
+- `_DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")` strips segment from pipe-separated opts
+- `include_debrid_key: bool = True` param threaded through `_build_base_url` → `_build_client` → `_query` → `scrape_movie`/`scrape_episode`
+- Pipeline (`scrape_pipeline.py`) and search (`search.py`) both pass `include_debrid_key=False`
+- Settings test endpoint keeps default `True` (tests user's configured opts work)
+- Zilean unaffected — Frieren S02 not in DMM hashlists yet (expected for airing content)
 
 ## Key Conventions
 - Commit style: imperative summary, bullet details, `Co-Authored-By: Claude Opus 4.6`

@@ -1546,3 +1546,155 @@ class TestLanguageScoring:
         assert jp_lang_score == 12.0  # pos 1 → 15 - 1*3 = 12
         assert ru_lang_score == 9.0   # pos 2 → 15 - 2*3 = 9
         assert ranked[0].score > ranked[1].score
+
+
+# ---------------------------------------------------------------------------
+# Group 17: prefer_season_packs parameter
+# ---------------------------------------------------------------------------
+
+
+class TestPreferSeasonPacks:
+    """Tests for the prefer_season_packs parameter on filter_and_rank / _calculate_score.
+
+    When prefer_season_packs=True (the default), is_season_pack=True earns a
+    +5 pt bonus (_SEASON_PACK_BONUS).  When prefer_season_packs=False that
+    bonus is suppressed entirely, so a season pack with otherwise equal quality
+    does NOT outrank a single-episode result.
+    """
+
+    # ------------------------------------------------------------------
+    # _calculate_score unit tests
+    # ------------------------------------------------------------------
+
+    def test_prefer_season_packs_true_awards_5_pts(self):
+        """When prefer_season_packs=True, a season pack receives 5.0 pts in the
+        season_pack breakdown slot."""
+        result = _make_result(is_season_pack=True)
+        _, breakdown = ENGINE._calculate_score(
+            result, _DEFAULT_PROFILE, set(), prefer_season_packs=True
+        )
+        assert breakdown["season_pack"] == 5.0
+
+    def test_prefer_season_packs_false_awards_0_pts(self):
+        """When prefer_season_packs=False, a season pack receives 0.0 pts in the
+        season_pack breakdown slot — the bonus is fully suppressed."""
+        result = _make_result(is_season_pack=True)
+        _, breakdown = ENGINE._calculate_score(
+            result, _DEFAULT_PROFILE, set(), prefer_season_packs=False
+        )
+        assert breakdown["season_pack"] == 0.0
+
+    def test_prefer_season_packs_false_no_change_for_episode_result(self):
+        """When prefer_season_packs=False, a non-season-pack result is also
+        unchanged (0.0 pts, same as the default False path)."""
+        result = _make_result(is_season_pack=False)
+        _, breakdown_default = ENGINE._calculate_score(
+            result, _DEFAULT_PROFILE, set(), prefer_season_packs=True
+        )
+        _, breakdown_no_pref = ENGINE._calculate_score(
+            result, _DEFAULT_PROFILE, set(), prefer_season_packs=False
+        )
+        assert breakdown_default["season_pack"] == 0.0
+        assert breakdown_no_pref["season_pack"] == 0.0
+
+    # ------------------------------------------------------------------
+    # filter_and_rank integration tests
+    # ------------------------------------------------------------------
+
+    def test_filter_and_rank_prefer_packs_true_season_pack_scores_5_bonus(self):
+        """filter_and_rank with prefer_season_packs=True (default) gives a season
+        pack result a 5.0 pt bonus, reflected in score_breakdown."""
+        r_pack = _make_result(info_hash="p" * 40, is_season_pack=True, seeders=50)
+
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            ranked = ENGINE.filter_and_rank([r_pack], prefer_season_packs=True)
+
+        assert len(ranked) == 1
+        assert ranked[0].score_breakdown["season_pack"] == 5.0
+
+    def test_filter_and_rank_prefer_packs_false_season_pack_scores_0(self):
+        """filter_and_rank with prefer_season_packs=False gives a season pack
+        result 0.0 pts in the season_pack slot."""
+        r_pack = _make_result(info_hash="p" * 40, is_season_pack=True, seeders=50)
+
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            ranked = ENGINE.filter_and_rank([r_pack], prefer_season_packs=False)
+
+        assert len(ranked) == 1
+        assert ranked[0].score_breakdown["season_pack"] == 0.0
+
+    def test_prefer_packs_false_episode_beats_equal_quality_season_pack(self):
+        """When prefer_season_packs=False, a single-episode result of equal quality
+        should rank at least as high as a season pack (the pack loses the 5 pt
+        bonus it would otherwise earn).
+
+        Both results are constructed with identical resolution, codec, quality,
+        and seeder counts so that the only score difference comes from the
+        season_pack bonus.  With prefer_season_packs=False that bonus is zero
+        for the pack, so the two results tie — the episode result appears first
+        (or equal) and never loses to the pack on score alone.
+        """
+        r_pack = _make_result(
+            info_hash="p" * 40,
+            is_season_pack=True,
+            resolution="1080p",
+            codec="x265",
+            quality="WEB-DL",
+            seeders=50,
+        )
+        r_ep = _make_result(
+            info_hash="e" * 40,
+            is_season_pack=False,
+            resolution="1080p",
+            codec="x265",
+            quality="WEB-DL",
+            seeders=50,
+        )
+
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            ranked = ENGINE.filter_and_rank([r_pack, r_ep], prefer_season_packs=False)
+
+        assert len(ranked) == 2
+        # With no bonus applied to the pack, scores should be equal.
+        assert ranked[0].score == ranked[1].score
+        # In particular the episode result must NOT be outranked by the pack.
+        pack_score = next(
+            fr.score for fr in ranked if fr.result.info_hash == "p" * 40
+        )
+        ep_score = next(
+            fr.score for fr in ranked if fr.result.info_hash == "e" * 40
+        )
+        assert ep_score >= pack_score
+
+    def test_prefer_packs_true_season_pack_outranks_equal_episode(self):
+        """Contrast: when prefer_season_packs=True the season pack earns 5 extra
+        pts and therefore ranks strictly above the equal-quality episode result."""
+        r_pack = _make_result(
+            info_hash="p" * 40,
+            is_season_pack=True,
+            resolution="1080p",
+            codec="x265",
+            quality="WEB-DL",
+            seeders=50,
+        )
+        r_ep = _make_result(
+            info_hash="e" * 40,
+            is_season_pack=False,
+            resolution="1080p",
+            codec="x265",
+            quality="WEB-DL",
+            seeders=50,
+        )
+
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            ranked = ENGINE.filter_and_rank([r_ep, r_pack], prefer_season_packs=True)
+
+        assert len(ranked) == 2
+        assert ranked[0].result.info_hash == "p" * 40
+        assert ranked[0].score_breakdown["season_pack"] == 5.0
+        assert ranked[1].score_breakdown["season_pack"] == 0.0
+        assert ranked[0].score > ranked[1].score

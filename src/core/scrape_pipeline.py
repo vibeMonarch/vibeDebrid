@@ -265,6 +265,7 @@ class ScrapePipeline:
             combined,  # type: ignore[arg-type]
             profile_name=item.quality_profile,
             cached_hashes=set(),
+            prefer_season_packs=bool(item.is_season_pack),
         )
 
         # --- Hash-based dedup: skip cache check if top result already registered ---
@@ -343,6 +344,7 @@ class ScrapePipeline:
                 combined,  # type: ignore[arg-type]
                 profile_name=item.quality_profile,
                 cached_hashes=cached_set,
+                prefer_season_packs=bool(item.is_season_pack),
             )
 
         logger.debug(

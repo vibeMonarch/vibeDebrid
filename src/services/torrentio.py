@@ -59,6 +59,12 @@ _SEASON_ONLY_RE = re.compile(
 # Explicitly tagged "complete" season packs
 _COMPLETE_RE = re.compile(r"\b(?:complete|season\.?\d+)\b", re.IGNORECASE)
 
+# Fallback: anime-style "S2 - 06" or "S02-E06" (PTN doesn't handle dash-separated notation)
+_SEASON_DASH_EP_RE = re.compile(
+    r"(?:\b|_)S(\d{1,2})\s*-\s*E?(\d{1,3})(?:\b|_|\[)",
+    re.IGNORECASE,
+)
+
 # Strips the ``realdebrid=<value>`` segment from pipe-separated Torrentio opts
 # so that scrape-pipeline queries return all results, not just RD-cached ones.
 _DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")
@@ -489,6 +495,13 @@ class TorrentioClient:
         release_group: str | None = ptn_data.get("group")
         ptn_season: int | None = ptn_data.get("season")
         ptn_episode: int | None = ptn_data.get("episode")
+
+        # Fallback: PTN doesn't handle dash-separated anime notation like "S2 - 06"
+        if ptn_episode is None:
+            m = _SEASON_DASH_EP_RE.search(release_name)
+            if m:
+                ptn_season = int(m.group(1))
+                ptn_episode = int(m.group(2))
 
         # --- Season pack detection ---
         # PTN does NOT emit a 'season' key when it cannot find an episode number

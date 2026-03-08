@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-07
+## Last Updated: 2026-03-08
 
 ## Completed
 
@@ -14,9 +14,10 @@
 
 ### Phase 2: Services ✅
 - src/services/real_debrid.py — 7 methods, 21 tests
-- src/services/torrentio.py — fallback chain (episode→season), 42 tests
+- src/services/torrentio.py — fallback chain (episode→season), 55 tests
   - Fixed: wrong emoji in seeders regex (U+1F465 → U+1F464)
   - Fixed: infoHash parsing with fallbacks
+  - Fixed: `realdebrid=` key in opts pre-filters results to cached-only (strips key for pipeline/search)
 - src/services/zilean.py — v2 API schema only, 42+ tests
   - Fixed: was coded against wrong (legacy) field names
   - Cleaned: removed all v1/legacy fallback code
@@ -51,7 +52,7 @@
 - Dashboard, queue management, manual search, settings, duplicates
 - Dark mode default, mobile-friendly
 
-**Total: 868 tests, all passing**
+**Total: 1276 tests, all passing**
 
 ### Symlink Naming Convention ✅
 - SymlinkNamingConfig: date_prefix, release_year, resolution toggles
@@ -300,6 +301,22 @@
 - Graceful fallback: no XEM data → standard TMDB season display (unchanged)
 - 28 new tests (5 mapper, 23 show_manager XEM paths)
 - Total: 1136 tests, all passing
+
+### Language Filter + Plex Symlink Naming ✅ (Step 1.10)
+- Language filter: `preferred_languages` ordered list, Tier 1 hard-reject + Tier 2 scoring
+- Untagged results assumed English; Multi passes when `allow_multi_audio=True`
+- Cyrillic detection (`\u0400-\u04FF`) + 11 abbreviated tokens (`RUS`, `JPN`, etc.)
+- Plex symlink naming: `plex_naming` toggle overrides date_prefix/year/resolution
+- Show dir: `Title (Year) {tmdb-XXXXX}/Season XX/`, metadata-driven episode filenames
+- Settings UI: comma-separated language input, Plex naming toggle
+
+### Bugfixes (2026-03-08)
+- Cyrillic language bypass: Cyrillic-titled torrents had empty `languages` → assumed English → passed filter
+- Single-file mount scan: `scan_directory()` now handles single-file RD torrents (`.mkv` filename)
+- Season pack dedup + XEM scrape mapping: hash-based dedup before cache check, absolute fallback for TMDB→scene mapping
+- Plex scan batching: targeted scan after COMPLETE, scan sections grouped by library
+- Torrentio RD key pre-filtering: `realdebrid=<key>` in opts causes 41→3 results for niche content; stripped for pipeline and search
+- Total: 1276 tests, all passing
 
 ## Remaining / Future Work
 

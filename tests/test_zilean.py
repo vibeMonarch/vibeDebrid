@@ -1145,3 +1145,82 @@ async def test_rus_abbreviation_populates_languages_field(client: ZileanClient) 
 
     assert len(results) == 1
     assert "Russian" in results[0].languages
+
+
+# ---------------------------------------------------------------------------
+# _parse_entry — anime dash notation (_SEASON_DASH_EP_RE)
+# ---------------------------------------------------------------------------
+
+
+class TestAnimeDashNotationParsing:
+    """Tests that _SEASON_DASH_EP_RE in _parse_entry correctly identifies single
+    episodes written in anime dash notation (e.g. 'S2 - 06') and does NOT
+    classify them as season packs.  Also verifies that genuine season packs are
+    still detected correctly.
+
+    Zilean provides top-level ``seasons`` and ``episodes`` arrays.  When those
+    arrays are empty, the parser falls back to PTN and then to
+    _SEASON_DASH_EP_RE — so these tests pass empty arrays to exercise the
+    fallback path.
+    """
+
+    def _entry_for(
+        self,
+        raw_title: str,
+        info_hash: str = "a" * 40,
+        seasons: list[int] | None = None,
+        episodes: list[int] | None = None,
+    ) -> dict:
+        """Build a minimal Zilean entry dict for the given raw title.
+
+        Passes empty seasons/episodes by default so the _SEASON_DASH_EP_RE
+        fallback is exercised.
+        """
+        return _make_zilean_entry(
+            info_hash=info_hash,
+            raw_title=raw_title,
+            seasons=seasons if seasons is not None else [],
+            episodes=episodes if episodes is not None else [],
+        )
+
+    def test_frieren_s2_dash_06_not_season_pack(self, client: ZileanClient) -> None:
+        """'[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]' must not be
+        a season pack — it is a single episode in anime dash notation."""
+        raw_title = "[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.episode == 6
+
+    def test_frieren_s2_dash_06_season_set(self, client: ZileanClient) -> None:
+        """Season is extracted correctly from the dash notation 'S2 - 06'."""
+        raw_title = "[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 2
+
+    def test_complete_season_pack_still_detected(self, client: ZileanClient) -> None:
+        """'Show.Name.S02.COMPLETE.1080p.WEB-DL.x264-GROUP' must be detected as a
+        season pack even after the dash-notation fallback was added."""
+        raw_title = "Show.Name.S02.COMPLETE.1080p.WEB-DL.x264-GROUP"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+
+    def test_season_only_marker_no_episode_is_season_pack(
+        self, client: ZileanClient
+    ) -> None:
+        """'Show.S01.720p.x264' (season marker only, no episode) is a season pack."""
+        raw_title = "Show.S01.720p.x264"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None

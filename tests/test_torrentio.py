@@ -1384,3 +1384,89 @@ class TestDebridKeyStripping:
         url = client._build_base_url(include_debrid_key=False)
         assert "realdebrid" not in url
         assert "My_Key_123_ABC" not in url
+
+
+# ---------------------------------------------------------------------------
+# _parse_stream — anime dash notation (_SEASON_DASH_EP_RE)
+# ---------------------------------------------------------------------------
+
+
+class TestAnimeDashNotationParsing:
+    """Tests that _SEASON_DASH_EP_RE in _parse_stream correctly identifies single
+    episodes written in anime dash notation (e.g. 'S2 - 06') and does NOT
+    classify them as season packs.  Also verifies that genuine season packs
+    (S02.COMPLETE, S01 with no episode anywhere) are still detected correctly.
+    """
+
+    def _stream_for(self, release_name: str, info_hash: str = "a" * 40) -> dict[str, Any]:
+        """Build a minimal Torrentio stream dict for the given release name."""
+        return {
+            "name": "Torrentio\n1080p",
+            "title": f"{release_name}\n\U0001f464 10 \U0001f4be 1.5 GB \u2699\ufe0f TPB",
+            "infoHash": info_hash,
+        }
+
+    def test_frieren_s2_dash_06_not_season_pack(self, client: TorrentioClient) -> None:
+        """'[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]' must not be
+        a season pack — it is a single episode using anime dash notation."""
+        release = "[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.season == 2
+        assert result.episode == 6
+
+    def test_s02_dash_06_no_space_not_season_pack(self, client: TorrentioClient) -> None:
+        """'[SubGroup] Some Anime S02-06 [720p]' (no spaces around dash) must not be
+        a season pack."""
+        release = "[SubGroup] Some Anime S02-06 [720p]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.season == 2
+        assert result.episode == 6
+
+    def test_s1_e03_explicit_e_prefix_not_season_pack(self, client: TorrentioClient) -> None:
+        """'Anime Title S1-E03 [1080p]' (explicit 'E' prefix) must not be a season pack.
+
+        PTN extracts episode=3 directly from 'S1-E03', so ptn_episode is not None
+        and the _SEASON_DASH_EP_RE fallback is never triggered.  The result is
+        correctly identified as a single episode (not a pack).  PTN does not
+        extract season in this case (known PTN behaviour with S-dash-E notation).
+        """
+        release = "Anime Title S1-E03 [1080p]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.episode == 3
+
+    def test_complete_season_pack_still_detected(self, client: TorrentioClient) -> None:
+        """'Some.Show.S02.COMPLETE.1080p' must be detected as a season pack."""
+        release = "Some.Show.S02.COMPLETE.1080p"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+
+    def test_season_only_no_episode_is_season_pack(self, client: TorrentioClient) -> None:
+        """'Show.S01.720p.x264' (season marker, no episode anywhere) must be a
+        season pack.
+
+        PTN does not parse the season number from this format (it folds 'S01'
+        into the title string), so result.season will be None.  The season pack
+        flag is set by _SEASON_ONLY_RE matching 'S01' with no following episode.
+        """
+        release = "Show.S01.720p.x264"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
