@@ -18,6 +18,9 @@ Covers:
   - MountScanner._should_skip_dir: hidden, __MACOSX, @eaDir, .Trash-*, normal
   - VIDEO_EXTENSIONS constant: spot-check known extensions
   - ScanDirectoryResult: matched_dir_path propagation through scan_directory
+  - scan_directory single-file handling: exact match, fuzzy match, not found,
+    extension variety, matched_dir_path=None invariant, directory regression,
+    re-scan dedup, timeout graceful exit
 """
 
 from __future__ import annotations
@@ -1497,3 +1500,363 @@ class TestScanDirectoryResultMatchedDirPath:
             session, "/mnt/Completely.Nonexistent.Dir.2099"
         )
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Group 16: scan_directory single-file handling (_scan_single_file)
+# ---------------------------------------------------------------------------
+
+
+class TestScanDirectorySingleFile:
+    """Tests for the single-file torrent path inside scan_directory.
+
+    When ``directory_name`` carries a video extension (e.g. ``.mkv``) the
+    method delegates to ``_scan_single_file`` instead of the directory walk.
+    These tests cover the exact-match, fuzzy-match, not-found, and regression
+    (directory name unchanged) paths, plus extension variety and the invariant
+    that ``matched_dir_path`` is always ``None`` for single files.
+    """
+
+    # ------------------------------------------------------------------
+    # 1. Exact match — file exists directly in mount root
+    # ------------------------------------------------------------------
+
+    async def test_exact_filename_match_indexes_file(
+        self, session: AsyncSession
+    ) -> None:
+        """scan_directory with a .mkv name indexes the file when it exists in mount root."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "Movie (2024).mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.scan_directory(session, "Movie (2024).mkv")
+
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 1
+
+    async def test_exact_match_file_is_inserted_into_db(
+        self, session: AsyncSession
+    ) -> None:
+        """After an exact single-file scan the file appears in the mount index."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = "Dune.Part.Two.2024.2160p.mkv"
+            open(os.path.join(tmpdir, filename), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(session, filename)
+
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == 1
+
+    async def test_exact_match_stores_correct_filepath(
+        self, session: AsyncSession
+    ) -> None:
+        """The indexed filepath is the absolute path inside the mount root."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = "Alien.1979.1080p.mkv"
+            open(os.path.join(tmpdir, filename), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(session, filename)
+
+            expected_path = os.path.join(tmpdir, filename)
+            entry = await scanner.lookup_by_filepath(session, expected_path)
+
+        assert entry is not None
+        assert entry.filename == filename
+
+    # ------------------------------------------------------------------
+    # 2. matched_dir_path is None for single files
+    # ------------------------------------------------------------------
+
+    async def test_exact_match_matched_dir_path_is_none(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-file scan always returns matched_dir_path=None — there is no directory."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "Movie.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.scan_directory(session, "Movie.mkv")
+
+        assert result.matched_dir_path is None
+
+    async def test_fuzzy_match_matched_dir_path_is_none(
+        self, session: AsyncSession
+    ) -> None:
+        """Fuzzy single-file match also returns matched_dir_path=None."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # File on disk has a longer name than what is requested.
+            open(
+                os.path.join(tmpdir, "The.Dark.Knight.2008.1080p.BluRay.mkv"),
+                "wb",
+            ).write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.scan_directory(
+                    session, "The Dark Knight 2008.mkv"
+                )
+
+        assert result.matched_dir_path is None
+
+    # ------------------------------------------------------------------
+    # 3. Fuzzy match — file not found by exact name, matched by word-subsequence
+    # ------------------------------------------------------------------
+
+    async def test_fuzzy_match_indexes_file_with_extra_tokens(
+        self, session: AsyncSession
+    ) -> None:
+        """File with extra release-group tokens in the name is fuzzy-matched."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # On-disk name has resolution/group tokens the RD API name lacks.
+            actual = "Interstellar.2014.2160p.UHD.BluRay.DTS-X.mkv"
+            open(os.path.join(tmpdir, actual), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                # RD API returns the shorter name — triggers fuzzy path.
+                result = await scanner.scan_directory(
+                    session, "Interstellar 2014.mkv"
+                )
+
+        assert result.files_indexed == 1
+
+    async def test_fuzzy_match_file_appears_in_index(
+        self, session: AsyncSession
+    ) -> None:
+        """After a fuzzy single-file scan the actual (longer) filename is indexed."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actual = "Oppenheimer.2023.1080p.WEB-DL.mkv"
+            open(os.path.join(tmpdir, actual), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(session, "Oppenheimer 2023.mkv")
+
+            # The entry should be indexed under its real absolute path.
+            expected_path = os.path.join(tmpdir, actual)
+            entry = await scanner.lookup_by_filepath(session, expected_path)
+
+        assert entry is not None
+        assert entry.filename == actual
+
+    async def test_fuzzy_match_skips_directories(
+        self, session: AsyncSession
+    ) -> None:
+        """Fuzzy file search ignores subdirectories in the mount root."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # A subdirectory whose name would otherwise match.
+            subdir = os.path.join(tmpdir, "Tenet.2020.1080p")
+            os.makedirs(subdir)
+            open(os.path.join(subdir, "Tenet.2020.mkv"), "wb").write(b"v")
+            # No matching file at root level.
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.scan_directory(session, "Tenet 2020.mkv")
+
+        # Directories must not be matched — result should be empty.
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None
+
+    async def test_fuzzy_match_skips_non_video_files(
+        self, session: AsyncSession
+    ) -> None:
+        """Fuzzy file search only considers files with video extensions."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # A non-video file that would otherwise word-match.
+            open(os.path.join(tmpdir, "Avatar 2009.nfo"), "w").write("meta")
+            # No matching video file exists.
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.scan_directory(session, "Avatar 2009.mkv")
+
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None
+
+    async def test_fuzzy_match_picks_shortest_candidate(
+        self, session: AsyncSession
+    ) -> None:
+        """When multiple files fuzzy-match, the one with the shortest normalized name wins."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Two candidates both containing "avatar 2009".
+            short = "Avatar.2009.1080p.mkv"
+            long_ = "Avatar.2009.2160p.UHD.BluRay.TrueHD.Atmos.mkv"
+            open(os.path.join(tmpdir, short), "wb").write(b"v")
+            open(os.path.join(tmpdir, long_), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(session, "Avatar 2009.mkv")
+
+        stats = await scanner.get_index_stats(session)
+        # Only 1 file should be indexed (the winning candidate).
+        assert stats["total_files"] == 1
+        expected_path = os.path.join(tmpdir, short)
+        entry = await scanner.lookup_by_filepath(session, expected_path)
+        assert entry is not None
+
+    # ------------------------------------------------------------------
+    # 4. Not found — no matching file anywhere in mount root
+    # ------------------------------------------------------------------
+
+    async def test_not_found_returns_empty_result(
+        self, session: AsyncSession
+    ) -> None:
+        """When no file matches, scan_directory returns files_indexed=0 and matched_dir_path=None."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Mount root is empty — nothing to match.
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.scan_directory(
+                    session, "Nonexistent.Movie.2099.mkv"
+                )
+
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None
+
+    async def test_not_found_leaves_db_empty(self, session: AsyncSession) -> None:
+        """A failed single-file scan does not insert any rows into the index."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(
+                    session, "No.Such.File.2099.mkv"
+                )
+
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == 0
+
+    # ------------------------------------------------------------------
+    # 5. Regression — directory name WITHOUT video extension still uses
+    #    the directory code path (not single-file path)
+    # ------------------------------------------------------------------
+
+    async def test_directory_name_without_extension_uses_dir_path(
+        self, session: AsyncSession
+    ) -> None:
+        """A directory_name with no video extension goes through the directory walk, not _scan_single_file."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "ShowFolder")
+            os.makedirs(subdir)
+            open(os.path.join(subdir, "Show.S01E01.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                with patch.object(
+                    scanner, "_scan_single_file", new=AsyncMock()
+                ) as mock_single:
+                    result = await scanner.scan_directory(session, "ShowFolder")
+                    mock_single.assert_not_called()
+
+        assert result.files_indexed == 1
+        assert result.matched_dir_path is not None
+
+    async def test_non_video_extension_uses_dir_path(
+        self, session: AsyncSession
+    ) -> None:
+        """A name ending in a non-video extension (e.g. .nfo) is treated as a directory name."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a directory whose name ends in ".nfo" — contrived but tests the branch.
+            subdir = os.path.join(tmpdir, "ShowFolder.nfo")
+            os.makedirs(subdir)
+            open(os.path.join(subdir, "Show.S01E01.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                with patch.object(
+                    scanner, "_scan_single_file", new=AsyncMock()
+                ) as mock_single:
+                    result = await scanner.scan_directory(session, "ShowFolder.nfo")
+                    mock_single.assert_not_called()
+
+        assert result.files_indexed == 1
+
+    # ------------------------------------------------------------------
+    # 6. Various video extensions all trigger the single-file path
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("ext", [".mkv", ".mp4", ".avi", ".mov", ".webm", ".m4v", ".ts", ".m2ts"])
+    async def test_video_extension_triggers_single_file_path(
+        self, session: AsyncSession, ext: str
+    ) -> None:
+        """Every recognised video extension causes scan_directory to call _scan_single_file."""
+        scanner = MountScanner()
+        filename = f"Movie{ext}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, filename), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                with patch.object(
+                    scanner,
+                    "_scan_single_file",
+                    new=AsyncMock(
+                        return_value=ScanDirectoryResult(
+                            files_indexed=1, matched_dir_path=None
+                        )
+                    ),
+                ) as mock_single:
+                    await scanner.scan_directory(session, filename)
+                    mock_single.assert_called_once_with(session, filename)
+
+    # ------------------------------------------------------------------
+    # 7. Re-scan updates existing row rather than creating a duplicate
+    # ------------------------------------------------------------------
+
+    async def test_rescan_updates_existing_db_entry(
+        self, session: AsyncSession
+    ) -> None:
+        """Scanning the same single file twice updates the row, not duplicates it."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = "Blade.Runner.2049.mkv"
+            filepath = os.path.join(tmpdir, filename)
+            open(filepath, "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(session, filename)
+                await session.flush()
+                await scanner.scan_directory(session, filename)
+
+        stats = await scanner.get_index_stats(session)
+        assert stats["total_files"] == 1
+
+    # ------------------------------------------------------------------
+    # 8. Timeout during existence check returns empty result gracefully
+    # ------------------------------------------------------------------
+
+    async def test_timeout_during_single_file_existence_check_returns_empty(
+        self, session: AsyncSession
+    ) -> None:
+        """A timeout on the isfile() call inside _scan_single_file returns empty gracefully."""
+        scanner = MountScanner()
+        with patch("asyncio.wait_for", side_effect=TimeoutError("simulated hang")):
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = "/some/mount"
+                result = await scanner.scan_directory(session, "Timeout.Movie.mkv")
+
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None

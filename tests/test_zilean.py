@@ -935,3 +935,213 @@ async def test_response_is_null_returns_empty(client: ZileanClient) -> None:
     results = await client.search("Movie")
 
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — Cyrillic script detection
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_cyrillic_only(client: ZileanClient) -> None:
+    """A title containing Cyrillic characters is detected as Russian."""
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Sousou.no.Frieren.S01E01.1080p"
+    result = client._parse_languages(title)
+    assert "Russian" in result
+
+
+def test_parse_languages_cyrillic_full_russian_title(client: ZileanClient) -> None:
+    """A realistic anime title mixing Cyrillic and Latin is detected as Russian."""
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f \u0432 \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0443\u0442\u044c \u0424\u0440\u0438\u0440\u0435\u043d / Sousou no Frieren [02x01-05]"
+    result = client._parse_languages(title)
+    assert "Russian" in result
+
+
+def test_parse_languages_cyrillic_no_duplicate_with_russian_token(client: ZileanClient) -> None:
+    """Cyrillic script + 'RUSSIAN' token in the same title yields exactly one 'Russian' entry."""
+    title = "\u041a\u0430\u043a\u043e\u0439-\u0442\u043e \u0444\u0438\u043b\u044c\u043c RUSSIAN.1080p.WEB-DL"
+    result = client._parse_languages(title)
+    assert result.count("Russian") == 1
+
+
+def test_parse_languages_cyrillic_with_other_language(client: ZileanClient) -> None:
+    """Title with Cyrillic script and a Japanese tag yields both Russian and Japanese."""
+    title = "\u0410\u043d\u0438\u043c\u0435 [JAP] Sousou.no.Frieren.S01E01.1080p"
+    result = client._parse_languages(title)
+    assert "Russian" in result
+    assert "Japanese" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — abbreviated language tokens with word-boundary matching
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_rus_abbreviation(client: ZileanClient) -> None:
+    """'RUS' standalone token is detected as Russian."""
+    result = client._parse_languages("Movie.2024.1080p.[RUS].WEB-DL")
+    assert "Russian" in result
+
+
+def test_parse_languages_jap_abbreviation(client: ZileanClient) -> None:
+    """'JAP' standalone token is detected as Japanese."""
+    result = client._parse_languages("Anime.S01E01.1080p.[JAP].WEB-DL")
+    assert "Japanese" in result
+
+
+def test_parse_languages_jpn_abbreviation(client: ZileanClient) -> None:
+    """'JPN' standalone token is detected as Japanese."""
+    result = client._parse_languages("Anime.S01E01.1080p.[JPN+ENG].WEB-DL")
+    assert "Japanese" in result
+
+
+def test_parse_languages_kor_abbreviation(client: ZileanClient) -> None:
+    """'KOR' standalone token is detected as Korean."""
+    result = client._parse_languages("Drama.S01E01.1080p.[KOR].WEB-DL")
+    assert "Korean" in result
+
+
+def test_parse_languages_chi_abbreviation(client: ZileanClient) -> None:
+    """'CHI' standalone token is detected as Chinese."""
+    result = client._parse_languages("Drama.S01E01.1080p.[CHI].WEB-DL")
+    assert "Chinese" in result
+
+
+def test_parse_languages_ita_abbreviation(client: ZileanClient) -> None:
+    """'ITA' standalone token is detected as Italian."""
+    result = client._parse_languages("Movie.2024.1080p.[ITA+ENG].WEB-DL")
+    assert "Italian" in result
+
+
+def test_parse_languages_nld_abbreviation(client: ZileanClient) -> None:
+    """'NLD' standalone token is detected as Dutch."""
+    result = client._parse_languages("Movie.2024.1080p.[NLD].WEB-DL")
+    assert "Dutch" in result
+
+
+def test_parse_languages_deu_abbreviation(client: ZileanClient) -> None:
+    """'DEU' standalone token is detected as German."""
+    result = client._parse_languages("Movie.2024.1080p.[DEU].WEB-DL")
+    assert "German" in result
+
+
+def test_parse_languages_spa_abbreviation(client: ZileanClient) -> None:
+    """'SPA' standalone token is detected as Spanish."""
+    result = client._parse_languages("Movie.2024.1080p.[SPA].WEB-DL")
+    assert "Spanish" in result
+
+
+def test_parse_languages_por_abbreviation(client: ZileanClient) -> None:
+    """'POR' standalone token is detected as Portuguese."""
+    result = client._parse_languages("Movie.2024.1080p.[POR].WEB-DL")
+    assert "Portuguese" in result
+
+
+def test_parse_languages_fra_abbreviation(client: ZileanClient) -> None:
+    """'FRA' standalone token is detected as French."""
+    result = client._parse_languages("Movie.2024.1080p.[FRA].WEB-DL")
+    assert "French" in result
+
+
+def test_parse_languages_multiple_abbreviations(client: ZileanClient) -> None:
+    """A title like '[RUS + JAP]' detects both Russian and Japanese."""
+    result = client._parse_languages("Anime.S01E01.1080p.[RUS + JAP].WEB-DL")
+    assert "Russian" in result
+    assert "Japanese" in result
+
+
+def test_parse_languages_abbreviations_no_duplicates(client: ZileanClient) -> None:
+    """RUS abbreviation alongside full RUSSIAN token yields exactly one Russian entry."""
+    result = client._parse_languages("Movie.2024.1080p.RUSSIAN.[RUS].WEB-DL")
+    assert result.count("Russian") == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — word-boundary false-positive prevention
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_brush_no_false_positive(client: ZileanClient) -> None:
+    """'BRUSH' does not trigger Russian detection (RUS is a substring, not a token)."""
+    result = client._parse_languages("Movie.2024.1080p.BRUSH.WEB-DL")
+    assert "Russian" not in result
+
+
+def test_parse_languages_trust_no_false_positive(client: ZileanClient) -> None:
+    """'TRUST' does not trigger Russian detection."""
+    result = client._parse_languages("Movie.2024.TRUST.1080p.WEB-DL")
+    assert "Russian" not in result
+
+
+def test_parse_languages_japan_full_word_not_confused_with_jap(client: ZileanClient) -> None:
+    """'JAPAN' in a title does not match the JAP abbreviation token."""
+    result = client._parse_languages("Movie.2024.Japan.Release.1080p.WEB-DL")
+    # JAPANESE is not in the title so result should be empty OR JAP should not match JAPAN
+    assert "Japanese" not in result
+
+
+def test_parse_languages_regular_english_title_returns_empty(client: ZileanClient) -> None:
+    """A plain English title with no language indicators returns an empty list."""
+    result = client._parse_languages("The.Dark.Knight.2008.1080p.BluRay.x264-GROUP")
+    assert result == []
+
+
+def test_parse_languages_empty_title_returns_empty(client: ZileanClient) -> None:
+    """An empty raw_title returns an empty list without crashing."""
+    result = client._parse_languages("")
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — existing long-form tokens still work after enhancement
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_french_long_form_still_detected(client: ZileanClient) -> None:
+    """Full 'FRENCH' token continues to be detected after the enhancement."""
+    result = client._parse_languages("Movie.2024.1080p.FRENCH.WEB-DL")
+    assert "French" in result
+
+
+def test_parse_languages_german_long_form_still_detected(client: ZileanClient) -> None:
+    """Full 'GERMAN' token continues to be detected after the enhancement."""
+    result = client._parse_languages("Movie.2024.1080p.GERMAN.WEB-DL")
+    assert "German" in result
+
+
+def test_parse_languages_multi_tag_still_detected(client: ZileanClient) -> None:
+    """'MULTI' token continues to be detected after the enhancement."""
+    result = client._parse_languages("Movie.2024.1080p.MULTI.WEB-DL")
+    assert "Multi" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — integration: languages field populated on ZileanResult
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cyrillic_title_populates_languages_field(client: ZileanClient) -> None:
+    """A Zilean entry with a Cyrillic raw_title gets Russian in its languages field."""
+    entry = _make_zilean_entry(
+        raw_title="\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Sousou.no.Frieren.S01E01.1080p",
+    )
+    _patch_client(client, [_make_response(200, [entry])])
+
+    results = await client.search("Frieren")
+
+    assert len(results) == 1
+    assert "Russian" in results[0].languages
+
+
+@pytest.mark.asyncio
+async def test_rus_abbreviation_populates_languages_field(client: ZileanClient) -> None:
+    """A Zilean entry with '[RUS]' in its raw_title gets Russian in its languages field."""
+    entry = _make_zilean_entry(
+        raw_title="Sousou.no.Frieren.S01E01.1080p.[RUS].WEB-DL",
+    )
+    _patch_client(client, [_make_response(200, [entry])])
+
+    results = await client.search("Frieren")
+
+    assert len(results) == 1
+    assert "Russian" in results[0].languages

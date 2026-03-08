@@ -1047,3 +1047,184 @@ async def test_cached_field_defaults_to_false(client: TorrentioClient) -> None:
         title="Movie.2024.1080p",
     )
     assert result.cached is False
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — Cyrillic script detection
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_cyrillic_only(client: TorrentioClient) -> None:
+    """A title containing Cyrillic characters is detected as Russian."""
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Sousou.no.Frieren.S01E01.1080p"
+    result = client._parse_languages(title, {})
+    assert "Russian" in result
+
+
+def test_parse_languages_cyrillic_full_russian_title(client: TorrentioClient) -> None:
+    """A realistic anime title mixing Cyrillic and Latin is detected as Russian."""
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f \u0432 \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0443\u0442\u044c \u0424\u0440\u0438\u0440\u0435\u043d / Sousou no Frieren [02x01-05]"
+    result = client._parse_languages(title, {})
+    assert "Russian" in result
+
+
+def test_parse_languages_cyrillic_no_duplicate_with_russian_token(client: TorrentioClient) -> None:
+    """Cyrillic script + 'RUSSIAN' token in the same title yields exactly one 'Russian' entry."""
+    title = "\u041a\u0430\u043a\u043e\u0439-\u0442\u043e \u0444\u0438\u043b\u044c\u043c RUSSIAN.1080p.WEB-DL"
+    result = client._parse_languages(title, {})
+    assert result.count("Russian") == 1
+
+
+def test_parse_languages_cyrillic_with_other_language(client: TorrentioClient) -> None:
+    """Title with Cyrillic script and a Japanese tag yields both Russian and Japanese."""
+    title = "\u0410\u043d\u0438\u043c\u0435 [JAP] Sousou.no.Frieren.S01E01.1080p"
+    result = client._parse_languages(title, {})
+    assert "Russian" in result
+    assert "Japanese" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — abbreviated language tokens with word-boundary matching
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_rus_abbreviation(client: TorrentioClient) -> None:
+    """'RUS' standalone token is detected as Russian."""
+    result = client._parse_languages("Movie.2024.1080p.[RUS].WEB-DL", {})
+    assert "Russian" in result
+
+
+def test_parse_languages_jap_abbreviation(client: TorrentioClient) -> None:
+    """'JAP' standalone token is detected as Japanese."""
+    result = client._parse_languages("Anime.S01E01.1080p.[JAP].WEB-DL", {})
+    assert "Japanese" in result
+
+
+def test_parse_languages_jpn_abbreviation(client: TorrentioClient) -> None:
+    """'JPN' standalone token is detected as Japanese."""
+    result = client._parse_languages("Anime.S01E01.1080p.[JPN+ENG].WEB-DL", {})
+    assert "Japanese" in result
+
+
+def test_parse_languages_kor_abbreviation(client: TorrentioClient) -> None:
+    """'KOR' standalone token is detected as Korean."""
+    result = client._parse_languages("Drama.S01E01.1080p.[KOR].WEB-DL", {})
+    assert "Korean" in result
+
+
+def test_parse_languages_chi_abbreviation(client: TorrentioClient) -> None:
+    """'CHI' standalone token is detected as Chinese."""
+    result = client._parse_languages("Drama.S01E01.1080p.[CHI].WEB-DL", {})
+    assert "Chinese" in result
+
+
+def test_parse_languages_ita_abbreviation(client: TorrentioClient) -> None:
+    """'ITA' standalone token is detected as Italian."""
+    result = client._parse_languages("Movie.2024.1080p.[ITA+ENG].WEB-DL", {})
+    assert "Italian" in result
+
+
+def test_parse_languages_nld_abbreviation(client: TorrentioClient) -> None:
+    """'NLD' standalone token is detected as Dutch."""
+    result = client._parse_languages("Movie.2024.1080p.[NLD].WEB-DL", {})
+    assert "Dutch" in result
+
+
+def test_parse_languages_deu_abbreviation(client: TorrentioClient) -> None:
+    """'DEU' standalone token is detected as German."""
+    result = client._parse_languages("Movie.2024.1080p.[DEU].WEB-DL", {})
+    assert "German" in result
+
+
+def test_parse_languages_spa_abbreviation(client: TorrentioClient) -> None:
+    """'SPA' standalone token is detected as Spanish."""
+    result = client._parse_languages("Movie.2024.1080p.[SPA].WEB-DL", {})
+    assert "Spanish" in result
+
+
+def test_parse_languages_por_abbreviation(client: TorrentioClient) -> None:
+    """'POR' standalone token is detected as Portuguese."""
+    result = client._parse_languages("Movie.2024.1080p.[POR].WEB-DL", {})
+    assert "Portuguese" in result
+
+
+def test_parse_languages_fra_abbreviation(client: TorrentioClient) -> None:
+    """'FRA' standalone token is detected as French."""
+    result = client._parse_languages("Movie.2024.1080p.[FRA].WEB-DL", {})
+    assert "French" in result
+
+
+def test_parse_languages_multiple_abbreviations(client: TorrentioClient) -> None:
+    """A title like '[RUS + JAP]' detects both Russian and Japanese."""
+    result = client._parse_languages("Anime.S01E01.1080p.[RUS + JAP].WEB-DL", {})
+    assert "Russian" in result
+    assert "Japanese" in result
+
+
+def test_parse_languages_abbreviations_no_duplicates(client: TorrentioClient) -> None:
+    """RUS abbreviation alongside full RUSSIAN token yields exactly one Russian entry."""
+    result = client._parse_languages("Movie.2024.1080p.RUSSIAN.[RUS].WEB-DL", {})
+    assert result.count("Russian") == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — word-boundary false-positive prevention
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_brush_no_false_positive(client: TorrentioClient) -> None:
+    """'BRUSH' does not trigger Russian detection (RUS is a substring, not a token)."""
+    result = client._parse_languages("Movie.2024.1080p.BRUSH.WEB-DL", {})
+    assert "Russian" not in result
+
+
+def test_parse_languages_trust_no_false_positive(client: TorrentioClient) -> None:
+    """'TRUST' does not trigger Russian detection."""
+    result = client._parse_languages("Movie.2024.TRUST.1080p.WEB-DL", {})
+    assert "Russian" not in result
+
+
+def test_parse_languages_japan_full_word_not_confused_with_jap(client: TorrentioClient) -> None:
+    """'JAPAN' in a title does not detect Japanese (word boundary prevents JAP prefix match)."""
+    # This test documents the expected behavior: JAPAN should not
+    # match JAP if word-boundary is enforced; the full JAPANESE token handles it.
+    result = client._parse_languages("Movie.2024.Japan.Release.1080p.WEB-DL", {})
+    # JAPANESE is not in the title so result should be empty OR JAP should not match JAPAN
+    assert "Japanese" not in result
+
+
+def test_parse_languages_regular_english_title_returns_empty(client: TorrentioClient) -> None:
+    """A plain English title with no language indicators returns an empty list."""
+    result = client._parse_languages(
+        "The.Dark.Knight.2008.1080p.BluRay.x264-GROUP", {}
+    )
+    assert result == []
+
+
+def test_parse_languages_empty_title_returns_empty(client: TorrentioClient) -> None:
+    """An empty release name returns an empty list without crashing."""
+    result = client._parse_languages("", {})
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_languages — existing long-form tokens still work after enhancement
+# ---------------------------------------------------------------------------
+
+
+def test_parse_languages_french_long_form_still_detected(client: TorrentioClient) -> None:
+    """Full 'FRENCH' token continues to be detected after the enhancement."""
+    result = client._parse_languages("Movie.2024.1080p.FRENCH.WEB-DL", {})
+    assert "French" in result
+
+
+def test_parse_languages_german_long_form_still_detected(client: TorrentioClient) -> None:
+    """Full 'GERMAN' token continues to be detected after the enhancement."""
+    result = client._parse_languages("Movie.2024.1080p.GERMAN.WEB-DL", {})
+    assert "German" in result
+
+
+def test_parse_languages_multi_tag_still_detected(client: TorrentioClient) -> None:
+    """'MULTI' token continues to be detected after the enhancement."""
+    result = client._parse_languages("Movie.2024.1080p.MULTI.WEB-DL", {})
+    assert "Multi" in result

@@ -68,6 +68,29 @@ _LANGUAGE_TOKENS: dict[str, str] = {
     "MULTi": "Multi",
 }
 
+# Cyrillic script detection — any Cyrillic character in the title means Russian.
+_CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
+
+# Short ISO/scene abbreviations that need word-boundary matching to avoid false
+# positives (e.g. "RUS" inside "BRUSH").  Compiled once at module level.
+_LANGUAGE_ABBREV_TOKENS: dict[str, str] = {
+    "RUS": "Russian",
+    "JAP": "Japanese",
+    "JPN": "Japanese",
+    "KOR": "Korean",
+    "CHI": "Chinese",
+    "ITA": "Italian",
+    "NLD": "Dutch",
+    "DEU": "German",
+    "SPA": "Spanish",
+    "POR": "Portuguese",
+    "FRA": "French",
+}
+_LANGUAGE_ABBREV_RES: dict[str, re.Pattern[str]] = {
+    abbrev: re.compile(rf"\b{abbrev}\b", re.IGNORECASE)
+    for abbrev in _LANGUAGE_ABBREV_TOKENS
+}
+
 # ---------------------------------------------------------------------------
 # Custom exception
 # ---------------------------------------------------------------------------
@@ -420,6 +443,16 @@ class ZileanClient:
         seen: set[str] = set()
         for token, lang_name in _LANGUAGE_TOKENS.items():
             if token.upper() in upper_name and lang_name not in seen:
+                found.append(lang_name)
+                seen.add(lang_name)
+        # Cyrillic script → Russian (catches titles written in Russian that lack
+        # any English-language tag).
+        if _CYRILLIC_RE.search(raw_title) and "Russian" not in seen:
+            found.append("Russian")
+            seen.add("Russian")
+        # Short ISO/scene abbreviations (word-boundary matched).
+        for abbrev, lang_name in _LANGUAGE_ABBREV_TOKENS.items():
+            if lang_name not in seen and _LANGUAGE_ABBREV_RES[abbrev].search(raw_title):
                 found.append(lang_name)
                 seen.add(lang_name)
         return found

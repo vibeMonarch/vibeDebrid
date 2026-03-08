@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1187 tests, all passing (as of 2026-03-08)
+- 1263 tests, all passing (as of 2026-03-08)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -81,6 +81,8 @@
 ## Bugs Fixed
 - Naive vs aware datetime in CHECKING timeout — normalize to tz-aware UTC
 - Season pack duplicate add + XEM scrape mapping (2026-03-08) — see below
+- Language filter Cyrillic bypass (2026-03-08): `_parse_languages()` only checked English tokens like "RUSSIAN"; Cyrillic-titled torrents had empty `languages` → assumed English → passed filter. Fix: added Cyrillic char detection (`\u0400-\u04FF`) + 11 abbreviated tokens (`RUS`,`JAP`,`JPN`,etc.) with `\b` word-boundary regex
+- Single-file mount scan (2026-03-08): `scan_directory()` only handled directories; single-file RD torrents (`.mkv` filename) couldn't be found. Fix: added `_scan_single_file()` — detects video extensions, checks file in mount root directly, with fuzzy fallback
 
 ## Season Pack Dedup + XEM Scrape Fix — 2026-03-08
 Three interrelated bugs when adding anime with XEM scene seasons:

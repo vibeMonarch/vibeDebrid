@@ -487,6 +487,15 @@ class MountScanner:
         """
         _empty = ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
 
+        # ------------------------------------------------------------------
+        # Single-file torrent handling
+        # If directory_name has a video extension it refers to a file that
+        # lives directly in the mount root, not a subdirectory.
+        # ------------------------------------------------------------------
+        _ext = os.path.splitext(directory_name)[1].lower()
+        if _ext in VIDEO_EXTENSIONS:
+            return await self._scan_single_file(session, directory_name)
+
         dir_path = os.path.join(settings.paths.zurg_mount, directory_name, "")
 
         try:
@@ -664,6 +673,177 @@ class MountScanner:
                 episode,
             )
         return matches
+
+    # ------------------------------------------------------------------
+    # Private helpers — single-file torrents
+    # ------------------------------------------------------------------
+
+    async def _scan_single_file(
+        self, session: AsyncSession, filename: str
+    ) -> ScanDirectoryResult:
+        """Index a single video file that lives directly in the mount root.
+
+        Used when the RD torrent name includes a video extension (single-file
+        torrent) rather than being a directory name.  Tries an exact path
+        lookup first, then falls back to fuzzy word-subsequence matching
+        against all non-directory entries in the mount root.
+
+        Args:
+            session: Active async SQLAlchemy session.
+            filename: The bare filename (with extension) as returned by the RD
+                API, e.g.
+                ``"Frieren Beyond Journey's End (2023) S02E01 (...).mkv"``.
+
+        Returns:
+            A ``ScanDirectoryResult`` with ``files_indexed=1`` on success and
+            ``matched_dir_path=None`` (there is no directory to report).
+            Returns ``(files_indexed=0, matched_dir_path=None)`` on failure.
+        """
+        _empty = ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
+        mount_root = settings.paths.zurg_mount
+        file_path = os.path.join(mount_root, filename)
+
+        # --- Exact path check ---
+        try:
+            exists = await asyncio.wait_for(
+                asyncio.to_thread(os.path.isfile, file_path),
+                timeout=_HEALTH_CHECK_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "_scan_single_file: existence check timed out for %r — skipping",
+                file_path,
+            )
+            return _empty
+
+        if not exists:
+            logger.warning(
+                "_scan_single_file: file %r not found — attempting fuzzy match",
+                file_path,
+            )
+            normalized_input = _normalize_title(os.path.splitext(filename)[0])
+            input_words = normalized_input.split()
+            if not input_words:
+                return _empty
+
+            def _find_fuzzy_file() -> str | None:
+                try:
+                    scanner = os.scandir(mount_root)
+                except OSError as exc:
+                    logger.warning(
+                        "_scan_single_file: cannot list mount root %s — %s",
+                        mount_root,
+                        exc,
+                    )
+                    return None
+
+                candidates: list[tuple[str, str, str]] = []
+                with scanner:
+                    for entry in scanner:
+                        if entry.is_dir(follow_symlinks=False):
+                            continue
+                        entry_ext = os.path.splitext(entry.name)[1].lower()
+                        if entry_ext not in VIDEO_EXTENSIONS:
+                            continue
+                        stem = os.path.splitext(entry.name)[0]
+                        norm = _normalize_title(stem)
+                        norm_words = norm.split()
+                        if not _is_word_subsequence(input_words, norm_words):
+                            continue
+                        candidates.append((norm, entry.name, entry.path))
+
+                if not candidates:
+                    return None
+                if len(candidates) > 1:
+                    logger.warning(
+                        "_scan_single_file: %d fuzzy candidates for %r: %s",
+                        len(candidates),
+                        filename,
+                        [c[1] for c in candidates],
+                    )
+                # Shortest normalized name wins; break ties alphabetically.
+                candidates.sort(key=lambda c: (len(c[0]), c[0]))
+                return candidates[0][2]
+
+            try:
+                matched_path: str | None = await asyncio.wait_for(
+                    asyncio.to_thread(_find_fuzzy_file),
+                    timeout=_HEALTH_CHECK_TIMEOUT,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "_scan_single_file: fuzzy match timed out for %r — skipping",
+                    filename,
+                )
+                return _empty
+
+            if matched_path is None:
+                logger.warning(
+                    "_scan_single_file: no fuzzy match found for %r in %s",
+                    filename,
+                    mount_root,
+                )
+                return _empty
+
+            logger.info(
+                "_scan_single_file: fuzzy matched %r -> %s",
+                filename,
+                matched_path,
+            )
+            file_path = matched_path
+
+        # --- Parse and upsert the single file ---
+        actual_filename = os.path.basename(file_path)
+
+        def _stat_file() -> int | None:
+            try:
+                return os.stat(file_path, follow_symlinks=True).st_size
+            except OSError as exc:
+                logger.warning(
+                    "_scan_single_file: cannot stat %r — %s", file_path, exc
+                )
+                return None
+
+        try:
+            filesize: int | None = await asyncio.wait_for(
+                asyncio.to_thread(_stat_file),
+                timeout=_HEALTH_CHECK_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "_scan_single_file: stat timed out for %r — using None filesize",
+                file_path,
+            )
+            filesize = None
+
+        parsed = _parse_filename(actual_filename)
+        record: dict[str, Any] = {
+            "filepath": file_path,
+            "filename": actual_filename,
+            "parsed_title": parsed.get("title"),
+            "parsed_year": parsed.get("year"),
+            "parsed_season": parsed.get("season"),
+            "parsed_episode": parsed.get("episode"),
+            "parsed_resolution": parsed.get("resolution"),
+            "parsed_codec": parsed.get("codec"),
+            "filesize": filesize,
+        }
+
+        scan_timestamp = datetime.now(timezone.utc)
+        files_added, files_updated, upsert_errors = await self._upsert_records(
+            session, [record], scan_timestamp
+        )
+
+        total_indexed = files_added + files_updated
+        logger.info(
+            "_scan_single_file: indexed %d file(s) from %s (added=%d updated=%d errors=%d)",
+            total_indexed,
+            file_path,
+            files_added,
+            files_updated,
+            upsert_errors,
+        )
+        return ScanDirectoryResult(files_indexed=total_indexed, matched_dir_path=None)
 
     # ------------------------------------------------------------------
     # Private helpers — async DB

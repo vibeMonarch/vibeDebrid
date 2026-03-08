@@ -259,6 +259,10 @@ async def _job_queue_processor() -> None:
         checking_items = result.scalars().all()
         logger.info("CHECKING items to verify: %d", len(checking_items))
 
+        # Collect Plex scan directories — triggered AFTER all symlinks are
+        # created so that a single scan per directory picks up every file.
+        plex_scan_queue: list[tuple[str, str]] = []  # (media_type, scan_dir)
+
         for item in checking_items:
             try:
                 if item.is_season_pack:
@@ -470,30 +474,50 @@ async def _job_queue_processor() -> None:
 
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
 
-                # Trigger Plex library scan if configured
-                try:
-                    if settings.plex.enabled and settings.plex.scan_after_symlink and settings.plex.token:
-                        from src.services.plex import plex_client
-                        section_ids = (
-                            settings.plex.movie_section_ids
-                            if item.media_type == "movie"
-                            else settings.plex.show_section_ids
-                        )
-                        if not section_ids:
-                            logger.debug("Plex scan enabled but no section IDs configured for media_type=%s", item.media_type)
-                        elif symlink is not None:
-                            scan_dir = os.path.dirname(symlink.target_path)
-                            for sid in section_ids:
-                                await plex_client.scan_section(sid, path=scan_dir)
-                                logger.info("Triggered Plex scan for section %d path=%s (item id=%d)", sid, scan_dir, item.id)
-                except Exception:
-                    logger.exception("Plex scan trigger failed for item id=%d (non-fatal)", item.id)
+                # Queue Plex scan directory (triggered after all items are processed)
+                if symlink is not None:
+                    scan_dir = os.path.dirname(symlink.target_path)
+                    plex_scan_queue.append((item.media_type, scan_dir))
 
             except Exception:
                 logger.exception(
                     "Failed to process CHECKING item id=%d title=%s",
                     item.id, item.title,
                 )
+
+        # --- Plex scans (batched, deduplicated) ---
+        if plex_scan_queue:
+            try:
+                if settings.plex.enabled and settings.plex.scan_after_symlink and settings.plex.token:
+                    from src.services.plex import plex_client
+
+                    # Deduplicate: one scan per unique (section_id, scan_dir)
+                    seen_scans: set[tuple[int, str]] = set()
+                    for media_type, scan_dir in plex_scan_queue:
+                        section_ids = (
+                            settings.plex.movie_section_ids
+                            if media_type == "movie"
+                            else settings.plex.show_section_ids
+                        )
+                        if not section_ids:
+                            continue
+                        for sid in section_ids:
+                            if (sid, scan_dir) in seen_scans:
+                                continue
+                            seen_scans.add((sid, scan_dir))
+                            try:
+                                await plex_client.scan_section(sid, path=scan_dir)
+                                logger.info(
+                                    "Triggered Plex scan for section %d path=%s",
+                                    sid, scan_dir,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Plex scan failed for section %d path=%s (non-fatal)",
+                                    sid, scan_dir,
+                                )
+            except Exception:
+                logger.exception("Plex batch scan trigger failed (non-fatal)")
 
         # --- Stage 4: COMPLETE (older than 1 hour) → DONE ---
         one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
