@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time as _time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
@@ -23,6 +24,14 @@ class XemMapper:
     XEM and written to SQLite so subsequent lookups within cache_hours are
     free of API calls.
     """
+
+    _EMPTY_CACHE_TTL_SECONDS: int = 300  # 5 minutes
+
+    def __init__(self) -> None:
+        # In-memory negative cache: tvdb_id → monotonic timestamp of empty/failed
+        # API response.  Prevents cascading 429s when processing many items for the
+        # same show in quick succession.
+        self._empty_response_cache: dict[int, float] = {}
 
     async def _ensure_cached_entries(
         self,
@@ -67,6 +76,19 @@ class XemMapper:
         if cache_is_fresh:
             return cached_entries
 
+        # Check in-memory negative cache to avoid cascading 429s when
+        # processing many items for the same show in quick succession.
+        last_empty = self._empty_response_cache.get(tvdb_id)
+        if last_empty is not None:
+            age = _time.monotonic() - last_empty
+            if age < self._EMPTY_CACHE_TTL_SECONDS:
+                logger.debug(
+                    "xem_mapper: skipping API call for tvdb_id=%d — "
+                    "empty response cached %.0fs ago",
+                    tvdb_id, age,
+                )
+                return cached_entries  # return stale or empty
+
         # Fetch from XEM and rebuild cache.
         show_mappings = await xem_client.get_show_mappings(tvdb_id)
 
@@ -93,14 +115,17 @@ class XemMapper:
         if new_entries:
             session.add_all(new_entries)
             await session.flush()
+            self._empty_response_cache.pop(tvdb_id, None)
             logger.debug(
                 "xem_mapper: cached %d mappings for tvdb_id=%d",
                 len(new_entries),
                 tvdb_id,
             )
         else:
+            self._empty_response_cache[tvdb_id] = _time.monotonic()
             logger.debug(
-                "xem_mapper: XEM returned no mappings for tvdb_id=%d", tvdb_id
+                "xem_mapper: XEM returned no mappings for tvdb_id=%d (cached negative result)",
+                tvdb_id,
             )
 
         return new_entries
