@@ -1197,3 +1197,187 @@ class TestScrapePipelineXem:
                 1,   # original season
                 29,  # original episode
             )
+
+
+# ---------------------------------------------------------------------------
+# Section D: get_scene_numbering_for_item — absolute-number fallback
+# ---------------------------------------------------------------------------
+
+
+class TestGetSceneNumberingForItemAbsoluteFallback:
+    """Tests for the absolute-number fallback path in get_scene_numbering_for_item.
+
+    When get_scene_numbering returns None (no TVDB season/episode match),
+    get_scene_numbering_for_item falls back to get_absolute_scene_map and
+    checks whether the episode number matches a tvdb_absolute key.  This
+    bridges TMDB's continuous single-season numbering for anime to the
+    multi-season scene structure stored in XEM.
+    """
+
+    async def test_absolute_fallback_returns_mapped_scene_numbers(
+        self, session: AsyncSession
+    ) -> None:
+        """Absolute fallback: get_scene_numbering=None, abs_map has episode → returns scene tuple."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+
+        # Patch the two sub-methods so no DB/API calls are made.
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={29: (2, 1), 30: (2, 2)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=29,
+        )
+
+        assert result == (2, 1)
+        mapper.get_scene_numbering.assert_awaited_once_with(session, TVDB_ID, 1, 29)
+        mapper.get_absolute_scene_map.assert_awaited_once_with(session, TVDB_ID)
+
+    async def test_absolute_fallback_second_episode_in_map(
+        self, session: AsyncSession
+    ) -> None:
+        """Absolute fallback correctly resolves a second episode in the map."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={29: (2, 1), 30: (2, 2)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=30,
+        )
+
+        assert result == (2, 2)
+
+    async def test_absolute_fallback_identity_returns_none(
+        self, session: AsyncSession
+    ) -> None:
+        """Absolute fallback: scene numbers equal input → identity → returns None.
+
+        If the absolute map maps episode 1 → (season=1, episode=1), no remapping
+        is needed and the method must return None so callers use original numbers.
+        """
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # Map episode 1 → scene (1, 1) — same as (season=1, episode=1) input
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={1: (1, 1)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=1,
+        )
+
+        assert result is None
+
+    async def test_tvdb_lookup_takes_priority_over_absolute_fallback(
+        self, session: AsyncSession
+    ) -> None:
+        """When get_scene_numbering succeeds, get_absolute_scene_map is never called."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        # Direct TVDB lookup succeeds
+        mapper.get_scene_numbering = AsyncMock(return_value=(3, 5))  # type: ignore[method-assign]
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={29: (2, 1)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=29,
+        )
+
+        # TVDB result is returned, absolute map is never consulted
+        assert result == (3, 5)
+        mapper.get_absolute_scene_map.assert_not_awaited()
+
+    async def test_absolute_fallback_episode_not_in_map_returns_none(
+        self, session: AsyncSession
+    ) -> None:
+        """Absolute fallback: episode not present in abs_map → returns None."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # Map only has episode 29; we ask for episode 5
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={29: (2, 1), 30: (2, 2)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=5,
+        )
+
+        assert result is None
+
+    async def test_absolute_fallback_abs_map_none_returns_none(
+        self, session: AsyncSession
+    ) -> None:
+        """When get_absolute_scene_map returns None (no XEM data), result is None."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        mapper.get_absolute_scene_map = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=29,
+        )
+
+        assert result is None
+
+    async def test_absolute_fallback_requires_tvdb_id_resolved(
+        self, session: AsyncSession
+    ) -> None:
+        """When both tvdb_id and tmdb_id are None, no fallback is attempted."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={29: (2, 1)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=None,
+            tmdb_id=None,
+            season=1,
+            episode=29,
+        )
+
+        # Short-circuits before any lookup when no ID is available
+        assert result is None
+        mapper.get_scene_numbering.assert_not_awaited()
+        mapper.get_absolute_scene_map.assert_not_awaited()

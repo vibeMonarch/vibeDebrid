@@ -45,6 +45,11 @@ logger = logging.getLogger(__name__)
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]+")
 _MULTI_SPACE_RE = re.compile(r" {2,}")
 
+# Anime TV-N naming convention: "TV-2 - 01" means season 2, episode 1.
+# Common in Russian fansub releases. PTN doesn't recognise this pattern
+# and often misparses "1920x1080" as a season number instead.
+_TV_N_EP_RE = re.compile(r"TV-(\d{1,2})\s*[-–]\s*(\d{1,3})")
+
 
 def _normalize_title(title: str) -> str:
     """Normalize a title for consistent matching.
@@ -893,11 +898,22 @@ def _parse_filename(filename: str) -> dict[str, Any]:
 
     raw_title: str = parsed.get("title") or os.path.splitext(filename)[0]
 
+    season = parsed.get("season")
+    episode = parsed.get("episode")
+
+    # Post-PTN correction: anime "TV-N - NN" naming convention.
+    # PTN misparses these (e.g. season=20 from "1920x1080"), so override
+    # with the explicit TV-N season and episode when the pattern matches.
+    tv_match = _TV_N_EP_RE.search(os.path.splitext(filename)[0])
+    if tv_match:
+        season = int(tv_match.group(1))
+        episode = int(tv_match.group(2))
+
     return {
         "title": _normalize_title(raw_title),
         "year": parsed.get("year"),
-        "season": parsed.get("season"),
-        "episode": parsed.get("episode"),
+        "season": season,
+        "episode": episode,
         "resolution": parsed.get("resolution"),
         "codec": parsed.get("codec"),
     }

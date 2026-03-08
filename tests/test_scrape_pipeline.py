@@ -1172,3 +1172,234 @@ class TestModuleSingleton:
         from src.core.scrape_pipeline import ScrapePipeline, scrape_pipeline  # noqa: PLC0415
 
         assert isinstance(scrape_pipeline, ScrapePipeline)
+
+
+# ---------------------------------------------------------------------------
+# Group 9: Hash-Based Dedup (post-filter, pre-cache-check)
+# ---------------------------------------------------------------------------
+
+
+_PATCH_TARGETS_WITH_LOCAL_DEDUP = {
+    **_PATCH_TARGETS,
+    "dedup_local": "src.core.scrape_pipeline.dedup_engine.check_local_duplicate",
+}
+
+
+class _MocksWithLocalDedup(_Mocks):
+    dedup_local: AsyncMock
+
+
+@asynccontextmanager
+async def _all_mocks_with_local_dedup(
+    mock_rd_torrent: RdTorrent | None = None,
+) -> AsyncGenerator[_MocksWithLocalDedup, None]:
+    """Like _all_mocks but also patches check_local_duplicate."""
+    mocks = _MocksWithLocalDedup()
+    patchers = {
+        name: patch(target)
+        for name, target in _PATCH_TARGETS_WITH_LOCAL_DEDUP.items()
+    }
+
+    started: dict[str, MagicMock] = {}
+    try:
+        for name, patcher in patchers.items():
+            started[name] = patcher.start()
+    except Exception:
+        for p in patchers.values():
+            try:
+                p.stop()
+            except RuntimeError:
+                pass
+        raise
+
+    # Re-use the same defaults as _all_mocks
+    mocks.mount_scanner_available = started["mount_scanner_available"]
+    mocks.mount_scanner_available.return_value = True
+
+    mocks.mount_scanner_lookup = started["mount_scanner_lookup"]
+    mocks.mount_scanner_lookup.return_value = []
+
+    mocks.dedup_check = started["dedup_check"]
+    mocks.dedup_check.return_value = None
+
+    mocks.dedup_register = started["dedup_register"]
+    mocks.dedup_register.return_value = mock_rd_torrent or MagicMock(spec=RdTorrent)
+
+    mocks.zilean_search = started["zilean_search"]
+    mocks.zilean_search.return_value = []
+
+    mocks.torrentio_movie = started["torrentio_movie"]
+    mocks.torrentio_movie.return_value = []
+
+    mocks.torrentio_episode = started["torrentio_episode"]
+    mocks.torrentio_episode.return_value = []
+
+    mocks.rd_add = started["rd_add"]
+    mocks.rd_add.return_value = {"id": "RD123", "uri": "magnet:?xt=urn:btih:" + "a" * 40}
+
+    mocks.rd_select = started["rd_select"]
+    mocks.rd_select.return_value = None
+
+    mocks.rd_check_cached_batch = started["rd_check_cached_batch"]
+    mocks.rd_check_cached_batch.return_value = {}
+
+    mocks.rd_delete = started["rd_delete"]
+    mocks.rd_delete.return_value = None
+
+    mocks.filter_rank = started["filter_rank"]
+    mocks.filter_rank.return_value = []
+
+    mocks.queue_transition = started["queue_transition"]
+    mocks.queue_transition.side_effect = None
+    mocks.queue_transition.return_value = MagicMock(spec=MediaItem)
+
+    # Default: no local hash duplicate found
+    mocks.dedup_local = started["dedup_local"]
+    mocks.dedup_local.return_value = None
+
+    try:
+        yield mocks
+    finally:
+        for p in patchers.values():
+            p.stop()
+
+
+class TestHashBasedDedup:
+    """Hash-based dedup check that fires after filter_and_rank, before cache check.
+
+    When the top-ranked result's info_hash is already present in the local
+    rd_torrents registry (check_local_duplicate returns an RdTorrent), the
+    pipeline must:
+      - Return action='dedup_hit'
+      - Transition the item to CHECKING state
+      - Never call check_cached_batch or add_magnet
+    """
+
+    async def test_hash_dedup_hit_returns_dedup_hit_action(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """Top-ranked hash already in registry → action='dedup_hit'."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        known_hash = "b" * 40
+        torrentio_result = _make_torrentio_result(info_hash=known_hash)
+        filtered = _make_filtered_result(torrentio_result)
+
+        # Build a matching existing RdTorrent with the same hash
+        existing = RdTorrent(
+            rd_id="RD_EXISTING",
+            info_hash=known_hash,
+            media_item_id=999,
+            filename="Some.Other.Item.mkv",
+            filesize=1 * 1024**3,
+            status=TorrentStatus.ACTIVE,
+        )
+
+        async with _all_mocks_with_local_dedup() as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.dedup_local.return_value = existing
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        assert result.action == "dedup_hit"
+
+    async def test_hash_dedup_hit_transitions_to_checking(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """Hash dedup hit → queue_manager.transition called with CHECKING state."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        known_hash = "b" * 40
+        torrentio_result = _make_torrentio_result(info_hash=known_hash)
+        filtered = _make_filtered_result(torrentio_result)
+        existing = RdTorrent(
+            rd_id="RD_EXISTING",
+            info_hash=known_hash,
+            media_item_id=999,
+            status=TorrentStatus.ACTIVE,
+        )
+
+        async with _all_mocks_with_local_dedup() as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.dedup_local.return_value = existing
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        checking_called = any(
+            QueueState.CHECKING in call.args or QueueState.CHECKING in call.kwargs.values()
+            for call in m.queue_transition.call_args_list
+        )
+        assert checking_called
+
+    async def test_hash_dedup_hit_skips_cache_check_and_add_magnet(
+        self, session: AsyncSession, wanted_item: MediaItem
+    ) -> None:
+        """Hash dedup hit → neither check_cached_batch nor add_magnet are called."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        known_hash = "c" * 40
+        torrentio_result = _make_torrentio_result(info_hash=known_hash)
+        filtered = _make_filtered_result(torrentio_result)
+        existing = RdTorrent(
+            rd_id="RD_EXISTING",
+            info_hash=known_hash,
+            media_item_id=999,
+            status=TorrentStatus.ACTIVE,
+        )
+
+        async with _all_mocks_with_local_dedup() as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.dedup_local.return_value = existing
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        m.rd_check_cached_batch.assert_not_called()
+        m.rd_add.assert_not_called()
+
+    async def test_hash_dedup_hit_sets_selected_hash_and_rd_id(
+        self, session: AsyncSession, wanted_item: MediaItem
+    ) -> None:
+        """Hash dedup hit → result carries the matched hash and rd_id."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        known_hash = "d" * 40
+        torrentio_result = _make_torrentio_result(info_hash=known_hash)
+        filtered = _make_filtered_result(torrentio_result)
+        existing = RdTorrent(
+            rd_id="RD_MATCHED",
+            info_hash=known_hash,
+            media_item_id=999,
+            status=TorrentStatus.ACTIVE,
+        )
+
+        async with _all_mocks_with_local_dedup() as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.dedup_local.return_value = existing
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        assert result.selected_hash == known_hash
+        assert result.rd_torrent_id == "RD_MATCHED"
+
+    async def test_hash_dedup_miss_continues_to_cache_check(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When check_local_duplicate returns None, pipeline proceeds to cache check."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        torrentio_result = _make_torrentio_result(info_hash="e" * 40)
+        filtered = _make_filtered_result(torrentio_result)
+
+        async with _all_mocks_with_local_dedup(mock_rd_torrent) as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.dedup_local.return_value = None  # No hash match
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        # Pipeline continued past the hash dedup step
+        m.rd_check_cached_batch.assert_called_once()

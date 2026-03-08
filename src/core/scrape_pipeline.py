@@ -267,6 +267,53 @@ class ScrapePipeline:
             cached_hashes=set(),
         )
 
+        # --- Hash-based dedup: skip cache check if top result already registered ---
+        if ranked:
+            top_hash = ranked[0].result.info_hash
+            if top_hash:
+                try:
+                    existing_torrent = await dedup_engine.check_local_duplicate(session, top_hash)
+                except Exception as exc:
+                    logger.warning(
+                        "scrape_pipeline: hash dedup check failed for item id=%d: %s",
+                        item.id, exc,
+                    )
+                    existing_torrent = None
+                if existing_torrent:
+                    logger.info(
+                        "scrape_pipeline: hash-based dedup hit for item id=%d — "
+                        "hash=%s already registered (rd_id=%s), skipping to CHECKING",
+                        item.id, top_hash, existing_torrent.rd_id,
+                    )
+                    await self._log_scrape(
+                        session,
+                        media_item_id=item.id,
+                        scraper="pipeline",
+                        query_params=json.dumps({
+                            "title": item.title,
+                            "step": "hash_dedup",
+                            "info_hash": top_hash,
+                        }),
+                        results_count=total_count,
+                        results_summary=json.dumps(self._summarise_results(combined[:5])),
+                        selected_result=json.dumps({
+                            "info_hash": top_hash,
+                            "rd_id": existing_torrent.rd_id,
+                            "action": "hash_dedup_hit",
+                        }),
+                        duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                    )
+                    await queue_manager.transition(session, item.id, QueueState.CHECKING)
+                    return PipelineResult(
+                        item_id=item.id,
+                        action="dedup_hit",
+                        message=f"Torrent already in RD registry (hash={top_hash}, rd_id={existing_torrent.rd_id})",
+                        selected_hash=top_hash,
+                        rd_torrent_id=existing_torrent.rd_id,
+                        scrape_results_count=total_count,
+                        filtered_results_count=len(ranked),
+                    )
+
         # Probe RD cache for the top filtered results, keeping cached
         # torrents in the RD account to avoid a redundant add_magnet later.
         cache_limit = settings.search.cache_check_limit

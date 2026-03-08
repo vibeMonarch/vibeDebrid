@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database import engine, init_db, async_session
@@ -45,6 +46,73 @@ def setup_logging() -> None:
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+async def _find_torrent_for_item(session: AsyncSession, item: MediaItem) -> RdTorrent | None:
+    """Find the active RD torrent for a media item.
+
+    First tries direct media_item_id lookup. Falls back to info_hash
+    from the scrape_log when the direct lookup fails (happens when
+    multiple items share the same season pack torrent).
+
+    Args:
+        session: Async database session.
+        item: The MediaItem to find a torrent for.
+
+    Returns:
+        An active RdTorrent row, or None if not found.
+    """
+    import json as _json
+    from src.models.scrape_result import ScrapeLog
+
+    # Direct lookup
+    result = await session.execute(
+        select(RdTorrent).where(
+            RdTorrent.media_item_id == item.id,
+            RdTorrent.status == TorrentStatus.ACTIVE,
+        )
+    )
+    torrent = result.scalar_one_or_none()
+    if torrent is not None:
+        return torrent
+
+    # Fallback: look up info_hash from scrape_log
+    log_result = await session.execute(
+        select(ScrapeLog)
+        .where(
+            ScrapeLog.media_item_id == item.id,
+            ScrapeLog.scraper == "pipeline",
+            ScrapeLog.selected_result.isnot(None),
+        )
+        .order_by(ScrapeLog.id.desc())
+        .limit(1)
+    )
+    log_entry = log_result.scalar_one_or_none()
+    if log_entry is None:
+        return None
+
+    try:
+        selected = _json.loads(log_entry.selected_result)
+        info_hash = selected.get("info_hash")
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+    if not info_hash:
+        return None
+
+    result = await session.execute(
+        select(RdTorrent).where(
+            RdTorrent.info_hash == info_hash.lower(),
+            RdTorrent.status == TorrentStatus.ACTIVE,
+        )
+    )
+    torrent = result.scalar_one_or_none()
+    if torrent is not None:
+        logger.debug(
+            "Torrent fallback: item id=%d found via scrape_log hash=%s (rd_id=%s)",
+            item.id, info_hash, torrent.rd_id,
+        )
+    return torrent
 
 
 async def _job_mount_scan() -> None:
@@ -140,18 +208,26 @@ async def _job_queue_processor() -> None:
         for item in adding_items:
             try:
                 # Find the active RD torrent for this item
-                torrent_result = await session.execute(
-                    select(RdTorrent).where(
-                        RdTorrent.media_item_id == item.id,
-                        RdTorrent.status == TorrentStatus.ACTIVE,
-                    )
-                )
-                torrent = torrent_result.scalar_one_or_none()
+                torrent = await _find_torrent_for_item(session, item)
                 if torrent is None or torrent.rd_id is None:
-                    logger.warning(
-                        "ADDING item id=%d has no active RD torrent, skipping",
-                        item.id,
+                    # Timeout: transition to SLEEPING if stuck too long
+                    sca = item.state_changed_at
+                    if sca is not None and sca.tzinfo is None:
+                        sca = sca.replace(tzinfo=timezone.utc)
+                    adding_timeout = datetime.now(timezone.utc) - timedelta(
+                        minutes=settings.retry.checking_timeout_minutes
                     )
+                    if sca and sca <= adding_timeout:
+                        logger.warning(
+                            "ADDING item id=%d has no active RD torrent and timed out after %d min, transitioning to SLEEPING",
+                            item.id, settings.retry.checking_timeout_minutes,
+                        )
+                        await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                    else:
+                        logger.warning(
+                            "ADDING item id=%d has no active RD torrent, skipping",
+                            item.id,
+                        )
                     continue
 
                 rd_info = await rd_client.get_torrent_info(torrent.rd_id)
@@ -195,13 +271,7 @@ async def _job_queue_processor() -> None:
                     )
                     if not matches:
                         # Targeted scan: check if the RD torrent directory exists on mount
-                        torrent_result = await session.execute(
-                            select(RdTorrent).where(
-                                RdTorrent.media_item_id == item.id,
-                                RdTorrent.status == TorrentStatus.ACTIVE,
-                            )
-                        )
-                        torrent = torrent_result.scalar_one_or_none()
+                        torrent = await _find_torrent_for_item(session, item)
                         if torrent and torrent.filename:
                             scan_result = await mount_scanner.scan_directory(session, torrent.filename)
                             if scan_result.files_indexed > 0:
@@ -297,15 +367,10 @@ async def _job_queue_processor() -> None:
                         season=item.season,
                         episode=item.episode,
                     )
+                    scan_result = None
                     if not matches:
                         # Targeted scan: check if the RD torrent directory exists on mount
-                        torrent_result = await session.execute(
-                            select(RdTorrent).where(
-                                RdTorrent.media_item_id == item.id,
-                                RdTorrent.status == TorrentStatus.ACTIVE,
-                            )
-                        )
-                        torrent = torrent_result.scalar_one_or_none()
+                        torrent = await _find_torrent_for_item(session, item)
                         if torrent and torrent.filename:
                             scan_result = await mount_scanner.scan_directory(session, torrent.filename)
                             if scan_result.files_indexed > 0:
@@ -333,6 +398,49 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=item.episode,
                                 )
+
+                    # XEM fallback: files may use scene numbering (e.g. S02E01)
+                    # while the item stores TMDB numbering (e.g. S01E29).
+                    # Try again with scene-mapped season/episode.
+                    if (
+                        not matches
+                        and settings.xem.enabled
+                        and item.season is not None
+                        and item.episode is not None
+                    ):
+                        try:
+                            from src.core.xem_mapper import xem_mapper
+
+                            mapping = await xem_mapper.get_scene_numbering_for_item(
+                                session, item.tvdb_id, item.tmdb_id,
+                                item.season, item.episode,
+                            )
+                            if mapping is not None:
+                                scene_season, scene_episode = mapping
+                                logger.info(
+                                    "CHECKING item id=%d: XEM remap S%02dE%02d → S%02dE%02d",
+                                    item.id, item.season, item.episode,
+                                    scene_season, scene_episode,
+                                )
+                                matches = await mount_scanner.lookup(
+                                    session,
+                                    title=item.title,
+                                    season=scene_season,
+                                    episode=scene_episode,
+                                )
+                                if not matches and scan_result and scan_result.matched_dir_path:
+                                    matches = await mount_scanner.lookup_by_path_prefix(
+                                        session,
+                                        scan_result.matched_dir_path,
+                                        season=scene_season,
+                                        episode=scene_episode,
+                                    )
+                        except Exception:
+                            logger.debug(
+                                "CHECKING item id=%d: XEM lookup failed, using original numbering",
+                                item.id,
+                            )
+
                     if not matches:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes

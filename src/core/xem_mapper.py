@@ -280,7 +280,24 @@ class XemMapper:
             )
             return None
 
-        return await self.get_scene_numbering(session, resolved_tvdb_id, season, episode)
+        result = await self.get_scene_numbering(session, resolved_tvdb_id, season, episode)
+        if result is not None:
+            return result
+
+        # Absolute fallback: for anime where TMDB uses a continuous single season
+        # but TVDB/scene split into multiple seasons. The TMDB episode number
+        # often matches the tvdb_absolute number in XEM data.
+        abs_map = await self.get_absolute_scene_map(session, resolved_tvdb_id)
+        if abs_map is not None and episode in abs_map:
+            scene_s, scene_e = abs_map[episode]
+            if scene_s != season or scene_e != episode:
+                logger.info(
+                    "xem_mapper: absolute fallback tvdb_id=%d episode=%d → S%02dE%02d",
+                    resolved_tvdb_id, episode, scene_s, scene_e,
+                )
+                return scene_s, scene_e
+
+        return None
 
 
 # Module-level singleton
