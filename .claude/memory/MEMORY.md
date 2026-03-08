@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1105 tests, all passing (as of 2026-03-07)
+- 1136 tests, all passing (as of 2026-03-07)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -23,6 +23,7 @@
 - [Show Detail Page + Monitoring + Airing Seasons](show-monitoring.md) — 2026-03-07
 - Path-prefix fallback for mount lookup — 2026-03-07
 - [XEM scene numbering](xem-integration.md) — 2026-03-07
+- XEM scene season restructuring (show detail + add) — 2026-03-07
 
 ## Remaining / Future Work
 - Trakt integration (Step 1b): OAuth, watchlist polling, scheduler

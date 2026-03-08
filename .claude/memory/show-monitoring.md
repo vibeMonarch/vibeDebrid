@@ -29,8 +29,17 @@
 - Toast: "Added X episodes + Y upcoming to queue" for airing seasons
 - 23 new tests (airing detection, per-episode creation, auto-subscribe, monitoring dedup, schema)
 
-## Anime Numbering Issue (identified 2026-03-07)
+## Airing Status Override — 2026-03-07
+- AIRING status takes PRIORITY over IN_QUEUE/IN_LIBRARY in `get_show_detail()` — users can always add remaining episodes
+- `add_seasons()` bypasses season-level skip for airing seasons (e.g., existing season pack doesn't block adding new episodes)
+- Season pack cutoff: `_add_airing_season()` finds COMPLETE/DONE season packs, uses `state_changed_at` as cutoff date
+- Episodes aired before cutoff are skipped (covered by pack), episodes after cutoff are created as WANTED
+- `_add_airing_season()` signature extended with `existing_items` param to inspect pack state
+- 4 new tests (airing override, pack cutoff, non-complete pack, cutoff day inclusivity)
+
+## Anime Numbering — Solved via XEM (2026-03-07)
 - TMDB may use continuous numbering (S01E29) while torrent sites use broadcast seasons (S02E01)
-- Affects scraping: Torrentio query for S01E29 returns 0 results when torrents are labeled S02E01
-- Solution: XEM (TheXEM.info) integration for TMDB↔scene numbering mappings
-- Scrape pipeline passes season/episode from MediaItem directly to Torrentio/Zilean — no conversion layer exists yet
+- Solved: [XEM scene numbering integration](xem-integration.md) maps TVDB↔scene numbers
+- Scrape pipeline resolves XEM once in `_run_pipeline()`, passes scene numbers to both scrapers
+- Show detail page: XEM-aware season restructuring shows "real" scene seasons instead of TMDB seasons
+- Complete scene seasons → 1 season pack; airing scene seasons → per-episode items (dramatically reduces RD API calls)

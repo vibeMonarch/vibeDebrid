@@ -10,17 +10,29 @@ Covers:
   - check_monitored_shows: no shows, new season pack, new episodes,
     dedup by existing_keys, future episode skip, last_checked_at update,
     TMDB failure handling
+  - XEM-aware: _derive_scene_seasons (Frieren-like split, no mappings, disabled,
+    season detail fetch failure), get_show_detail with XEM (scene seasons,
+    xem_mapped flag, item bucketing), add_seasons with XEM (complete pack,
+    airing individual items, dedup, auto-subscribe, fallthrough)
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.show_manager import AddSeasonsRequest, AddSeasonsResult, ShowManager
+from src.core.show_manager import (
+    AddSeasonsRequest,
+    AddSeasonsResult,
+    SceneEpisodeInfo,
+    SceneSeasonGroup,
+    SeasonStatus,
+    ShowManager,
+)
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.monitored_show import MonitoredShow
 from src.services.tmdb import (
@@ -2464,3 +2476,735 @@ class TestMonitoringNoDuplicates:
         assert row is not None
         assert row.last_season == 1
         assert row.last_episode is None  # no aired episodes to stamp
+
+
+# ---------------------------------------------------------------------------
+# XEM Helpers
+# ---------------------------------------------------------------------------
+
+TVDB_ID = 76290
+
+
+def _make_xem_show_detail(
+    *,
+    tmdb_id: int = TMDB_ID,
+    tvdb_id: int = TVDB_ID,
+    seasons: list[TmdbSeasonInfo] | None = None,
+    next_episode_to_air: TmdbEpisodeAirInfo | None = None,
+) -> TmdbShowDetail:
+    """Build a TmdbShowDetail with a tvdb_id set (required for XEM path)."""
+    if seasons is None:
+        seasons = [
+            TmdbSeasonInfo(
+                season_number=1,
+                name="Season 1",
+                episode_count=35,
+                air_date="2023-09-29",
+            )
+        ]
+    return TmdbShowDetail(
+        tmdb_id=tmdb_id,
+        title="Frieren: Beyond Journey's End",
+        year=2023,
+        overview="An elf mage reflects on her adventure.",
+        poster_path="/frieren.jpg",
+        backdrop_path="/frieren_bg.jpg",
+        status="Ended",
+        vote_average=9.0,
+        number_of_seasons=len(seasons),
+        seasons=seasons,
+        imdb_id="tt22248376",
+        tvdb_id=tvdb_id,
+        genres=[{"id": 16, "name": "Animation"}],
+        next_episode_to_air=next_episode_to_air,
+    )
+
+
+def _make_frieren_season_detail() -> TmdbSeasonDetail:
+    """Build a 35-episode season detail mimicking Frieren TMDB season 1.
+
+    Episodes 1-28 have past air dates (aired).
+    Episodes 29-32 have past air dates (aired, belong to scene S02).
+    Episodes 33-35 have future air dates (not yet aired, belong to scene S02).
+    """
+    today_str = "2024-01-15"  # fixed reference point inside tests
+    past_dates = {
+        ep: f"2023-{9 + (ep - 1) // 4:02d}-{29 + ((ep - 1) % 4) * 7:02d}"
+        for ep in range(1, 33)
+    }
+    # Clamp dates to valid calendar range — just use fixed dates
+    episode_dates: dict[int, str] = {}
+    for ep in range(1, 29):
+        episode_dates[ep] = "2023-10-01"  # all aired
+    for ep in range(29, 33):
+        episode_dates[ep] = "2024-01-05"  # aired (scene S02 episodes 1-4)
+    for ep in range(33, 36):
+        episode_dates[ep] = "2099-06-01"  # future (scene S02 episodes 5-7)
+
+    episodes = [
+        TmdbEpisodeInfo(
+            episode_number=ep,
+            name=f"Episode {ep}",
+            air_date=episode_dates[ep],
+        )
+        for ep in range(1, 36)
+    ]
+    return TmdbSeasonDetail(
+        season_number=1,
+        name="Season 1",
+        episodes=episodes,
+    )
+
+
+def _make_frieren_xem_map() -> dict[int, tuple[int, int]]:
+    """Absolute episode → (scene_season, scene_episode) map for Frieren-like data.
+
+    TMDB S01 has 35 episodes (one season). Absolute positions are 1-35.
+    Episodes 1-28 stay in scene S01; episodes 29-35 remap to scene S02.
+    """
+    result: dict[int, tuple[int, int]] = {}
+    for ep in range(1, 29):
+        result[ep] = (1, ep)       # absolute 1-28 → scene S01E01-E28
+    for ep in range(29, 36):
+        result[ep] = (2, ep - 28)  # absolute 29-35 → scene S02E01-E07
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Tests: ShowManager._derive_scene_seasons
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveSceneSeasons:
+    """Tests for ShowManager._derive_scene_seasons (internal method)."""
+
+    async def test_frieren_one_tmdb_season_yields_two_scene_seasons(
+        self, session: AsyncSession
+    ) -> None:
+        """Frieren-like: TMDB S01 with XEM remapping → 2 SceneSeasonGroups."""
+        sm = ShowManager()
+        frieren_seasons = [
+            TmdbSeasonInfo(season_number=1, name="Season 1", episode_count=35, air_date="2023-09-29")
+        ]
+
+        xem_map = _make_frieren_xem_map()
+        season_detail = _make_frieren_season_detail()
+
+        with (
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
+        ):
+            groups = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, frieren_seasons)
+
+        assert groups is not None
+        assert len(groups) == 2
+
+        # Scene S01: episodes 1-28 all aired
+        s1 = next(g for g in groups if g.scene_season == 1)
+        assert s1.total_episodes == 28
+        assert s1.aired_episodes == 28
+        assert s1.is_complete is True
+
+        # Scene S02: episodes 29-35 remapped, only 4 aired (29-32), 3 future (33-35)
+        s2 = next(g for g in groups if g.scene_season == 2)
+        assert s2.total_episodes == 7
+        assert s2.aired_episodes == 4  # episodes 29-32 (dates in past)
+        assert s2.is_complete is False
+
+    async def test_no_xem_mappings_returns_none(self, session: AsyncSession) -> None:
+        """When XEM returns no mappings for the show, _derive_scene_seasons returns None."""
+        sm = ShowManager()
+        seasons = [TmdbSeasonInfo(season_number=1, name="S1", episode_count=13, air_date="2020-01-01")]
+
+        with patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=None):
+            result = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, seasons)
+
+        assert result is None
+
+    async def test_xem_disabled_returns_none(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When settings.xem.enabled=False, _derive_scene_seasons returns None immediately."""
+        mock_settings = MagicMock()
+        mock_settings.xem.enabled = False
+        monkeypatch.setattr("src.core.show_manager.settings", mock_settings)
+
+        sm = ShowManager()
+        seasons = [TmdbSeasonInfo(season_number=1, name="S1", episode_count=13, air_date="2020-01-01")]
+
+        mock_xem = AsyncMock(return_value={1: (2, 1)})
+        with patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", mock_xem):
+            result = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, seasons)
+
+        assert result is None
+        # XEM mapper must not have been consulted (settings guard fires first)
+        mock_xem.assert_not_awaited()
+
+    async def test_season_detail_fetch_failure_skips_season_gracefully(
+        self, session: AsyncSession
+    ) -> None:
+        """When get_season_details returns None for a season, no crash occurs."""
+        sm = ShowManager()
+        # Two seasons: S1 fetch will fail, S2 will succeed
+        seasons = [
+            TmdbSeasonInfo(season_number=1, name="S1", episode_count=10, air_date="2020-01-01"),
+            TmdbSeasonInfo(season_number=2, name="S2", episode_count=5, air_date="2021-01-01"),
+        ]
+        # XEM absolute map: S1 fetch fails so offset stays 0; S2E1 gets absolute=1 → scene S3E1.
+        # This ensures the abs_map is non-empty so _derive_scene_seasons enters the XEM path.
+        xem_map = {1: (3, 1)}
+
+        s2_detail = TmdbSeasonDetail(
+            season_number=2,
+            name="Season 2",
+            episodes=[
+                TmdbEpisodeInfo(episode_number=1, air_date="2021-01-01"),
+                TmdbEpisodeInfo(episode_number=2, air_date="2021-01-08"),
+            ],
+        )
+
+        def _get_season(tmdb_id: int, season_num: int) -> TmdbSeasonDetail | None:
+            if season_num == 1:
+                return None  # S1 fetch fails
+            return s2_detail
+
+        with (
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", side_effect=_get_season),
+        ):
+            result = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, seasons)
+
+        # S1 was skipped (fetch failed), S2 was processed
+        assert result is not None
+        assert len(result) >= 1
+        scene_seasons = {g.scene_season for g in result}
+        # Absolute 1 (S2E1) maps to scene S3; absolute 2 (S2E2) has no XEM entry → scene S2
+        assert 3 in scene_seasons or 2 in scene_seasons
+
+    async def test_season_zero_skipped_in_xem_path(self, session: AsyncSession) -> None:
+        """Season 0 (Specials) is skipped in the XEM path just like the normal path."""
+        sm = ShowManager()
+        seasons = [
+            TmdbSeasonInfo(season_number=0, name="Specials", episode_count=3, air_date="2020-01-01"),
+            TmdbSeasonInfo(season_number=1, name="S1", episode_count=10, air_date="2020-01-01"),
+        ]
+        # S0 is skipped → absolute_offset stays 0 when processing S1.
+        # S1E5 → absolute 5 → scene S2E1. Other S1 episodes fall back to identity.
+        xem_map = {5: (2, 1)}
+
+        s1_detail = TmdbSeasonDetail(
+            season_number=1,
+            name="Season 1",
+            episodes=[
+                TmdbEpisodeInfo(episode_number=i, air_date="2020-01-01")
+                for i in range(1, 11)
+            ],
+        )
+
+        with (
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=s1_detail),
+        ):
+            result = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, seasons)
+
+        # Season 0 skipped; S1 processed (at least 1 group returned)
+        assert result is not None
+        for group in result:
+            for ep_info in group.episodes:
+                # No episode from season 0 should appear
+                assert ep_info.tmdb_season != 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: ShowManager.get_show_detail with XEM
+# ---------------------------------------------------------------------------
+
+
+class TestGetShowDetailWithXem:
+    """Tests for get_show_detail when XEM mappings are present."""
+
+    async def test_xem_show_returns_scene_seasons_with_xem_mapped_flag(
+        self, session: AsyncSession
+    ) -> None:
+        """XEM-mapped show: seasons list contains SceneSeasonGroups with xem_mapped=True."""
+        sm = ShowManager()
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        assert len(result.seasons) == 2
+        for s in result.seasons:
+            assert s.xem_mapped is True
+
+    async def test_xem_show_season_numbers_are_scene_numbers(
+        self, session: AsyncSession
+    ) -> None:
+        """Season numbers in ShowDetail reflect scene season numbers (1 and 2), not TMDB."""
+        sm = ShowManager()
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        scene_nums = {s.season_number for s in result.seasons}
+        assert 1 in scene_nums
+        assert 2 in scene_nums
+
+    async def test_xem_complete_scene_season_gets_available_status(
+        self, session: AsyncSession
+    ) -> None:
+        """Scene S01 (all 28 eps aired, no queue items) gets AVAILABLE status."""
+        sm = ShowManager()
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        s1 = next(s for s in result.seasons if s.season_number == 1)
+        assert s1.status == SeasonStatus.AVAILABLE
+
+    async def test_xem_airing_scene_season_gets_airing_status(
+        self, session: AsyncSession
+    ) -> None:
+        """Scene S02 (some eps aired, some future) gets AIRING status."""
+        sm = ShowManager()
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        s2 = next(s for s in result.seasons if s.season_number == 2)
+        assert s2.status == SeasonStatus.AIRING
+
+    async def test_non_xem_show_unchanged_behavior(self, session: AsyncSession) -> None:
+        """Show without tvdb_id → XEM path not triggered, seasons match TMDB exactly."""
+        sm = ShowManager()
+        # tvdb_id=None → no XEM lookup
+        mock_show = _make_show_detail(
+            seasons=[
+                TmdbSeasonInfo(season_number=1, name="S1", episode_count=10, air_date="2020-01-01"),
+                TmdbSeasonInfo(season_number=2, name="S2", episode_count=8, air_date="2021-01-01"),
+            ]
+        )
+        # _make_show_detail builds a TmdbShowDetail without tvdb_id (defaults to None)
+
+        xem_mock = AsyncMock()
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", xem_mock),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        assert len(result.seasons) == 2
+        assert [s.season_number for s in result.seasons] == [1, 2]
+        # XEM was never consulted because tvdb_id is None
+        xem_mock.assert_not_awaited()
+        for s in result.seasons:
+            assert s.xem_mapped is False
+
+    async def test_existing_items_bucketed_to_correct_scene_season(
+        self, session: AsyncSession
+    ) -> None:
+        """Queue items with TMDB numbering (S01E29) appear in scene S02's queue_item_ids."""
+        # S01E29 maps to scene S02E01 via XEM
+        item = await _make_show_item(
+            session,
+            season=1,
+            episode=29,
+            is_season_pack=False,
+            state=QueueState.WANTED,
+        )
+
+        sm = ShowManager()
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        s2 = next(s for s in result.seasons if s.season_number == 2)
+        assert item.id in s2.queue_item_ids
+        # The item should NOT appear in scene S01
+        s1 = next(s for s in result.seasons if s.season_number == 1)
+        assert item.id not in s1.queue_item_ids
+
+    async def test_scene_season_pack_bucketed_by_scene_season_number(
+        self, session: AsyncSession
+    ) -> None:
+        """A season pack with season=1 (scene S01) appears in scene S01's queue_item_ids."""
+        pack = await _make_show_item(
+            session,
+            season=1,
+            episode=None,
+            is_season_pack=True,
+            state=QueueState.WANTED,
+        )
+
+        sm = ShowManager()
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.get_show_detail(session, TMDB_ID)
+
+        assert result is not None
+        s1 = next(s for s in result.seasons if s.season_number == 1)
+        assert pack.id in s1.queue_item_ids
+
+
+# ---------------------------------------------------------------------------
+# Tests: ShowManager.add_seasons with XEM
+# ---------------------------------------------------------------------------
+
+
+class TestAddSeasonsWithXem:
+    """Tests for add_seasons when XEM mappings restructure TMDB seasons into scene seasons."""
+
+    def _make_xem_request(
+        self,
+        seasons: list[int],
+        subscribe: bool = False,
+        quality_profile: str | None = None,
+    ) -> AddSeasonsRequest:
+        return AddSeasonsRequest(
+            tmdb_id=TMDB_ID,
+            imdb_id="tt22248376",
+            title="Frieren: Beyond Journey's End",
+            year=2023,
+            seasons=seasons,
+            quality_profile=quality_profile,
+            subscribe=subscribe,
+        )
+
+    async def test_complete_scene_season_creates_season_pack(
+        self, session: AsyncSession
+    ) -> None:
+        """Requesting complete scene S01 → 1 season pack with scene season number."""
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[1])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        assert result.created_items == 1
+        assert result.skipped_seasons == []
+
+        rows = list((await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
+        )).scalars().all())
+        assert len(rows) == 1
+        pack = rows[0]
+        assert pack.is_season_pack is True
+        assert pack.season == 1   # scene season 1
+        assert pack.episode is None
+        assert pack.state == QueueState.WANTED
+
+    async def test_airing_scene_season_creates_individual_items_with_tmdb_numbers(
+        self, session: AsyncSession
+    ) -> None:
+        """Requesting airing scene S02 → individual items stored with TMDB numbering."""
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[2])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # Scene S02 has 7 episodes (4 aired WANTED + 3 future UNRELEASED)
+        # Items with no air_date are skipped; frieren_detail has air_dates for all
+        assert result.created_episodes == 4   # eps 29-32 (aired)
+        assert result.created_unreleased == 3  # eps 33-35 (future)
+        assert result.created_items == 7
+
+        rows = list((await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
+        )).scalars().all())
+        # All items use TMDB numbering (season=1, episode=29..35)
+        for row in rows:
+            assert row.season == 1  # TMDB season 1
+            assert row.episode in range(29, 36)
+            assert row.is_season_pack is False
+
+    async def test_both_complete_and_airing_scene_seasons(
+        self, session: AsyncSession
+    ) -> None:
+        """Requesting seasons=[1, 2]: S1 pack + S2 individual items."""
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[1, 2])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # 1 season pack for S01 + 7 individual for S02
+        assert result.created_items == 8
+        assert result.skipped_seasons == []
+
+        rows = list((await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
+        )).scalars().all())
+        packs = [r for r in rows if r.is_season_pack]
+        episodes = [r for r in rows if not r.is_season_pack]
+        assert len(packs) == 1
+        assert packs[0].season == 1
+        assert len(episodes) == 7
+
+    async def test_dedup_existing_scene_season_pack_skipped(
+        self, session: AsyncSession
+    ) -> None:
+        """If scene S01 pack already exists, requesting seasons=[1] skips it."""
+        # Add a pack with scene season number 1
+        await _make_show_item(session, season=1, episode=None, is_season_pack=True)
+
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[1])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        assert result.created_items == 0
+        assert 1 in result.skipped_seasons
+
+    async def test_dedup_existing_episode_items_skipped_for_complete_scene_season(
+        self, session: AsyncSession
+    ) -> None:
+        """If individual episode items already exist for scene S01, pack is skipped."""
+        # Add an episode that belongs to scene S01 (TMDB S01E05)
+        await _make_show_item(session, season=1, episode=5, is_season_pack=False)
+
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[1])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # Existing episode item blocks the scene season pack
+        assert result.created_items == 0
+        assert 1 in result.skipped_seasons
+
+    async def test_dedup_existing_episodes_skip_in_airing_scene_season(
+        self, session: AsyncSession
+    ) -> None:
+        """Some S02 episodes already exist → only new ones created."""
+        # Add 2 of the 4 aired episodes (TMDB S01E29 and E30)
+        await _make_show_item(session, season=1, episode=29, is_season_pack=False)
+        await _make_show_item(session, season=1, episode=30, is_season_pack=False)
+
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[2])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # 4 aired - 2 existing = 2 new WANTED + 3 UNRELEASED
+        assert result.created_episodes == 2
+        assert result.created_unreleased == 3
+        assert result.skipped_seasons == []
+
+    async def test_airing_scene_season_auto_subscribes(
+        self, session: AsyncSession
+    ) -> None:
+        """Adding an airing scene season (even with subscribe=False) creates a subscription."""
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[2], subscribe=False)
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        assert result.subscription_status == "created"
+        row = (await session.execute(
+            select(MonitoredShow).where(MonitoredShow.tmdb_id == TMDB_ID)
+        )).scalar_one_or_none()
+        assert row is not None
+        assert row.enabled is True
+
+    async def test_complete_scene_season_no_auto_subscribe(
+        self, session: AsyncSession
+    ) -> None:
+        """Adding only a complete scene season (not airing) with subscribe=False → no subscription."""
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[1], subscribe=False)
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        assert result.subscription_status == "none"
+
+    async def test_no_xem_mappings_falls_through_to_standard_logic(
+        self, session: AsyncSession
+    ) -> None:
+        """When get_absolute_scene_map returns None, add_seasons uses standard TMDB logic."""
+        sm = ShowManager()
+        # Use a show WITH tvdb_id but XEM returns no absolute mappings
+        mock_show = _make_xem_show_detail(
+            seasons=[
+                TmdbSeasonInfo(season_number=1, name="S1", episode_count=10, air_date="2020-01-01")
+            ]
+        )
+        req = self._make_xem_request(seasons=[1])
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=None),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        # Falls through to standard path → season pack for S01
+        assert result.created_items == 1
+
+        rows = list((await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
+        )).scalars().all())
+        assert len(rows) == 1
+        assert rows[0].is_season_pack is True
+        assert rows[0].season == 1
+
+    async def test_scene_season_not_found_in_groups_is_skipped(
+        self, session: AsyncSession
+    ) -> None:
+        """Requesting a scene season that doesn't exist in XEM groups → skipped."""
+        sm = ShowManager()
+        # Only scene S1 and S2 exist; request S99
+        req = self._make_xem_request(seasons=[99])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            result = await sm.add_seasons(session, req)
+
+        assert result.created_items == 0
+        assert 99 in result.skipped_seasons
+
+    async def test_airing_scene_season_items_use_tmdb_season_field(
+        self, session: AsyncSession
+    ) -> None:
+        """Items created for scene S02 store season=1 (TMDB season), not season=2."""
+        sm = ShowManager()
+        req = self._make_xem_request(seasons=[2])
+
+        mock_show = _make_xem_show_detail()
+        frieren_detail = _make_frieren_season_detail()
+        xem_map = _make_frieren_xem_map()
+
+        with (
+            patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
+            patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+        ):
+            await sm.add_seasons(session, req)
+
+        rows = list((await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
+        )).scalars().all())
+        # All items belong to TMDB S01; XEM remapping happens at scrape time
+        for row in rows:
+            assert row.season == 1, f"Expected TMDB season=1, got season={row.season}"

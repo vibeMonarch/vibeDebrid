@@ -64,6 +64,10 @@ When fixing a bug:
 3. Fix the issue
 4. Verify the test passes
 
+## Git Policy
+
+- **Never commit or push without explicit user command.** Always stage and present changes for review first.
+
 ## Docker Context
 
 - Runs alongside Zurg + rclone in docker-compose

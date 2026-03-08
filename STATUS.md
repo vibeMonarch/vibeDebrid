@@ -265,8 +265,12 @@
 - `AddSeasonsResult`: new `created_episodes` and `created_unreleased` counter fields
 - Frontend: sky-blue pulsing badge for AIRING status, "Select available" includes airing seasons
 - Toast: "Added X episodes + Y upcoming to queue" for airing season adds
-- 23 new tests (airing detection, per-episode creation, auto-subscribe, monitoring dedup, schema)
-- Total: 1074 tests, all passing
+- AIRING status overrides IN_QUEUE/IN_LIBRARY so users can always add remaining episodes from an airing season
+- Season pack cutoff: episodes aired before a COMPLETE/DONE season pack's `state_changed_at` are skipped (prevents re-adding already-covered episodes)
+- `_add_airing_season()` accepts `existing_items` to inspect pack state for cutoff logic
+- `add_seasons()` bypasses season-level skip for airing seasons (`if has_any and season_num != airing_season_num`)
+- 27 new tests (airing detection, per-episode creation, auto-subscribe, monitoring dedup, schema, pack cutoff)
+- Total: 1108 tests, all passing
 
 ### XEM Scene Numbering ✅ (Step 1.8)
 - Solves anime numbering mismatch: TMDB S01E29 ≠ torrent S02E01 (e.g., Frieren)
@@ -278,7 +282,24 @@
 - Fallback: if tvdb_id missing, resolves via TMDB; if XEM down/no mapping, uses original numbers
 - Config: `xem.enabled`, `xem.base_url`, `xem.cache_hours`, `xem.timeout_seconds`
 - 31 new tests (14 client, 11 mapper/cache, 6 pipeline integration)
-- Total: 1105 tests, all passing
+- Total: 1108 tests, all passing
+
+### XEM Scene Season Restructuring ✅ (Step 1.9)
+- Show detail page presents scene seasons instead of TMDB seasons for XEM-mapped anime
+- e.g., Frieren: TMDB has 1 season (38 eps) → now shows Scene S01 (28 eps, complete) + S02 (10 eps, airing)
+- Complete scene seasons → 1 season pack (1 scrape request vs 28 individual)
+- Airing scene seasons → per-episode items with TMDB numbering (pipeline XEM-remaps at scrape time)
+- Key insight: XEM `tvdb_absolute` field bridges TMDB continuous numbering → TVDB/scene season structure
+- XEM client: returns all entries (including identity), includes `tvdb_absolute` field
+- XEM mapper: `get_absolute_scene_map()` → `{absolute: (scene_season, scene_episode)}`
+- Show manager: `_derive_scene_seasons()` groups TMDB episodes by absolute→scene mapping
+- `_add_xem_airing_season()`: creates items with TMDB numbering for airing scene seasons
+- `SeasonInfo.xem_mapped: bool` flag for frontend scene numbering indicator
+- DB migration: `tvdb_absolute` column on `xem_cache` table
+- Frontend: "Scene numbering" chip next to Seasons heading
+- Graceful fallback: no XEM data → standard TMDB season display (unchanged)
+- 28 new tests (5 mapper, 23 show_manager XEM paths)
+- Total: 1136 tests, all passing
 
 ## Remaining / Future Work
 

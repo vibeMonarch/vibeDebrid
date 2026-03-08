@@ -22,6 +22,13 @@ Covers:
     - get_scene_numbering_for_item: TMDB resolve failure → None
     - XEM disabled → client returns empty → mapper returns None
 
+  Section B2 — XemMapper.get_all_scene_mappings (5 tests)
+    - Returns correct dict of all mappings from cache entries
+    - Returns empty dict when no cache entries exist
+    - Returns empty dict when XEM is disabled
+    - Multiple entries produce correct key/value pairs
+    - Cache shared between get_all_scene_mappings and get_scene_numbering (one API call)
+
   Section C — Pipeline XEM integration (5 tests)
     - Torrentio _step_torrentio uses scene numbers from XEM
     - Torrentio _step_torrentio uses original numbers when mapper returns None
@@ -138,7 +145,7 @@ _SUCCESS_MAPPINGS_BODY: dict[str, Any] = {
 _IDENTICAL_MAPPINGS_BODY: dict[str, Any] = {
     "result": "success",
     "data": [
-        # All identical → should be filtered out
+        # Identity mappings — client now includes these (filtering moved to mapper layer)
         {"tvdb": {"season": 1, "episode": 1}, "scene": {"season": 1, "episode": 1}},
         {"tvdb": {"season": 1, "episode": 2}, "scene": {"season": 1, "episode": 2}},
     ],
@@ -197,8 +204,8 @@ class TestXemClient:
         assert len(transport.requests_made) == 1
         assert "/map/all" in str(transport.requests_made[0].url)
 
-    async def test_get_show_mappings_skips_identical(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Entries where TVDB and scene numbers are the same are excluded."""
+    async def test_get_show_mappings_includes_identical(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Entries where TVDB and scene numbers are identical are now included (filtering moved to mapper layer)."""
         mock_settings = MagicMock()
         mock_settings.xem.enabled = True
         mock_settings.xem.base_url = "https://thexem.info"
@@ -210,7 +217,14 @@ class TestXemClient:
 
         result = await client.get_show_mappings(TVDB_ID)
 
-        assert result.mappings == []
+        # Both identity entries are returned — the client no longer filters them out.
+        assert len(result.mappings) == 2
+        assert result.mappings[0].tvdb_season == 1
+        assert result.mappings[0].tvdb_episode == 1
+        assert result.mappings[0].scene_season == 1
+        assert result.mappings[0].scene_episode == 1
+        assert result.mappings[1].tvdb_episode == 2
+        assert result.mappings[1].scene_episode == 2
 
     async def test_get_show_mappings_skips_malformed_entries(
         self, monkeypatch: pytest.MonkeyPatch
@@ -235,17 +249,19 @@ class TestXemClient:
                 "not-a-dict",
                 # Missing episode key in tvdb block
                 {"tvdb": {"season": 1}, "scene": {"season": 2, "episode": 3}},
-                # Both season and episode identical — filtered by the identical-numbers check
+                # Both season and episode identical — client now includes identity entries
                 {"tvdb": {"season": 1, "episode": 5}, "scene": {"season": 1, "episode": 5}},
             ],
         }
-        # All entries are either malformed (skipped) or identical (filtered). Net result: 0 mappings.
+        # Only malformed entries are skipped. The identical (1,5)→(1,5) entry IS returned now.
         client = XemClient()
         _patch_xem_client(client, [_make_response(200, body)])
 
         result = await client.get_show_mappings(TVDB_ID)
 
-        assert result.mappings == []
+        assert len(result.mappings) == 1
+        assert result.mappings[0].tvdb_episode == 5
+        assert result.mappings[0].scene_episode == 5
 
     async def test_get_show_mappings_api_failure_connect_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -788,6 +804,127 @@ class TestXemMapper:
         mock_tmdb.get_external_ids.assert_not_called()
         # Result: scene episode==3 is in cache so (2, 3) returned
         assert result == (2, 3)
+
+
+# ---------------------------------------------------------------------------
+# Section B2: XemMapper.get_all_scene_mappings Tests
+# ---------------------------------------------------------------------------
+
+
+class TestXemMapperGetAllSceneMappings:
+    """Tests for XemMapper.get_all_scene_mappings — new method added alongside refactoring."""
+
+    async def test_returns_correct_dict_from_cache_entries(self, session: AsyncSession) -> None:
+        """Fresh cache with two entries → correct (tvdb_s, tvdb_e)→(scene_s, scene_e) dict."""
+        from src.core.xem_mapper import XemMapper
+
+        entry1 = _make_cache_entry(tvdb_episode=29, scene_season=2, scene_episode=1, age_hours=0.0)
+        entry2 = _make_cache_entry(tvdb_episode=30, scene_season=2, scene_episode=2, age_hours=0.0)
+        session.add(entry1)
+        session.add(entry2)
+        await session.flush()
+
+        mock_client = AsyncMock()
+
+        with patch("src.core.xem_mapper.xem_client", mock_client):
+            mapper = XemMapper()
+            result = await mapper.get_all_scene_mappings(session, TVDB_ID)
+
+        assert isinstance(result, dict)
+        assert (1, 29) in result
+        assert result[(1, 29)] == (2, 1)
+        assert (1, 30) in result
+        assert result[(1, 30)] == (2, 2)
+        # No API call — cache was fresh
+        mock_client.get_show_mappings.assert_not_awaited()
+
+    async def test_returns_empty_dict_when_no_cache_entries(self, session: AsyncSession) -> None:
+        """No cache and XEM returns no mappings → empty dict returned."""
+        from src.core.xem_mapper import XemMapper
+
+        mock_client = AsyncMock()
+        mock_client.get_show_mappings.return_value = XemShowMappings(
+            tvdb_id=TVDB_ID, mappings=[]
+        )
+
+        with patch("src.core.xem_mapper.xem_client", mock_client):
+            mapper = XemMapper()
+            result = await mapper.get_all_scene_mappings(session, TVDB_ID)
+
+        assert result == {}
+        mock_client.get_show_mappings.assert_awaited_once_with(TVDB_ID)
+
+    async def test_returns_empty_dict_when_xem_disabled(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When settings.xem.enabled=False → empty dict without any API call."""
+        from src.core.xem_mapper import XemMapper
+
+        mock_settings = MagicMock()
+        mock_settings.xem.enabled = False
+        mock_settings.xem.cache_hours = 24
+        monkeypatch.setattr("src.core.xem_mapper.settings", mock_settings)
+
+        mock_client = AsyncMock()
+
+        with patch("src.core.xem_mapper.xem_client", mock_client):
+            mapper = XemMapper()
+            result = await mapper.get_all_scene_mappings(session, TVDB_ID)
+
+        assert result == {}
+        mock_client.get_show_mappings.assert_not_awaited()
+
+    async def test_multiple_entries_produce_correct_key_value_pairs(
+        self, session: AsyncSession
+    ) -> None:
+        """Many cache entries → all appear as separate keys in returned dict."""
+        from src.core.xem_mapper import XemMapper
+
+        entries = [
+            _make_cache_entry(tvdb_episode=ep, scene_season=2, scene_episode=ep - 28, age_hours=0.0)
+            for ep in range(29, 36)  # ep 29..35 → scene ep 1..7
+        ]
+        for e in entries:
+            session.add(e)
+        await session.flush()
+
+        mock_client = AsyncMock()
+
+        with patch("src.core.xem_mapper.xem_client", mock_client):
+            mapper = XemMapper()
+            result = await mapper.get_all_scene_mappings(session, TVDB_ID)
+
+        assert len(result) == 7
+        for i, tvdb_ep in enumerate(range(29, 36), start=1):
+            assert result[(1, tvdb_ep)] == (2, i)
+        mock_client.get_show_mappings.assert_not_awaited()
+
+    async def test_cache_shared_between_get_all_and_get_scene_numbering(
+        self, session: AsyncSession
+    ) -> None:
+        """Calling get_all_scene_mappings then get_scene_numbering reuses the cache.
+
+        Only one XEM API call should be made — both methods share _ensure_cached_entries.
+        """
+        from src.core.xem_mapper import XemMapper
+
+        fresh_mappings = XemShowMappings(
+            tvdb_id=TVDB_ID,
+            mappings=[_make_xem_mapping(tvdb_episode=29, scene_episode=1)],
+        )
+        mock_client = AsyncMock()
+        mock_client.get_show_mappings.return_value = fresh_mappings
+
+        with patch("src.core.xem_mapper.xem_client", mock_client):
+            mapper = XemMapper()
+            all_map = await mapper.get_all_scene_mappings(session, TVDB_ID)
+            single = await mapper.get_scene_numbering(session, TVDB_ID, season=1, episode=29)
+
+        # get_all_scene_mappings triggered one API call and wrote cache.
+        # get_scene_numbering found fresh cache — no second API call.
+        assert mock_client.get_show_mappings.await_count == 1
+        assert all_map == {(1, 29): (2, 1)}
+        assert single == (2, 1)
 
 
 # ---------------------------------------------------------------------------

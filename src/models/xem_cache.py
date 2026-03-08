@@ -24,6 +24,7 @@ class XemCacheEntry(Base):
     tvdb_episode: Mapped[int] = mapped_column(Integer, nullable=False)
     scene_season: Mapped[int] = mapped_column(Integer, nullable=False)
     scene_episode: Mapped[int] = mapped_column(Integer, nullable=False)
+    tvdb_absolute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

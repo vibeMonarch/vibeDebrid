@@ -39,7 +39,54 @@ Scrape pipeline passed TMDB numbers directly to Torrentio/Zilean → zero result
 - XEM mapper holds DB session during HTTP call to XEM (up to 10s) — acceptable for SQLite but noted
 - XEM cache rollback: if scrape pipeline rolls back session, cache entries are also lost (re-fetched next time)
 
-## Tests: 31
+## Scene Season Restructuring (Show Detail Page) — 2026-03-07
+
+### Problem
+Show detail page used TMDB seasons (1 season, 35 episodes for Frieren).
+Adding created 35 individual items → 35 scrape requests → RD rate limits.
+
+### Solution: XEM-Aware Season Grouping
+- `xem_mapper.get_all_scene_mappings()`: returns full `{(tvdb_s,tvdb_e) → (scene_s,scene_e)}` dict
+- `_ensure_cached_entries()`: refactored shared helper for cache management
+- `show_manager._derive_scene_seasons()`: re-groups TMDB episodes by scene season
+  - Fetches `get_season_details()` per TMDB season (N calls, cached by XEM 24h TTL)
+  - Identity fallback: unmapped episodes keep their TVDB season/episode
+  - Returns `list[SceneSeasonGroup]` or None (no XEM → TMDB fallback)
+
+### Data Flow
+- `get_show_detail()`: if tvdb_id + XEM enabled → scene seasons in response (xem_mapped=True)
+- `add_seasons()`: scene season numbers in request, re-derives groups
+  - Complete scene season → 1 season pack with scene season number
+  - Airing scene season → `_add_xem_airing_season()` → individual items with TMDB numbering
+- Season packs: `season=scene_num` (scraper doesn't XEM-remap packs → correct torrent search)
+- Individual episodes: `season=tmdb_season, episode=tmdb_episode` (pipeline XEM-remaps at scrape time)
+
+### Models
+- `SceneEpisodeInfo`: tmdb_season, tmdb_episode, scene_episode, air_date, has_aired
+- `SceneSeasonGroup`: scene_season, episodes, total/aired counts, is_complete
+- `SeasonInfo.xem_mapped: bool` — indicates scene-restructured season
+
+### Monitoring Stamping
+- XEM airing seasons auto-subscribe + stamp `last_season` with TMDB season (not scene)
+- `airing_max_episode` uses `max()` across multiple airing scene seasons
+
+### Frontend
+- "Scene numbering" chip next to Seasons heading (hidden when no XEM data)
+
+### Review Fixes Applied
+- `item.episode is None` guard in queue item matching (Critical #2)
+- `last_season` stamped for XEM airing path (Critical #1)
+- `max()` for `airing_max_episode` across multiple scene seasons (High #4)
+- try/except around XEM mapper call in `_derive_scene_seasons` (Medium #6)
+
+### Known Limitations (from review, accepted)
+- N TMDB API calls per `_derive_scene_seasons()` — mitigated by XEM cache; consider TMDB response cache
+- AIRING status persists even when all aired episodes in library (by design for episode-adding UX)
+- Pack cutoff doesn't find pre-XEM TMDB packs (edge case, downstream dedup catches it)
+- Scene season names always "Season N" — original TMDB names lost (acceptable tradeoff)
+
+## Tests: 59
 - 14 client (HTTP mock, error handling, disabled guard, malformed responses)
-- 11 mapper (cache hit/miss/stale, TVDB resolution, edge cases)
+- 16 mapper (cache hit/miss/stale, TVDB resolution, get_all_scene_mappings, shared cache)
 - 6 pipeline integration (scene number passthrough, fallback, season pack skip)
+- 23 show_manager (derive scene seasons, get_show_detail XEM, add_seasons XEM, dedup, subscribe)

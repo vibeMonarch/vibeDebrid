@@ -72,6 +72,14 @@ async def _migrate_add_columns() -> None:
             else:
                 logger.warning("Migration: failed to create tmdb_id index: %s", exc)
 
+        # tvdb_absolute on xem_cache (added for TMDB→scene absolute mapping)
+        try:
+            await conn.execute(text("ALTER TABLE xem_cache ADD COLUMN tvdb_absolute INTEGER"))
+            logger.info("Migration: added tvdb_absolute column to xem_cache")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.warning("Migration tvdb_absolute: %s", exc)
+
         # tvdb_id (added for XEM scene numbering support)
         try:
             await conn.execute(text("ALTER TABLE media_items ADD COLUMN tvdb_id INTEGER"))

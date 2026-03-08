@@ -117,7 +117,13 @@
 
   <!-- Seasons section -->
   <div class="px-4 lg:px-8 mb-4 flex items-center justify-between gap-4">
-    <h2 class="text-lg font-semibold text-white">Seasons</h2>
+    <div class="flex items-center gap-2">
+      <h2 class="text-lg font-semibold text-white">Seasons</h2>
+      <span id="xem-indicator"
+            class="hidden text-xs text-vd-muted bg-vd-card border border-vd-border px-2 py-0.5 rounded-full">
+        Scene numbering
+      </span>
+    </div>
     <div class="flex items-center gap-3 text-sm">
       <button type="button" id="btn-select-all"
               onclick="selectAllSeasons()"
@@ -261,6 +267,10 @@
 
     // Seasons grid
     renderSeasons(data.seasons || []);
+
+    // XEM scene-numbering indicator
+    const hasXem = (data.seasons || []).some(s => s.xem_mapped);
+    document.getElementById('xem-indicator').classList.toggle('hidden', !hasXem);
 
     document.getElementById('show-content').classList.remove('hidden');
   }

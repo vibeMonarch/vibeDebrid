@@ -36,6 +36,7 @@ class XemMapping(BaseModel):
     tvdb_episode: int
     scene_season: int
     scene_episode: int
+    tvdb_absolute: int | None = None
 
 
 class XemShowMappings(BaseModel):
@@ -201,9 +202,9 @@ class XemClient:
             ):
                 continue
 
-            # Only include entries where TVDB and scene numbers actually differ.
-            if tvdb_season == scene_season and tvdb_episode == scene_episode:
-                continue
+            tvdb_absolute = tvdb_block.get("absolute")
+            if not isinstance(tvdb_absolute, int):
+                tvdb_absolute = None
 
             mappings.append(
                 XemMapping(
@@ -211,6 +212,7 @@ class XemClient:
                     tvdb_episode=tvdb_episode,
                     scene_season=scene_season,
                     scene_episode=scene_episode,
+                    tvdb_absolute=tvdb_absolute,
                 )
             )
 
