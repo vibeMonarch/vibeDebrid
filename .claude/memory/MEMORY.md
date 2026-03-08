@@ -28,8 +28,6 @@
 - Plex symlink naming mode — 2026-03-08
 
 ## Remaining / Future Work
-- Trakt integration (Step 1b): OAuth, watchlist polling, scheduler
-- Upgrade manager (Step 2): monitor for higher quality versions within window
 - Docker (Step 3): Dockerfile + docker-compose.yml
 
 ## Remaining Review Findings (not yet fixed)
@@ -40,6 +38,18 @@
 - Services: broad `except Exception` on JSON parsing — should be `except ValueError`
 - `filter_engine.py:287`: regex compiled inside hot loop
 - Frontend: no CSRF protection, duplicated `escapeHtml`/`formatBytes`
+
+## XEM Negative Cache — 2026-03-08
+- In-memory `_empty_response_cache: dict[int, float]` on XemMapper instance (not class-level — breaks tests)
+- 5-minute TTL prevents cascading 429s when processing many items for same show
+- Only deletes stale DB entries when new data arrives; returns stale entries on empty/failed response
+- Cleared on successful API response with data
+
+## Bulk Remove Concurrency — 2026-03-08
+- Collects unique `rd_id` set during item loop, deletes concurrently via `asyncio.gather`
+- `asyncio.Semaphore(5)` limits concurrent RD API calls
+- Failed RD deletions reported in `BulkResponse.errors`
+- Loading spinner on "Remove Selected" button (`bulkRemoving` state)
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` + `_upsert_records()` batch helper + `scan_directory()` targeted scan

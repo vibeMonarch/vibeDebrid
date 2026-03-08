@@ -21,9 +21,9 @@
         }
     },
     "paths": {
-        "zurg_mount": "/home/hakan/Projects/homeserver/Zurg/mnt/__all__",
-        "library_movies": "/home/hakan/Projects/homeserver/vibeDebrid/library/movies",
-        "library_shows": "/home/hakan/Projects/homeserver/vibeDebrid/library/shows"
+        "zurg_mount": "/path/to/zurg/mount",
+        "library_movies": "/path/to/library/movies",
+        "library_shows": "/path/to/library/shows"
     },
     "quality": {
         "default_profile": "high",
@@ -106,11 +106,6 @@
         "max_active_retries": 7,
         "unreleased_check_hours": 6
     },
-    "upgrade": {
-        "enabled": true,
-        "window_hours": 24,
-        "check_interval_minutes": 60
-    },
     "mount_scanner": {
         "scan_interval_minutes": 15,
         "scan_on_startup": true
@@ -119,17 +114,6 @@
         "queue_processor_minutes": 5,
         "symlink_verifier_minutes": 30,
         "unreleased_check_minutes": 360
-    },
-    "trakt": {
-        "enabled": false,
-        "client_id": "",
-        "client_secret": "",
-        "access_token": "",
-        "refresh_token": "",
-        "poll_interval_minutes": 15,
-        "lists": [
-            "watchlist"
-        ]
     },
     "plex": {
         "enabled": false,

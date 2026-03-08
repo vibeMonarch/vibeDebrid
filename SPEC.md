@@ -38,7 +38,6 @@ Real-Debrid (cloud) → Zurg (WebDAV, port 9090) → rclone (FUSE mount) → Ple
 - **Real-Debrid API** — torrent management, cache checking, file retrieval
 - **Torrentio** — Stremio addon, torrent scraping by IMDB ID
 - **Zilean** — local torrent metadata search (DMM hashlists), runs at `http://localhost:8182`
-- **Trakt** — watchlist and collection tracking
 - **Plex** — media server, library scanning, watchlist source
 - **TMDB** — metadata, release dates, episode air dates
 
@@ -172,24 +171,11 @@ Root cause: Torrentio's API works differently for episode-level vs season-level 
 
 ### 3.7 Watchlist Integration
 
-#### Trakt
-- OAuth authentication
-- Monitor: watchlist, custom lists, collection
-- Configurable polling interval (default: 15 minutes)
-- Map Trakt items to IMDB IDs for scraping
-
 #### Plex
 - Monitor Plex watchlist
 - Detect items added via Plex Discover
 - Trigger library scan after symlinks are created
 - Configurable section IDs for movies/shows
-
-### 3.8 Upgrade System
-
-- After initial acquisition, monitor for higher-quality versions for a configurable window (default: 24 hours)
-- Quality upgrade path: 720p → 1080p → 2160p (configurable)
-- When upgrade found: add new version, update symlink, optionally remove old from RD
-- Upgrade checking interval: configurable (default: 1 hour)
 
 ---
 
@@ -270,13 +256,11 @@ vibeDebrid/
 │   │   ├── dedup.py             # Deduplication logic
 │   │   ├── symlink_manager.py   # Symlink creation and health checking
 │   │   ├── mount_scanner.py     # Zurg mount file indexing
-│   │   └── upgrade_manager.py   # Quality upgrade monitoring
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── real_debrid.py       # RD API wrapper
 │   │   ├── torrentio.py         # Torrentio scraper
 │   │   ├── zilean.py            # Zilean scraper
-│   │   ├── trakt.py             # Trakt API integration
 │   │   ├── plex.py              # Plex API integration
 │   │   └── tmdb.py              # TMDB metadata and release dates
 │   ├── models/
@@ -327,8 +311,8 @@ media_items (
     state_changed_at TIMESTAMP,
     retry_count INTEGER DEFAULT 0,
     next_retry_at TIMESTAMP,
-    source TEXT,               -- 'trakt', 'plex', 'manual'
-    metadata JSON,             -- cached TMDB/Trakt metadata
+    source TEXT,               -- 'plex', 'discover', 'manual'
+    metadata JSON,             -- cached TMDB metadata
     air_date DATE,             -- for unreleased content
     created_at TIMESTAMP,
     updated_at TIMESTAMP
@@ -454,23 +438,9 @@ symlinks (
         "max_active_retries": 7,
         "unreleased_check_hours": 6
     },
-    "upgrade": {
-        "enabled": true,
-        "window_hours": 24,
-        "check_interval_minutes": 60
-    },
     "mount_scanner": {
         "scan_interval_minutes": 15,
         "scan_on_startup": true
-    },
-    "trakt": {
-        "enabled": false,
-        "client_id": "",
-        "client_secret": "",
-        "access_token": "",
-        "refresh_token": "",
-        "poll_interval_minutes": 15,
-        "lists": ["watchlist"]
     },
     "plex": {
         "enabled": false,

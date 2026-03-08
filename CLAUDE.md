@@ -20,7 +20,7 @@ src/
   database.py          → SQLAlchemy async engine, sessionmaker, model base
   api/routes/          → FastAPI routers (dashboard, queue, search, settings, duplicates)
   core/                → Business logic (queue_manager, scrape_pipeline, filter_engine, dedup, symlink_manager, mount_scanner)
-  services/            → External API wrappers (real_debrid, torrentio, zilean, trakt, plex, tmdb)
+  services/            → External API wrappers (real_debrid, torrentio, zilean, plex, tmdb)
   models/              → SQLAlchemy ORM models + Pydantic schemas
   templates/           → Jinja2 HTML templates
 tests/                 → pytest tests, one file per core module
