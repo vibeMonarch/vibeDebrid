@@ -92,11 +92,6 @@ class XemMapper:
         # Fetch from XEM and rebuild cache.
         show_mappings = await xem_client.get_show_mappings(tvdb_id)
 
-        # Delete stale/existing entries for this show.
-        await session.execute(
-            delete(XemCacheEntry).where(XemCacheEntry.tvdb_id == tvdb_id)
-        )
-
         now = datetime.now(timezone.utc)
         new_entries: list[XemCacheEntry] = []
         for mapping in show_mappings.mappings:
@@ -113,6 +108,12 @@ class XemMapper:
             )
 
         if new_entries:
+            # Only delete stale entries when we have new data to replace them.
+            # This preserves valid cached mappings when XEM returns empty due
+            # to a transient error (429, timeout, network issue).
+            await session.execute(
+                delete(XemCacheEntry).where(XemCacheEntry.tvdb_id == tvdb_id)
+            )
             session.add_all(new_entries)
             await session.flush()
             self._empty_response_cache.pop(tvdb_id, None)
@@ -127,6 +128,8 @@ class XemMapper:
                 "xem_mapper: XEM returned no mappings for tvdb_id=%d (cached negative result)",
                 tvdb_id,
             )
+            # Return stale entries if available — better than nothing
+            return cached_entries
 
         return new_entries
 

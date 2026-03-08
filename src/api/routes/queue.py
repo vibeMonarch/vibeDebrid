@@ -1,5 +1,6 @@
 """Queue management endpoints."""
 
+import asyncio
 import logging
 from typing import Any
 
@@ -202,6 +203,7 @@ async def bulk_remove(
     """Bulk remove: delete a list of items and their associated data."""
     processed = 0
     errors: list[str] = []
+    rd_ids_to_delete: set[str] = set()
 
     for item_id in body.ids:
         try:
@@ -216,20 +218,13 @@ async def bulk_remove(
             # Remove symlinks from disk and DB
             await symlink_manager.remove_symlink(session, item_id)
 
-            # Delete associated RD torrents
+            # Collect RD torrent IDs for concurrent deletion, remove DB rows
             torrents_result = await session.execute(
                 select(RdTorrent).where(RdTorrent.media_item_id == item_id)
             )
             for torrent in torrents_result.scalars().all():
                 if torrent.rd_id:
-                    try:
-                        await rd_client.delete_torrent(torrent.rd_id)
-                    except Exception as exc:
-                        logger.warning(
-                            "bulk_remove: failed to delete rd torrent rd_id=%s: %s",
-                            torrent.rd_id,
-                            exc,
-                        )
+                    rd_ids_to_delete.add(torrent.rd_id)
                 await session.delete(torrent)
 
             # Delete scrape logs
@@ -245,10 +240,30 @@ async def bulk_remove(
         except Exception as exc:
             errors.append(f"Item {item_id}: {exc}")
 
+    # Delete RD torrents concurrently (deduped, max 5 at a time)
+    rd_failed: list[str] = []
+    sem = asyncio.Semaphore(5)
+
+    async def _delete_rd(rd_id: str) -> None:
+        async with sem:
+            try:
+                await rd_client.delete_torrent(rd_id)
+            except Exception as exc:
+                logger.warning("bulk_remove: failed to delete rd torrent rd_id=%s: %s", rd_id, exc)
+                rd_failed.append(rd_id)
+
+    if rd_ids_to_delete:
+        await asyncio.gather(*[_delete_rd(rid) for rid in rd_ids_to_delete])
+
+    if rd_failed:
+        errors.append(f"Failed to delete {len(rd_failed)} RD torrent(s) from account")
+
     await session.commit()
 
     logger.info(
-        "bulk_remove: processed=%d errors=%d", processed, len(errors)
+        "bulk_remove: processed=%d rd_deleted=%d/%d errors=%d",
+        processed, len(rd_ids_to_delete) - len(rd_failed),
+        len(rd_ids_to_delete), len(errors),
     )
 
     return BulkResponse(
