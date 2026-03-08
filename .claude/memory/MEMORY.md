@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1292 tests, all passing (as of 2026-03-08)
+- 1316 tests, all passing (as of 2026-03-08)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -87,6 +87,16 @@
 - Torrentio RD key filtering (2026-03-08): see Torrentio RD Key Stripping section below
 - Season pack false positive (2026-03-08): PTN can't parse anime `S2 - 06` notation → `_SEASON_DASH_EP_RE` regex fallback in both torrentio.py and zilean.py
 - Season pack scoring bias (2026-03-08): `prefer_season_packs` param on `filter_and_rank`; pipeline passes `item.is_season_pack` so episode items don't give +5 bonus to season pack results
+- Anime CHECKING failures (2026-03-08): PTN can't parse `[Group] Title - NN` filenames → `_ANIME_DASH_EP_RE` regex fallback. Complete collections (flat, absolute ep numbering) → TMDB-based absolute episode range mapping. Single-file anime torrents (title mismatch) → no-filter fallback with single-file guard. Season pack filter hard-rejects single-episode results (`prefer_season_packs=True` in Tier 1)
+
+## Season Pack Split — 2026-03-08
+- When no season packs available, auto-splits into individual episode queue items
+- `scrape_pipeline.py:_split_season_pack_to_episodes()`: queries TMDB for episode count, creates individual WANTED items
+- Triggers when: `item.is_season_pack` and scrapers returned results (`total_count > 0`) but `best is None` after filtering
+- Dedup: uses `tmdb_id` (not `imdb_id`) to find existing episode items — SQL `NULL=NULL` is FALSE
+- Parent item transitions to COMPLETE (not DONE — SCRAPING→DONE is invalid)
+- Created items: `source="season_pack_split"`, inherit all IDs from parent, `is_season_pack=False`
+- 22 tests in `tests/test_season_pack_split.py`
 
 ## Season Pack Dedup + XEM Scrape Fix — 2026-03-08
 Three interrelated bugs when adding anime with XEM scene seasons:

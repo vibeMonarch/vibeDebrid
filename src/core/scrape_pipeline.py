@@ -27,9 +27,11 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -357,6 +359,49 @@ class ScrapePipeline:
         best: FilteredResult | None = ranked[0] if ranked else None
 
         if best is None:
+            # Season pack split: when results exist but all are single episodes,
+            # split into individual episode items instead of sleeping.
+            if item.is_season_pack and total_count > 0:
+                try:
+                    created = await self._split_season_pack_to_episodes(session, item)
+                except Exception as exc:
+                    logger.warning(
+                        "scrape_pipeline: season pack split failed for item id=%d: %s",
+                        item.id, exc,
+                    )
+                    created = 0
+
+                if created > 0:
+                    logger.info(
+                        "scrape_pipeline: no season packs found for item id=%d title=%r, "
+                        "split into %d individual episode items",
+                        item.id, item.title, created,
+                    )
+                    await self._log_scrape(
+                        session,
+                        media_item_id=item.id,
+                        scraper="pipeline",
+                        query_params=json.dumps({
+                            "title": item.title,
+                            "step": "season_pack_split",
+                            "total": total_count,
+                            "episodes_created": created,
+                        }),
+                        results_count=total_count,
+                        results_summary=json.dumps(self._summarise_results(combined[:5])),
+                        selected_result=None,
+                        duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                    )
+                    await queue_manager.transition(session, item.id, QueueState.COMPLETE)
+                    return PipelineResult(
+                        item_id=item.id,
+                        action="season_pack_split",
+                        message=f"No season packs available, created {created} individual episode items",
+                        scrape_results_count=total_count,
+                        filtered_results_count=0,
+                    )
+
+            # Original logic: no results or split failed → SLEEPING
             logger.info(
                 "scrape_pipeline: all %d results rejected by filter engine for "
                 "item id=%d, transitioning to SLEEPING",
@@ -1151,6 +1196,137 @@ class ScrapePipeline:
             }
             for r in results
         ]
+
+    async def _split_season_pack_to_episodes(
+        self,
+        session: AsyncSession,
+        item: MediaItem,
+    ) -> int:
+        """Split a season pack item into individual episode items.
+
+        When no season packs are available on any scraper, creates one queue
+        item per episode so that individual episodes can be acquired instead.
+        Uses TMDB to determine the episode count for the season.
+
+        Existing episode items for the same show+season are skipped to avoid
+        duplicates.
+
+        Args:
+            session: Caller-managed async database session.
+            item: The season pack MediaItem to split.
+
+        Returns:
+            Number of new episode items created. Returns 0 on failure (e.g.
+            TMDB unavailable, all episodes already exist in queue).
+        """
+        if not item.tmdb_id or item.season is None:
+            logger.warning(
+                "scrape_pipeline._split_season_pack_to_episodes: item id=%d "
+                "missing tmdb_id or season — cannot split",
+                item.id,
+            )
+            return 0
+
+        try:
+            tmdb_id_int = int(item.tmdb_id)
+        except (ValueError, TypeError):
+            logger.warning(
+                "scrape_pipeline._split_season_pack_to_episodes: item id=%d "
+                "has non-numeric tmdb_id=%r — cannot split",
+                item.id, item.tmdb_id,
+            )
+            return 0
+
+        from src.services.tmdb import tmdb_client
+
+        try:
+            show_details = await tmdb_client.get_show_details(tmdb_id_int)
+        except Exception as exc:
+            logger.warning(
+                "scrape_pipeline._split_season_pack_to_episodes: TMDB error for "
+                "tmdb_id=%s (item id=%d): %s",
+                item.tmdb_id, item.id, exc,
+            )
+            return 0
+
+        if show_details is None:
+            logger.warning(
+                "scrape_pipeline._split_season_pack_to_episodes: TMDB returned None "
+                "for tmdb_id=%s (item id=%d)",
+                item.tmdb_id, item.id,
+            )
+            return 0
+
+        # Find the matching season and get its episode count.
+        season_info = next(
+            (s for s in show_details.seasons if s.season_number == item.season),
+            None,
+        )
+        if season_info is None or season_info.episode_count <= 0:
+            logger.warning(
+                "scrape_pipeline._split_season_pack_to_episodes: season %d not found "
+                "in TMDB data for tmdb_id=%s (item id=%d)",
+                item.season, item.tmdb_id, item.id,
+            )
+            return 0
+
+        episode_count = season_info.episode_count
+        logger.info(
+            "scrape_pipeline._split_season_pack_to_episodes: item id=%d tmdb_id=%s "
+            "season=%d has %d episodes per TMDB",
+            item.id, item.tmdb_id, item.season, episode_count,
+        )
+
+        # Find which episodes already exist in the queue for this show+season.
+        existing_stmt = select(MediaItem.episode).where(
+            MediaItem.tmdb_id == item.tmdb_id,
+            MediaItem.season == item.season,
+            MediaItem.episode.is_not(None),
+        )
+        existing_result = await session.execute(existing_stmt)
+        existing_episodes: set[int] = {row[0] for row in existing_result.all()}
+
+        now = datetime.now(timezone.utc)
+        created = 0
+        for ep_num in range(1, episode_count + 1):
+            if ep_num in existing_episodes:
+                logger.debug(
+                    "scrape_pipeline._split_season_pack_to_episodes: episode %d already "
+                    "exists for item id=%d season=%d — skipping",
+                    ep_num, item.id, item.season,
+                )
+                continue
+
+            new_item = MediaItem(
+                title=item.title,
+                year=item.year,
+                media_type=MediaType.SHOW,
+                tmdb_id=item.tmdb_id,
+                imdb_id=item.imdb_id,
+                tvdb_id=item.tvdb_id,
+                state=QueueState.WANTED,
+                source="season_pack_split",
+                added_at=now,
+                state_changed_at=now,
+                retry_count=0,
+                season=item.season,
+                episode=ep_num,
+                is_season_pack=False,
+                quality_profile=item.quality_profile,
+            )
+            session.add(new_item)
+            created += 1
+
+        if created > 0:
+            await session.flush()
+
+        logger.info(
+            "scrape_pipeline._split_season_pack_to_episodes: created %d new episode "
+            "items for item id=%d title=%r season=%d (skipped %d existing)",
+            created, item.id, item.title, item.season,
+            episode_count - created,
+        )
+        return created
 
     async def _safe_transition_sleeping(
         self, session: AsyncSession, item: MediaItem

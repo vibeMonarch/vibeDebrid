@@ -316,7 +316,18 @@
 - Season pack dedup + XEM scrape mapping: hash-based dedup before cache check, absolute fallback for TMDB→scene mapping
 - Plex scan batching: targeted scan after COMPLETE, scan sections grouped by library
 - Torrentio RD key pre-filtering: `realdebrid=<key>` in opts causes 41→3 results for niche content; stripped for pipeline and search
-- Total: 1276 tests, all passing
+
+### Anime CHECKING Fixes + Season Pack Split ✅ (2026-03-08)
+- Anime filename parsing: `_ANIME_DASH_EP_RE` regex fallback for `[Group] Title - NN` patterns PTN can't parse
+- Directory season inference: `_DIR_SEASON_RE` + `_extract_season_from_path()` for flat directory structures
+- TMDB absolute episode mapping: `_get_absolute_episode_range()` maps TMDB seasons to absolute episode numbers for complete collections
+- Cascading CHECKING fallbacks: season+episode → episode-only → no-filter (single-file guard)
+- Season pack filter: `prefer_season_packs=True` hard-rejects single episodes in Tier 1 (prevents wrong content)
+- Season pack split: when no season packs available but episode results exist, auto-splits into individual WANTED episode items via TMDB
+  - `_split_season_pack_to_episodes()` in scrape_pipeline.py
+  - Dedup via tmdb_id, parent transitions to COMPLETE, child items inherit all metadata
+  - 22 new tests in `tests/test_season_pack_split.py`
+- Total: 1316 tests, all passing
 
 ## Remaining / Future Work
 
