@@ -494,7 +494,19 @@ class MountScanner:
         # ------------------------------------------------------------------
         _ext = os.path.splitext(directory_name)[1].lower()
         if _ext in VIDEO_EXTENSIONS:
-            return await self._scan_single_file(session, directory_name)
+            result = await self._scan_single_file(session, directory_name)
+            if result.files_indexed > 0:
+                return result
+            # Single-file not found in mount root — fall through to directory
+            # scan using the stem (Zurg may wrap single-file torrents in a
+            # directory named after the torrent).
+            original_name = directory_name
+            directory_name = os.path.splitext(directory_name)[0]
+            logger.info(
+                "scan_directory: single-file scan found nothing for %r, trying directory scan with stem %r",
+                original_name,
+                directory_name,
+            )
 
         dir_path = os.path.join(settings.paths.zurg_mount, directory_name, "")
 

@@ -20,7 +20,8 @@ Covers:
   - ScanDirectoryResult: matched_dir_path propagation through scan_directory
   - scan_directory single-file handling: exact match, fuzzy match, not found,
     extension variety, matched_dir_path=None invariant, directory regression,
-    re-scan dedup, timeout graceful exit
+    re-scan dedup, timeout graceful exit, fallback to directory scan when
+    single-file returns 0, no directory fallback when single-file succeeds
 """
 
 from __future__ import annotations
@@ -1652,25 +1653,32 @@ class TestScanDirectorySingleFile:
         assert entry is not None
         assert entry.filename == actual
 
-    async def test_fuzzy_match_skips_directories(
+    async def test_single_file_not_found_falls_through_to_directory_scan(
         self, session: AsyncSession
     ) -> None:
-        """Fuzzy file search ignores subdirectories in the mount root."""
+        """When _scan_single_file finds nothing, fall through to directory scan.
+
+        Zurg sometimes wraps single-file torrents in a directory named after the
+        torrent stem.  After the single-file scan returns 0 results the code
+        strips the extension and retries as a directory scan, which should find
+        the subdirectory via fuzzy match.
+        """
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
-            # A subdirectory whose name would otherwise match.
+            # A subdirectory whose name would fuzzy-match the stem "Tenet 2020".
             subdir = os.path.join(tmpdir, "Tenet.2020.1080p")
             os.makedirs(subdir)
             open(os.path.join(subdir, "Tenet.2020.mkv"), "wb").write(b"v")
-            # No matching file at root level.
+            # No matching file at root level — _scan_single_file returns 0.
 
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
                 result = await scanner.scan_directory(session, "Tenet 2020.mkv")
 
-        # Directories must not be matched — result should be empty.
-        assert result.files_indexed == 0
-        assert result.matched_dir_path is None
+        # The directory scan fallback should find the subdirectory and index the
+        # file inside it.
+        assert result.files_indexed == 1
+        assert result.matched_dir_path is not None
 
     async def test_fuzzy_match_skips_non_video_files(
         self, session: AsyncSession
@@ -1860,3 +1868,75 @@ class TestScanDirectorySingleFile:
 
         assert result.files_indexed == 0
         assert result.matched_dir_path is None
+
+    # ------------------------------------------------------------------
+    # 9. Fallback to directory scan when single-file scan returns 0
+    # ------------------------------------------------------------------
+
+    async def test_scan_directory_single_file_fallback_to_directory(
+        self, session: AsyncSession
+    ) -> None:
+        """When _scan_single_file returns 0, scan_directory falls back to the
+        directory scan using the stem as the directory name.
+
+        This covers the case where Zurg wraps a single-file torrent named
+        ``Movie.mkv`` inside a directory also named ``Movie``.
+        """
+        scanner = MountScanner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a directory named after the stem ("Movie") containing the file.
+            stem_dir = os.path.join(tmpdir, "Movie")
+            os.makedirs(stem_dir)
+            open(os.path.join(stem_dir, "Movie.mkv"), "wb").write(b"v")
+
+            # _scan_single_file finds nothing (file not in mount root).
+            with patch.object(
+                scanner,
+                "_scan_single_file",
+                new=AsyncMock(
+                    return_value=ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
+                ),
+            ) as mock_single:
+                with patch("src.core.mount_scanner.settings") as mock_settings:
+                    mock_settings.paths.zurg_mount = tmpdir
+                    result = await scanner.scan_directory(session, "Movie.mkv")
+
+                mock_single.assert_called_once_with(session, "Movie.mkv")
+
+        # The directory scan should have succeeded using the stem "Movie".
+        assert isinstance(result, ScanDirectoryResult)
+        assert result.files_indexed == 1
+        assert result.matched_dir_path is not None
+        assert "Movie" in result.matched_dir_path
+
+    async def test_scan_directory_single_file_found_no_directory_fallback(
+        self, session: AsyncSession
+    ) -> None:
+        """When _scan_single_file succeeds (files_indexed > 0), the directory
+        scan path is never attempted — os.path.isdir is not called for the stem.
+        """
+        scanner = MountScanner()
+
+        successful_result = ScanDirectoryResult(
+            files_indexed=1, matched_dir_path="/mnt/Movie.mkv"
+        )
+
+        with patch.object(
+            scanner,
+            "_scan_single_file",
+            new=AsyncMock(return_value=successful_result),
+        ) as mock_single:
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = "/mnt"
+                with patch("os.path.isdir") as mock_isdir:
+                    result = await scanner.scan_directory(session, "Movie.mkv")
+
+                    # isdir must never be called for the stem-derived dir path.
+                    stem_dir_path = os.path.join("/mnt", "Movie", "")
+                    isdir_calls = [str(c.args[0]) for c in mock_isdir.call_args_list]
+                    assert stem_dir_path not in isdir_calls
+
+        mock_single.assert_called_once_with(session, "Movie.mkv")
+        assert result.files_indexed == 1
+        assert result.matched_dir_path == "/mnt/Movie.mkv"
