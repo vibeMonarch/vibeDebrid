@@ -115,6 +115,66 @@ async def _find_torrent_for_item(session: AsyncSession, item: MediaItem) -> RdTo
     return torrent
 
 
+async def _get_absolute_episode_range(tmdb_id: str, target_season: int) -> tuple[int, int] | None:
+    """Calculate the absolute episode range for a target season using TMDB data.
+
+    For shows with absolute episode numbering (no season markers), uses
+    TMDB episode counts per season to determine which absolute episode
+    numbers correspond to the target season.
+
+    Args:
+        tmdb_id: TMDB show ID as string.
+        target_season: The season number to calculate the range for.
+
+    Returns:
+        A (start, end) tuple of absolute episode numbers (inclusive),
+        or None if TMDB data is unavailable or the season is not found.
+    """
+    try:
+        tid = int(tmdb_id)
+    except (ValueError, TypeError):
+        return None
+
+    from src.services.tmdb import tmdb_client
+    show = await tmdb_client.get_show_details(tid)
+    if not show or not show.seasons:
+        logger.debug(
+            "_get_absolute_episode_range: TMDB returned no data for tmdb_id=%s", tmdb_id,
+        )
+        return None
+
+    # Sort seasons by number, skip specials (season 0)
+    regular_seasons = sorted(
+        [s for s in show.seasons if s.season_number > 0],
+        key=lambda s: s.season_number,
+    )
+
+    logger.debug(
+        "_get_absolute_episode_range: tmdb_id=%s target_season=%d seasons=%s",
+        tmdb_id, target_season,
+        [(s.season_number, s.episode_count) for s in regular_seasons],
+    )
+
+    cumulative = 0
+    for s in regular_seasons:
+        if s.season_number == target_season:
+            start = cumulative + 1
+            end = cumulative + s.episode_count
+            logger.info(
+                "_get_absolute_episode_range: tmdb_id=%s S%02d → absolute episodes %d-%d",
+                tmdb_id, target_season, start, end,
+            )
+            return (start, end)
+        cumulative += s.episode_count
+
+    logger.warning(
+        "_get_absolute_episode_range: season %d not found in TMDB data for tmdb_id=%s "
+        "(available: %s)",
+        target_season, tmdb_id, [s.season_number for s in regular_seasons],
+    )
+    return None
+
+
 async def _job_mount_scan() -> None:
     """Scheduled job: scan the Zurg mount and update the file index."""
     logger.info("Scheduled job starting: mount_scan")
@@ -303,6 +363,46 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=None,
                                 )
+                            # Absolute episode fallback: complete collections with flat structure
+                            # (no season markers in filenames). Use TMDB episode counts to
+                            # calculate which absolute episodes belong to the target season.
+                            if not matches and scan_result.matched_dir_path and item.tmdb_id and item.season is not None:
+                                try:
+                                    all_files = await mount_scanner.lookup_by_path_prefix(
+                                        session,
+                                        scan_result.matched_dir_path,
+                                        season=None,
+                                        episode=None,
+                                    )
+                                    if all_files:
+                                        abs_range = await _get_absolute_episode_range(item.tmdb_id, item.season)
+                                        if abs_range:
+                                            start_ep, end_ep = abs_range
+                                            ep_values = sorted(set(
+                                                f.parsed_episode for f in all_files if f.parsed_episode is not None
+                                            ))
+                                            logger.info(
+                                                "CHECKING season pack id=%d: absolute fallback range=%d-%d, "
+                                                "file episodes=%s (sample filenames: %s)",
+                                                item.id, start_ep, end_ep,
+                                                ep_values[:20] if len(ep_values) <= 20 else f"{ep_values[:10]}...{ep_values[-5:]} ({len(ep_values)} total)",
+                                                [f.filename for f in all_files[:3]],
+                                            )
+                                            matches = [
+                                                f for f in all_files
+                                                if f.parsed_episode is not None and start_ep <= f.parsed_episode <= end_ep
+                                            ]
+                                            if matches:
+                                                logger.info(
+                                                    "CHECKING season pack id=%d: absolute episode fallback matched %d files "
+                                                    "(absolute range %d-%d for S%02d)",
+                                                    item.id, len(matches), start_ep, end_ep, item.season,
+                                                )
+                                except Exception as exc:
+                                    logger.warning(
+                                        "CHECKING season pack id=%d: absolute episode fallback failed: %s",
+                                        item.id, exc,
+                                    )
                     if not matches:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
@@ -402,6 +502,37 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=item.episode,
                                 )
+                                # Relax season filter: anime files often lack season
+                                # markers (e.g. "[Group] Show - 01.mkv").  The path
+                                # prefix already constrains to the exact torrent
+                                # directory, so matching by episode alone is safe.
+                                if not matches:
+                                    matches = await mount_scanner.lookup_by_path_prefix(
+                                        session,
+                                        scan_result.matched_dir_path,
+                                        season=None,
+                                        episode=item.episode,
+                                    )
+                                # Last resort: single-file torrent directories contain
+                                # exactly one file.  Skip episode filter entirely.
+                                if not matches:
+                                    matches = await mount_scanner.lookup_by_path_prefix(
+                                        session,
+                                        scan_result.matched_dir_path,
+                                        season=None,
+                                        episode=None,
+                                    )
+                                    if matches:
+                                        logger.info(
+                                            "CHECKING item id=%d: no-filter fallback found %d file(s) "
+                                            "(parsed_season=%s parsed_episode=%s filename=%r)",
+                                            item.id, len(matches),
+                                            matches[0].parsed_season, matches[0].parsed_episode,
+                                            matches[0].filename,
+                                        )
+                                        # Only trust this for single-file directories
+                                        if len(matches) != 1:
+                                            matches = []
 
                     # XEM fallback: files may use scene numbering (e.g. S02E01)
                     # while the item stores TMDB numbering (e.g. S01E29).

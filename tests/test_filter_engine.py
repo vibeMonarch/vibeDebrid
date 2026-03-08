@@ -739,9 +739,11 @@ class TestTier2SeedersCachedSeasonPack:
         self,
         result: TorrentioResult,
         cached_hashes: set[str] | None = None,
+        prefer_season_packs: bool = False,
     ) -> dict[str, float]:
         _, breakdown = ENGINE._calculate_score(
-            result, _DEFAULT_PROFILE, cached_hashes or set()
+            result, _DEFAULT_PROFILE, cached_hashes or set(),
+            prefer_season_packs=prefer_season_packs,
         )
         return breakdown
 
@@ -791,7 +793,7 @@ class TestTier2SeedersCachedSeasonPack:
     def test_season_pack_true_gives_5_points(self):
         """is_season_pack=True → 5 pts."""
         result = _make_result(is_season_pack=True)
-        bd = self._full_score(result)
+        bd = self._full_score(result, prefer_season_packs=True)
         assert bd["season_pack"] == 5.0
 
     def test_season_pack_false_gives_0_points(self):
@@ -1115,17 +1117,18 @@ class TestEdgeCases:
         assert len(ranked) == 1000
 
     def test_season_pack_scoring_in_full_pipeline(self):
-        """Season pack bonus is reflected in the full filter_and_rank output."""
+        """When prefer_season_packs=True the pack earns the bonus and the
+        single-episode result is hard-rejected (Tier 1), leaving only the pack."""
         r_pack = _make_result(info_hash="p" * 40, is_season_pack=True, seeders=50)
         r_ep = _make_result(info_hash="e" * 40, is_season_pack=False, seeders=50)
 
         q_patch, f_patch = _patch_settings()
         with q_patch, f_patch:
-            ranked = ENGINE.filter_and_rank([r_ep, r_pack])
+            ranked = ENGINE.filter_and_rank([r_ep, r_pack], prefer_season_packs=True)
 
+        assert len(ranked) == 1
         assert ranked[0].result.info_hash == "p" * 40
         assert ranked[0].score_breakdown["season_pack"] == 5.0
-        assert ranked[1].score_breakdown["season_pack"] == 0.0
 
     def test_imdb_id_not_relevant_to_filter(self):
         """The engine does not inspect or reject based on info_hash format."""
@@ -1166,7 +1169,9 @@ class TestScoringRegressions:
         )
         q_patch, f_patch = _patch_settings()
         with q_patch, f_patch:
-            ranked = ENGINE.filter_and_rank([result], cached_hashes={info_hash})
+            ranked = ENGINE.filter_and_rank(
+                [result], cached_hashes={info_hash}, prefer_season_packs=True
+            )
 
         assert len(ranked) == 1
         fr = ranked[0]
@@ -1669,9 +1674,9 @@ class TestPreferSeasonPacks:
         )
         assert ep_score >= pack_score
 
-    def test_prefer_packs_true_season_pack_outranks_equal_episode(self):
-        """Contrast: when prefer_season_packs=True the season pack earns 5 extra
-        pts and therefore ranks strictly above the equal-quality episode result."""
+    def test_prefer_packs_true_hard_rejects_episode_results(self):
+        """When prefer_season_packs=True, single-episode results are hard-rejected
+        (Tier 1) regardless of their quality, leaving only the season pack."""
         r_pack = _make_result(
             info_hash="p" * 40,
             is_season_pack=True,
@@ -1693,8 +1698,6 @@ class TestPreferSeasonPacks:
         with q_patch, f_patch:
             ranked = ENGINE.filter_and_rank([r_ep, r_pack], prefer_season_packs=True)
 
-        assert len(ranked) == 2
+        assert len(ranked) == 1
         assert ranked[0].result.info_hash == "p" * 40
         assert ranked[0].score_breakdown["season_pack"] == 5.0
-        assert ranked[1].score_breakdown["season_pack"] == 0.0
-        assert ranked[0].score > ranked[1].score

@@ -148,7 +148,7 @@ class FilterEngine:
         results: list[ScrapeResult],
         profile_name: str | None = None,
         cached_hashes: set[str] | None = None,
-        prefer_season_packs: bool = True,
+        prefer_season_packs: bool = False,
     ) -> list[FilteredResult]:
         """Apply Tier 1 hard filters then Tier 2 quality scoring to a result list.
 
@@ -163,9 +163,13 @@ class FilterEngine:
             cached_hashes: Set of info_hash strings known to be cached in
                 Real-Debrid.  Matching hashes earn a bonus score.  Pass
                 ``None`` or an empty set when cache status is unknown.
-            prefer_season_packs: When True, season pack results receive a +5
-                scoring bonus.  Pass False for single-episode requests so that
-                season packs do not outrank individual episode torrents.
+            prefer_season_packs: When True, the queue item is requesting a full
+                season pack.  Single-episode results (``is_season_pack=False``)
+                are hard-rejected by Tier 1 so that a stray episode torrent is
+                never downloaded in place of the intended season pack.  Season
+                pack results also earn a +5 scoring bonus.  Defaults to False
+                so that calls without an explicit value (e.g. tests, search)
+                are unaffected.
 
         Returns:
             List of FilteredResult objects sorted by score descending.
@@ -186,7 +190,7 @@ class FilterEngine:
         rejected_count = 0
 
         for result in results:
-            passed, reason = self._apply_hard_filters(result, profile)
+            passed, reason = self._apply_hard_filters(result, profile, prefer_season_packs)
             if not passed:
                 logger.debug(
                     "filter_engine: REJECTED title=%r reason=%r",
@@ -233,7 +237,7 @@ class FilterEngine:
         results: list[ScrapeResult],
         profile_name: str | None = None,
         cached_hashes: set[str] | None = None,
-        prefer_season_packs: bool = True,
+        prefer_season_packs: bool = False,
     ) -> FilteredResult | None:
         """Return the highest-scored result, or None if all were rejected.
 
@@ -242,8 +246,9 @@ class FilterEngine:
             profile_name: Quality profile key.  Defaults to
                 ``settings.quality.default_profile``.
             cached_hashes: Set of info_hash strings known to be cached in RD.
-            prefer_season_packs: When True, season pack results receive a +5
-                scoring bonus.  Pass False for single-episode requests.
+            prefer_season_packs: When True, single-episode results are
+                hard-rejected (Tier 1) and season pack results earn a +5
+                scoring bonus.  Defaults to False.
 
         Returns:
             The top-ranked FilteredResult, or None when the list is empty or
@@ -265,6 +270,7 @@ class FilterEngine:
         self,
         result: ScrapeResult,
         profile: QualityProfile,
+        prefer_season_packs: bool = False,
     ) -> tuple[bool, str | None]:
         """Evaluate Tier 1 hard-reject rules against a single result.
 
@@ -275,13 +281,21 @@ class FilterEngine:
             result: The scrape result to evaluate.
             profile: The quality profile supplying size limits and resolution
                      ordering.
+            prefer_season_packs: When True the queue item is requesting a full
+                season pack.  Single-episode results are hard-rejected so that
+                a stray episode torrent is never downloaded in place of the
+                intended season pack.
 
         Returns:
             A 2-tuple ``(passed, reason)`` where ``passed`` is True when the
             result survives all checks.  ``reason`` is a human-readable
             string describing the first failing check, or None when passed.
         """
-        # 1. Minimum file size
+        # 1. Season pack gate: reject single-episode results for season pack requests
+        if prefer_season_packs and not result.is_season_pack:
+            return False, "single episode result for season pack request"
+
+        # 2. Minimum file size
         if result.size_bytes is not None:
             min_bytes = profile.min_size_mb * 1024 * 1024
             if result.size_bytes < min_bytes:
@@ -290,7 +304,7 @@ class FilterEngine:
                     f"< {min_bytes} bytes)"
                 )
 
-        # 2. Maximum file size
+        # 3. Maximum file size
         if result.size_bytes is not None:
             max_bytes = profile.max_size_gb * 1024 * 1024 * 1024
             if result.size_bytes > max_bytes:
@@ -299,7 +313,7 @@ class FilterEngine:
                     f"> {max_bytes} bytes)"
                 )
 
-        # 3. Blocked keywords (whole-word, case-insensitive match against title)
+        # 4. Blocked keywords (whole-word, case-insensitive match against title)
         for keyword in settings.filters.blocked_keywords:
             pattern = re.compile(
                 rf"\b{re.escape(keyword)}\b", re.IGNORECASE
@@ -307,14 +321,14 @@ class FilterEngine:
             if pattern.search(result.title):
                 return False, f"blocked keyword: {keyword!r}"
 
-        # 4. Blocked release groups (case-insensitive exact match)
+        # 5. Blocked release groups (case-insensitive exact match)
         if result.release_group is not None:
             release_group_lower = result.release_group.lower()
             for blocked in settings.filters.blocked_release_groups:
                 if release_group_lower == blocked.lower():
                     return False, f"blocked release group: {result.release_group!r}"
 
-        # 5. Language filter
+        # 6. Language filter
         preferred_langs = settings.filters.preferred_languages
         if preferred_langs:
             # New-style: reject anything not in the preferred list
@@ -354,7 +368,7 @@ class FilterEngine:
                         f"(languages={result.languages})"
                     )
 
-        # 6. Minimum resolution (only enforced when resolution is known)
+        # 7. Minimum resolution (only enforced when resolution is known)
         if result.resolution is not None:
             resolution_order_lower = [
                 r.lower() for r in profile.resolution_order
@@ -395,7 +409,7 @@ class FilterEngine:
         result: ScrapeResult,
         profile: QualityProfile,
         cached_hashes: set[str],
-        prefer_season_packs: bool = True,
+        prefer_season_packs: bool = False,
     ) -> tuple[float, dict[str, float]]:
         """Compute the composite quality score for a result.
 

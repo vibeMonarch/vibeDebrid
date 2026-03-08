@@ -50,6 +50,12 @@ _MULTI_SPACE_RE = re.compile(r" {2,}")
 # and often misparses "1920x1080" as a season number instead.
 _TV_N_EP_RE = re.compile(r"TV-(\d{1,2})\s*[-–]\s*(\d{1,3})")
 
+# Anime "Title - NN" naming convention, e.g.:
+#   "[Anime Time] Attack on Titan - 01.mkv"
+#   "[ASW] Show Name - 05 [1080p HEVC][ABCD1234].mkv"
+# Captures the episode number after " - " (space-dash-space).
+_ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
+
 
 def _normalize_title(title: str) -> str:
     """Normalize a title for consistent matching.
@@ -105,6 +111,9 @@ _SKIP_DIRS: frozenset[str] = frozenset({"__MACOSX", "@eaDir"})
 
 # Pattern prefix for trash directories (e.g. .Trash-1000)
 _TRASH_PREFIX: str = ".Trash-"
+
+# Pattern to detect season numbers in directory names, e.g. "Season 4", "S04", "Staffel 2".
+_DIR_SEASON_RE = re.compile(r"\b(?:season|staffel)\s*(\d{1,2})\b|\b[Ss](\d{1,2})\b", re.IGNORECASE)
 
 # Timeout in seconds for the FUSE health-check listdir.
 _HEALTH_CHECK_TIMEOUT: float = 5.0
@@ -617,6 +626,7 @@ class MountScanner:
         )
 
         total_indexed = files_added + files_updated
+
         logger.info(
             "scan_directory: indexed %d files from %s (added=%d updated=%d errors=%d)",
             total_indexed,
@@ -1027,6 +1037,14 @@ class MountScanner:
                     "parsed_codec": parsed.get("codec"),
                     "filesize": filesize,
                 }
+                # Fall back to the parent directory name when the filename
+                # itself contains no season marker.  This handles anime
+                # collections organised as "Season 4/[Group] Show - 76.mkv"
+                # where the individual filenames omit the season number.
+                if record["parsed_season"] is None:
+                    dir_season = _extract_season_from_path(current_dir, dir_path)
+                    if dir_season is not None:
+                        record["parsed_season"] = dir_season
                 records.append(record)
 
         return records, error_count
@@ -1056,6 +1074,36 @@ class MountScanner:
 # ---------------------------------------------------------------------------
 # PTN parsing helper
 # ---------------------------------------------------------------------------
+
+
+def _extract_season_from_path(current_dir: str, root_dir: str) -> int | None:
+    """Infer a season number from path components between root_dir and current_dir.
+
+    Checks each directory component of the relative path from ``root_dir`` to
+    ``current_dir`` for common season directory naming patterns such as
+    "Season 4", "S04", or "Staffel 2".
+
+    Args:
+        current_dir: Absolute path of the directory currently being scanned.
+        root_dir: Absolute path of the walk root (the ``dir_path`` argument
+            passed to ``_scandir_walk``).
+
+    Returns:
+        The parsed season number as an integer if a pattern matched, else None.
+    """
+    try:
+        rel = os.path.relpath(current_dir, root_dir)
+    except ValueError:
+        # os.path.relpath raises ValueError on Windows when paths are on
+        # different drives; guard defensively even on Linux.
+        return None
+
+    for component in rel.split(os.sep):
+        match = _DIR_SEASON_RE.search(component)
+        if match:
+            # Two alternative groups: group(1) for "season/staffel", group(2) for "S##"
+            return int(match.group(1) or match.group(2))
+    return None
 
 
 def _parse_filename(filename: str) -> dict[str, Any]:
@@ -1100,6 +1148,13 @@ def _parse_filename(filename: str) -> dict[str, Any]:
     if tv_match:
         season = int(tv_match.group(1))
         episode = int(tv_match.group(2))
+
+    # Fallback: anime "[Group] Title - NN" naming convention.
+    # PTN often fails to extract episode numbers from these filenames.
+    if episode is None:
+        anime_match = _ANIME_DASH_EP_RE.search(os.path.splitext(filename)[0])
+        if anime_match:
+            episode = int(anime_match.group(1))
 
     return {
         "title": _normalize_title(raw_title),
