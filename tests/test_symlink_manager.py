@@ -1447,3 +1447,285 @@ class TestCreateSymlinkEpisodeTimestamp:
         # No timestamp prefix when date_prefix is disabled
         assert filename == original_filename
         assert "202603011430" not in filename
+
+
+# ---------------------------------------------------------------------------
+# Group 14: TestPlexNaming
+# ---------------------------------------------------------------------------
+
+
+_NAMING_PLEX = SymlinkNamingConfig(
+    date_prefix=False, release_year=True, resolution=False, plex_naming=True
+)
+# A Plex config that also has date_prefix=True — plex_naming must override it.
+_NAMING_PLEX_WITH_PREFIX = SymlinkNamingConfig(
+    date_prefix=True, release_year=True, resolution=True, plex_naming=True
+)
+
+
+class TestPlexNaming:
+    """Tests for plex_naming=True mode in build_show_dir, build_movie_dir, and create_symlink."""
+
+    # ------------------------------------------------------------------
+    # build_show_dir
+    # ------------------------------------------------------------------
+
+    def test_plex_show_dir_with_tmdb_id(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True with tmdb_id produces 'Title (Year) {tmdb-XXXXX}/Season XX'."""
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_show_dir("Show Name", 2024, 1, tmdb_id="209867")
+        expected = os.path.join(
+            library_paths["shows"], "Show Name (2024) {tmdb-209867}", "Season 01"
+        )
+        assert result == expected
+
+    def test_plex_show_dir_without_tmdb_id(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True without tmdb_id produces 'Title (Year)/Season XX' — no tag."""
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_show_dir("Show Name", 2024, 1, tmdb_id=None)
+        expected = os.path.join(library_paths["shows"], "Show Name (2024)", "Season 01")
+        assert result == expected
+        assert "{tmdb-" not in result
+
+    def test_plex_show_dir_no_year(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True with year=None produces 'Title/Season XX' — no parentheses."""
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_show_dir("Show Name", None, 1, tmdb_id="209867")
+        expected = os.path.join(
+            library_paths["shows"], "Show Name {tmdb-209867}", "Season 01"
+        )
+        assert result == expected
+        assert "(None)" not in result
+
+    def test_plex_show_dir_reuses_existing_dir(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True reuses a pre-existing show directory found on disk."""
+        existing_name = "Show Name (2024) {tmdb-209867}"
+        (library_paths["shows"] / existing_name if False else None)  # documentation only
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch(
+                 "src.core.symlink_manager._find_existing_show_dir",
+                 return_value=existing_name,
+             ):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_show_dir("Show Name", 2024, 2, tmdb_id="209867")
+        expected = os.path.join(library_paths["shows"], existing_name, "Season 02")
+        assert result == expected
+
+    def test_plex_show_dir_matches_existing_without_tag(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True reuses an existing dir that lacks the {tmdb-XXXXX} tag.
+
+        _find_existing_show_dir strips the tag from the search key so a legacy
+        directory 'Show Name (2024)' still matches when we search for
+        'Show Name (2024) {tmdb-209867}'.
+        """
+        legacy_dir_name = "Show Name (2024)"
+        (library_paths["shows"] / legacy_dir_name if False else None)  # documentation only
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch(
+                 "src.core.symlink_manager._find_existing_show_dir",
+                 return_value=legacy_dir_name,
+             ):
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_show_dir("Show Name", 2024, 3, tmdb_id="209867")
+        expected = os.path.join(library_paths["shows"], legacy_dir_name, "Season 03")
+        assert result == expected
+
+    # ------------------------------------------------------------------
+    # build_movie_dir
+    # ------------------------------------------------------------------
+
+    def test_plex_movie_dir_with_tmdb_id(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True with tmdb_id produces 'Title (Year) {tmdb-XXXXX}'."""
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_movie_dir("Movie Name", 2024, tmdb_id="12345")
+        expected = os.path.join(library_paths["movies"], "Movie Name (2024) {tmdb-12345}")
+        assert result == expected
+
+    def test_plex_movie_dir_without_tmdb_id(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True without tmdb_id produces 'Title (Year)' — no tag."""
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = build_movie_dir("Movie Name", 2024, tmdb_id=None)
+        expected = os.path.join(library_paths["movies"], "Movie Name (2024)")
+        assert result == expected
+        assert "{tmdb-" not in result
+
+    def test_plex_movie_dir_no_date_prefix(self, library_paths: dict[str, str]) -> None:
+        """plex_naming=True ignores date_prefix and resolution — no timestamp or resolution in path."""
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._format_timestamp", return_value="202603011430"):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.symlink_naming = _NAMING_PLEX_WITH_PREFIX
+            result = build_movie_dir("Movie Name", 2024, "2160p", tmdb_id="12345")
+        # Timestamp must NOT appear even though date_prefix=True in the base config
+        assert "202603011430" not in result
+        # Resolution must NOT appear even though resolution=True in the base config
+        assert "2160p" not in result
+        # Plex agent tag must appear
+        assert "{tmdb-12345}" in result
+
+    # ------------------------------------------------------------------
+    # create_symlink — filename generation
+    # ------------------------------------------------------------------
+
+    async def test_plex_show_filename_from_metadata(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """plex_naming=True show: symlink filename is 'Title (Year) - S01E01.mkv' from metadata."""
+        item = MediaItem(
+            imdb_id="tt9090901",
+            title="Show Name",
+            year=2024,
+            media_type=MediaType.SHOW,
+            season=2,
+            episode=1,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+            tmdb_id="209867",
+        )
+        session.add(item)
+        await session.flush()
+
+        # Source filename is a raw torrent name — plex mode must NOT use it.
+        source = _make_source_file(library_paths["mount"], "random.torrent.name.S02E01.mkv")
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        assert filename == "Show Name (2024) - S02E01.mkv"
+
+    async def test_plex_movie_filename_from_metadata(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """plex_naming=True movie: symlink filename is 'Title (Year).ext' from metadata."""
+        item = MediaItem(
+            imdb_id="tt1234599",
+            title="Movie Name",
+            year=2024,
+            media_type=MediaType.MOVIE,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+            tmdb_id="12345",
+        )
+        session.add(item)
+        await session.flush()
+
+        # Source filename is a raw torrent name — plex mode must NOT use it.
+        source = _make_source_file(library_paths["mount"], "Movie.2024.1080p.mkv")
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        assert filename == "Movie Name (2024).mkv"
+
+    async def test_plex_show_filename_preserves_extension(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """plex_naming=True show: the source file extension is preserved in the symlink filename."""
+        item = MediaItem(
+            imdb_id="tt9090902",
+            title="Show Name",
+            year=2024,
+            media_type=MediaType.SHOW,
+            season=1,
+            episode=3,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+            tmdb_id="209867",
+        )
+        session.add(item)
+        await session.flush()
+
+        source = _make_source_file(library_paths["mount"], "episode.S01E03.mp4")
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_PLEX
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        assert filename.endswith(".mp4")
+        assert filename == "Show Name (2024) - S01E03.mp4"
+
+    async def test_non_plex_mode_uses_raw_filename(
+        self, session: AsyncSession, library_paths: dict[str, str]
+    ) -> None:
+        """plex_naming=False: symlink filename is the unmodified source basename (existing behaviour)."""
+        item = MediaItem(
+            imdb_id="tt9090903",
+            title="Show Name",
+            year=2024,
+            media_type=MediaType.SHOW,
+            season=1,
+            episode=5,
+            state=QueueState.COMPLETE,
+            retry_count=0,
+            tmdb_id="209867",
+        )
+        session.add(item)
+        await session.flush()
+
+        original_filename = "Show.Name.S01E05.1080p.BluRay.mkv"
+        source = _make_source_file(library_paths["mount"], original_filename)
+        manager = SymlinkManager()
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
+            mock_settings.paths.library_movies = library_paths["movies"]
+            mock_settings.paths.library_shows = library_paths["shows"]
+            mock_settings.symlink_naming = _NAMING_NO_PREFIX
+            result = await manager.create_symlink(session, item, source)
+
+        filename = os.path.basename(result.target_path)
+        assert filename == original_filename
+
+    # ------------------------------------------------------------------
+    # _find_existing_show_dir — TMDB tag stripping
+    # ------------------------------------------------------------------
+
+    def test_find_existing_strips_tmdb_tag(self, tmp_path: "Path") -> None:
+        """_find_existing_show_dir matches a dir with a {tmdb-XXXXX} tag when searching by plain core_name.
+
+        The function strips the tag from on-disk directory names before comparing
+        so that a Plex-tagged directory is found by a legacy (untagged) lookup key.
+        """
+        dir_name = "Show Name (2024) {tmdb-209867}"
+        (tmp_path / dir_name).mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Show Name (2024)")
+        assert result == dir_name
+
+    def test_find_existing_strips_tmdb_tag_from_search_key(self, tmp_path: "Path") -> None:
+        """_find_existing_show_dir matches a legacy dir when the search key contains a {tmdb-XXXXX} tag.
+
+        The function also strips the tag from the *search key* (core_name) so that
+        a Plex-mode caller looking for 'Show Name (2024) {tmdb-209867}' still finds
+        an existing legacy directory named 'Show Name (2024)'.
+        """
+        dir_name = "Show Name (2024)"
+        (tmp_path / dir_name).mkdir()
+        result = _find_existing_show_dir(str(tmp_path), "Show Name (2024) {tmdb-209867}")
+        assert result == dir_name

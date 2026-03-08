@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1136 tests, all passing (as of 2026-03-07)
+- 1187 tests, all passing (as of 2026-03-08)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -23,7 +23,9 @@
 - [Show Detail Page + Monitoring + Airing Seasons](show-monitoring.md) — 2026-03-07
 - Path-prefix fallback for mount lookup — 2026-03-07
 - [XEM scene numbering](xem-integration.md) — 2026-03-07
-- XEM scene season restructuring (show detail + add) — 2026-03-07
+- XEM scene season restructuring (show detail + add) — 2026-03-08
+- Language filter/preference — 2026-03-08
+- Plex symlink naming mode — 2026-03-08
 
 ## Remaining / Future Work
 - Trakt integration (Step 1b): OAuth, watchlist polling, scheduler
@@ -78,6 +80,19 @@
 
 ## Bugs Fixed
 - Naive vs aware datetime in CHECKING timeout — normalize to tz-aware UTC
+- Season pack duplicate add + XEM scrape mapping (2026-03-08) — see below
+
+## Season Pack Dedup + XEM Scrape Fix — 2026-03-08
+Three interrelated bugs when adding anime with XEM scene seasons:
+1. **XEM absolute fallback** (`xem_mapper.py`): `get_scene_numbering_for_item` now
+   falls back to `get_absolute_scene_map` when TVDB season/episode lookup fails.
+   Fixes TMDB continuous seasons (e.g., S01E29) mapping to scene (S02E01).
+2. **Hash-based dedup** (`scrape_pipeline.py`): After filter+rank, checks
+   `check_local_duplicate(info_hash)` BEFORE cache check. If hash already in
+   dedup registry, skips all RD API calls and transitions directly to CHECKING.
+3. **Torrent lookup fallback** (`main.py`): `_find_torrent_for_item()` helper —
+   direct media_item_id lookup → scrape_log info_hash → RdTorrent by hash.
+   Used in ADDING and CHECKING stages for shared season pack torrents.
 
 ## Discovery Feature Notes
 - TMDB client stateless, 7 API endpoints under `/api/discover/`
@@ -88,6 +103,25 @@
 - Frontend: frontend-dev (after backend)
 - Tests: test-writer (after implementation)
 - Review: code-reviewer (final pass) — always run, catches real bugs
+
+## Language Filter — 2026-03-08
+- `FiltersConfig.preferred_languages: list[str]` — ordered list, e.g. ["English", "Japanese"]
+- Tier 1: hard-reject results with detected languages not in preferred list
+- Untagged results assumed English; Multi passes when `allow_multi_audio=True`
+- Tier 2: `_score_language()` — 15pts 1st preferred, 12 2nd, 9 3rd, etc. Multi=10pts fallback
+- Legacy `required_language` still works when `preferred_languages` is empty
+- Settings UI: comma-separated input in Filters section
+- Available languages: English, French, German, Spanish, Portuguese, Italian, Dutch, Russian, Japanese, Korean, Chinese
+
+## Plex Symlink Naming — 2026-03-08
+- `SymlinkNamingConfig.plex_naming: bool = False` — overrides date_prefix/year/resolution
+- Show dir: `Title (Year) {tmdb-XXXXX}/Season XX/`
+- Show file: `Title (Year) - S01E01.ext` (metadata-driven, not raw torrent name)
+- Movie file: `Title (Year).ext`
+- Season packs: `_parse_episode_from_filename()` extracts ep number from source filename via PTN + regex
+- `_find_existing_show_dir` strips `{tmdb|tvdb|imdb-XXX}` tags before matching
+- tmdb_id validated as digits-only before embedding in path
+- Settings UI: toggle in Symlink Naming card, dims other toggles when active
 
 ## Key Conventions
 - Commit style: imperative summary, bullet details, `Co-Authored-By: Claude Opus 4.6`

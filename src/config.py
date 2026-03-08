@@ -90,7 +90,8 @@ class FiltersConfig(BaseModel):
     blocked_keywords: list[str] = Field(
         default_factory=lambda: ["cam", "ts", "telesync", "telecine", "hdcam"]
     )
-    required_language: str | None = None
+    preferred_languages: list[str] = Field(default_factory=list)  # Ordered list, e.g. ["English", "Japanese"]
+    required_language: str | None = None  # Legacy fallback; ignored when preferred_languages is set
     allow_multi_audio: bool = True
 
 
@@ -157,6 +158,7 @@ class SymlinkNamingConfig(BaseModel):
     date_prefix: bool = True
     release_year: bool = True
     resolution: bool = False
+    plex_naming: bool = False  # When True, generate Plex-formatted filenames, overriding above settings
 
 
 class SearchConfig(BaseModel):

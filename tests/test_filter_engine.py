@@ -4,7 +4,7 @@ The FilterEngine is pure logic (no I/O), so these are all synchronous tests.
 All settings are patched via unittest.mock.patch so the real config.json is
 never consulted — each test group starts from a known, deterministic config.
 
-Scoring reference (max ~105 pts):
+Scoring reference (max ~120 pts):
   Resolution  40  — pos 0→40, pos 1→30, pos 2→20, beyond→5, None→10
   Codec       15  — pos 0→15, pos 1→12, pos 2→9, … floor=2, None→5
   Audio       10  — pos 0→10, pos 1→8, pos 2→6, … floor=1, None→3
@@ -12,6 +12,7 @@ Scoring reference (max ~105 pts):
   Seeders     10  — min(seeders/100, 1.0) * 10. None→0
   Cached      10  — 10 if cached, else 0
   Season pack  5  — 5 if is_season_pack, else 0
+  Language    15  — pos 0→15, pos 1→12, pos 2→9, … floor=1, multi→10, None→0
 """
 
 from __future__ import annotations
@@ -1254,3 +1255,294 @@ class TestScoringRegressions:
             none_value=5.0,
         )
         assert score >= 2.0  # never below not_in_list
+
+
+# ---------------------------------------------------------------------------
+# Group 15: Tier 1 — Preferred Language Hard Filter
+# ---------------------------------------------------------------------------
+
+
+class TestPreferredLanguageHardFilter:
+    """Hard-reject rules based on the new preferred_languages list.
+
+    When preferred_languages is non-empty, Tier 1 rejects any result whose
+    detected languages do not include at least one entry from the list.
+    Untagged results (empty languages) are assumed to be English.
+    Multi-audio results pass when allow_multi_audio=True.
+    When preferred_languages is empty the old required_language fallback applies.
+    """
+
+    def _run(
+        self,
+        languages: list[str],
+        preferred_languages: list[str],
+        allow_multi_audio: bool = True,
+        required_language: str | None = None,
+    ) -> tuple[bool, str | None]:
+        filters = FiltersConfig(
+            blocked_keywords=[],
+            blocked_release_groups=[],
+            preferred_languages=preferred_languages,
+            required_language=required_language,
+            allow_multi_audio=allow_multi_audio,
+        )
+        result = _make_result(languages=languages)
+        with patch("src.core.filter_engine.settings.filters", filters):
+            return ENGINE._apply_hard_filters(result, _DEFAULT_PROFILE)
+
+    def test_preferred_languages_empty_allows_all(self):
+        """When preferred_languages=[], all results pass regardless of language tag."""
+        # Russian-only release — would be rejected if preferred_languages were set,
+        # but with an empty list the legacy path runs and required_language is None,
+        # so the result passes.
+        passed, reason = self._run(
+            languages=["Russian"],
+            preferred_languages=[],
+            required_language=None,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_preferred_languages_rejects_unwanted_language(self):
+        """Result tagged exclusively with a non-preferred language is hard-rejected."""
+        passed, reason = self._run(
+            languages=["Russian"],
+            preferred_languages=["English", "Japanese"],
+        )
+        assert passed is False
+        assert reason is not None
+        assert "preferred" in reason.lower()
+
+    def test_preferred_languages_allows_preferred_language(self):
+        """Result tagged with a language present in the preferred list passes."""
+        passed, reason = self._run(
+            languages=["Japanese"],
+            preferred_languages=["English", "Japanese"],
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_preferred_languages_untagged_assumed_english_passes(self):
+        """Untagged result (languages=[]) is assumed English and passes when English is preferred."""
+        passed, reason = self._run(
+            languages=[],
+            preferred_languages=["English", "Japanese"],
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_preferred_languages_untagged_rejected_when_english_not_preferred(self):
+        """Untagged result (languages=[]) assumed English is rejected when English is not preferred."""
+        passed, reason = self._run(
+            languages=[],
+            preferred_languages=["Japanese"],
+        )
+        assert passed is False
+        assert reason is not None
+        assert "english" in reason.lower()
+
+    def test_preferred_languages_multi_passes_when_allowed(self):
+        """Multi-audio result passes when allow_multi_audio=True, regardless of preferred list."""
+        passed, reason = self._run(
+            languages=["Multi"],
+            preferred_languages=["English", "Japanese"],
+            allow_multi_audio=True,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_preferred_languages_multi_rejected_when_not_allowed(self):
+        """Multi-audio result is rejected when allow_multi_audio=False and 'Multi' is not preferred."""
+        passed, reason = self._run(
+            languages=["Multi"],
+            preferred_languages=["English", "Japanese"],
+            allow_multi_audio=False,
+        )
+        assert passed is False
+        assert reason is not None
+
+    def test_preferred_languages_mixed_languages_passes_if_any_preferred(self):
+        """Result with multiple language tags passes when at least one tag is preferred."""
+        passed, reason = self._run(
+            languages=["Russian", "English"],
+            preferred_languages=["English"],
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_preferred_languages_case_insensitive(self):
+        """Language tag matching against the preferred list is case-insensitive."""
+        passed, reason = self._run(
+            languages=["japanese"],
+            preferred_languages=["Japanese"],
+        )
+        assert passed is True
+        assert reason is None
+
+        # Also test preferred list in lowercase against mixed-case tag
+        passed2, reason2 = self._run(
+            languages=["Japanese"],
+            preferred_languages=["japanese"],
+        )
+        assert passed2 is True
+        assert reason2 is None
+
+    def test_legacy_required_language_still_works(self):
+        """When preferred_languages is empty, required_language still rejects non-matching results.
+
+        This is the legacy code path; it must remain functional so existing
+        configurations that use required_language continue to work.
+        """
+        # French-tagged result with required_language="French" must pass
+        passed, _ = self._run(
+            languages=["French"],
+            preferred_languages=[],
+            required_language="French",
+        )
+        assert passed is True
+
+        # German-tagged result with required_language="French" must be rejected
+        passed_bad, reason_bad = self._run(
+            languages=["German"],
+            preferred_languages=[],
+            required_language="French",
+        )
+        assert passed_bad is False
+        assert reason_bad is not None
+
+
+# ---------------------------------------------------------------------------
+# Group 16: Tier 2 — Language Preference Scoring
+# ---------------------------------------------------------------------------
+
+
+class TestLanguageScoring:
+    """Score awarded for the language preference category (max 15 pts).
+
+    When preferred_languages is empty, _score_language() returns 0.0 and has
+    no effect on the overall ranking.  When set, the score depends on the
+    language's position in the ordered preference list.
+
+    Scoring constants (from filter_engine.py):
+      _LANGUAGE_MAX = 15.0   — 1st preferred language
+      _LANGUAGE_STEP = 3.0   — reduction per position
+      _LANGUAGE_MULTI_BONUS = 10.0  — multi-audio fixed bonus
+    """
+
+    def _score(
+        self,
+        languages: list[str],
+        preferred_languages: list[str],
+        allow_multi_audio: bool = True,
+    ) -> float:
+        """Call ENGINE._score_language() with the given settings patched in."""
+        filters = FiltersConfig(
+            blocked_keywords=[],
+            blocked_release_groups=[],
+            preferred_languages=preferred_languages,
+            required_language=None,
+            allow_multi_audio=allow_multi_audio,
+        )
+        with patch("src.core.filter_engine.settings.filters", filters):
+            return ENGINE._score_language(languages)
+
+    def test_language_score_empty_preferred_returns_zero(self):
+        """No preferred_languages configured → language score = 0.0 (no effect on rank)."""
+        score = self._score(languages=["English"], preferred_languages=[])
+        assert score == 0.0
+
+    def test_language_score_first_preferred_gets_max(self):
+        """First language in preferred list → 15.0 pts.
+
+        Untagged result (languages=[]) is assumed English, so when English
+        is first in the preferred list the result earns the maximum score.
+        """
+        # Untagged → assumed English → pos 0 → 15 - 0*3 = 15.0
+        score = self._score(languages=[], preferred_languages=["English", "Japanese"])
+        assert score == 15.0
+
+    def test_language_score_second_preferred_gets_less(self):
+        """Second language in preferred list → 12.0 pts (15 - 1*3)."""
+        score = self._score(
+            languages=["Japanese"],
+            preferred_languages=["English", "Japanese"],
+        )
+        assert score == 12.0
+
+    def test_language_score_multi_gets_bonus(self):
+        """Multi-audio result gets the fixed 10.0 pt bonus when allow_multi_audio=True."""
+        score = self._score(
+            languages=["Multi"],
+            preferred_languages=["English", "Japanese"],
+            allow_multi_audio=True,
+        )
+        assert score == 10.0
+
+    def test_language_score_no_match_gets_zero(self):
+        """Language not in preferred list earns 0.0 pts."""
+        score = self._score(
+            languages=["Russian"],
+            preferred_languages=["English", "Japanese"],
+        )
+        assert score == 0.0
+
+    def test_language_score_in_ranking(self):
+        """A Japanese release with fewer seeders ranks above a Russian release with more
+        seeders when preferred_languages=["English", "Japanese", "Russian"].
+
+        This demonstrates the core problem the feature solves: Russian dubs
+        often have high seeder counts and previously dominated rankings.  With
+        language preference scoring the Japanese release earns 12 pts (position
+        1) and the Russian release earns 9 pts (position 2), a difference of
+        3 pts.  3 pts corresponds to 30 seeders worth of seeder score
+        (10 pts / 100 seeders).
+
+        Setup: Japanese=50 seeders (5.0 pts), Russian=70 seeders (7.0 pts).
+          Japanese total advantage: 12 + 5 = 17.0
+          Russian  total advantage: 9  + 7 = 16.0
+          Japanese wins by 1.0 pt despite 20 fewer seeders.
+        """
+        # Include Russian in the preferred list so both results survive Tier 1.
+        # This isolates the scoring behavior: the only difference is the
+        # language bonus awarded by position.
+        filters = FiltersConfig(
+            blocked_keywords=[],
+            blocked_release_groups=[],
+            preferred_languages=["English", "Japanese", "Russian"],
+            required_language=None,
+            allow_multi_audio=True,
+        )
+
+        # Japanese release: fewer seeders but higher position in preferred list
+        r_japanese = _make_result(
+            info_hash="j" * 40,
+            title="Anime.S01E01.1080p.WEB-DL.x265-SubsPlease",
+            languages=["Japanese"],
+            seeders=50,   # 5.0 seeder pts + 12.0 language pts = 17.0 combined
+        )
+        # Russian release: more seeders but lower position in preferred list
+        r_russian = _make_result(
+            info_hash="r" * 40,
+            title="Anime.S01E01.1080p.WEB-DL.x265-RuSubs",
+            languages=["Russian"],
+            seeders=70,   # 7.0 seeder pts + 9.0 language pts = 16.0 combined
+        )
+
+        with patch("src.core.filter_engine.settings.quality", _DEFAULT_QUALITY_CONFIG), \
+             patch("src.core.filter_engine.settings.filters", filters):
+            ranked = ENGINE.filter_and_rank([r_russian, r_japanese])
+
+        assert len(ranked) == 2
+
+        # Japanese release must rank first despite fewer seeders
+        assert ranked[0].result.info_hash == "j" * 40, (
+            "Japanese release should rank above Russian despite higher Russian seeder count"
+        )
+        assert ranked[1].result.info_hash == "r" * 40
+
+        # Verify the language scores that drive the ranking difference
+        jp_lang_score = ranked[0].score_breakdown["language"]
+        ru_lang_score = ranked[1].score_breakdown["language"]
+        assert jp_lang_score == 12.0  # pos 1 → 15 - 1*3 = 12
+        assert ru_lang_score == 9.0   # pos 2 → 15 - 2*3 = 9
+        assert ranked[0].score > ranked[1].score

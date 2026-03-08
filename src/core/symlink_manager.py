@@ -113,6 +113,44 @@ _MULTI_DASH_RE = re.compile(r"-{2,}")
 # Used by _find_existing_show_dir to strip decorations before exact matching.
 _TIMESTAMP_PREFIX_RE = re.compile(r"^\d{12}\s+")
 _RESOLUTION_SUFFIX_RE = re.compile(r"\s+\d{3,4}p$", re.IGNORECASE)
+_TMDB_TAG_RE = re.compile(r"\s*\{(?:tmdb|tvdb|imdb)-[^}]+\}")
+
+
+# Regex patterns for extracting episode numbers from filenames (season pack use)
+_EPISODE_RE = re.compile(r"[Ss]\d{1,2}[Ee](\d{1,3})")
+_BARE_EPISODE_RE = re.compile(r"[\s._-][Ee](\d{2,3})(?:\b|[\s._-])")
+
+
+def _parse_episode_from_filename(filename: str) -> int | None:
+    """Extract episode number from a filename using PTN then regex fallback.
+
+    Used for season pack files where the media item has no episode number set,
+    so the episode must be inferred from the individual file's name.
+
+    Args:
+        filename: Basename of the source file (e.g. ``"Show.S01E05.mkv"``).
+
+    Returns:
+        The episode number as an integer, or ``None`` when no episode number
+        could be parsed.
+    """
+    try:
+        import PTN  # type: ignore[import-untyped]
+
+        parsed = PTN.parse(filename)
+        if parsed and parsed.get("episode") is not None:
+            return int(parsed["episode"])
+    except Exception:
+        pass
+
+    # Regex fallback: SxxExx pattern first, then bare E-prefixed number.
+    match = _EPISODE_RE.search(filename)
+    if match:
+        return int(match.group(1))
+    match = _BARE_EPISODE_RE.search(filename)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def sanitize_name(name: str) -> str:
@@ -164,17 +202,30 @@ def _format_timestamp() -> str:
 def _find_existing_show_dir(library_shows: str, core_name: str) -> str | None:
     """Scan library_shows for a directory matching core_name (case-insensitive).
 
-    Strips any 12-digit timestamp prefix and resolution suffix before comparing.
-    Returns the existing directory name or None.
+    Strips any 12-digit timestamp prefix, resolution suffix, and Plex agent tags
+    (e.g. ``{tmdb-12345}``) before comparing so that directories created under
+    different naming modes can still be matched and reused.
+
+    Args:
+        library_shows: Absolute path to the shows library root.
+        core_name: The normalised show name to look for (already stripped of
+            timestamp/resolution/agent-tag decorations).
+
+    Returns:
+        The existing directory *name* (not full path), or ``None`` when no match
+        is found.
     """
     try:
         entries = os.listdir(library_shows)
     except FileNotFoundError:
         return None
-    lower_core = core_name.lower()
+    # Also strip agent tags from the search key so callers that pass a Plex
+    # core_name (which includes ``{tmdb-XXXXX}``) still match legacy dirs.
+    lower_core = _TMDB_TAG_RE.sub("", core_name).strip().lower()
     for entry in entries:
         stripped = _TIMESTAMP_PREFIX_RE.sub("", entry)
         stripped = _RESOLUTION_SUFFIX_RE.sub("", stripped)
+        stripped = _TMDB_TAG_RE.sub("", stripped).strip()
         if stripped.lower() == lower_core:
             full_path = os.path.join(library_shows, entry)
             if os.path.isdir(full_path):
@@ -182,64 +233,119 @@ def _find_existing_show_dir(library_shows: str, core_name: str) -> str | None:
     return None
 
 
-def build_movie_dir(title: str, year: int | None, resolution: str | None = None) -> str:
+def _build_plex_show_dir_name(safe_title: str, year: int | None, tmdb_id: str | None) -> str:
+    """Build a Plex-compatible show directory name.
+
+    Format: ``Sanitized Title (Year) {tmdb-XXXXX}`` when *tmdb_id* is provided,
+    or ``Sanitized Title (Year)`` when it is not.  No date prefix or resolution
+    suffix is included — Plex does not use those decorations.
+
+    Args:
+        safe_title: Already-sanitized show title.
+        year: First-air year, or ``None`` when unknown.
+        tmdb_id: Numeric TMDB identifier as a string, or ``None``.
+
+    Returns:
+        A Plex-compatible directory name string (not a full path).
+    """
+    parts: list[str] = [safe_title]
+    if year is not None:
+        parts.append(f"({year})")
+    name = " ".join(parts)
+    if tmdb_id is not None and tmdb_id.isdigit():
+        name = f"{name} {{tmdb-{tmdb_id}}}"
+    return name
+
+
+def build_movie_dir(title: str, year: int | None, resolution: str | None = None, tmdb_id: str | None = None) -> str:
     """Build the organized library directory path for a movie.
+
+    When ``settings.symlink_naming.plex_naming`` is ``True`` the directory
+    uses Plex agent-tag format (``Title (Year) {tmdb-XXXXX}``).  No date
+    prefix or resolution suffix is added in that mode regardless of the
+    individual ``date_prefix`` / ``resolution`` flags.
 
     Args:
         title: Movie title (will be sanitized).
         year: Release year, or None when unknown.
         resolution: Requested resolution (e.g. "2160p"), included when enabled.
+        tmdb_id: Numeric TMDB identifier as a string, used when plex_naming is
+            True to add the ``{tmdb-XXXXX}`` agent tag.
 
     Returns:
         Absolute path like ``/path/to/library/movies/202603011430 Movie Name (2024) 2160p``
+        or ``/path/to/library/movies/Movie Name (2024) {tmdb-12345}`` in Plex mode.
     """
     naming = settings.symlink_naming
     safe_title = sanitize_name(title)
-    parts: list[str] = []
-    if naming.date_prefix:
-        parts.append(_format_timestamp())
-    parts.append(safe_title)
-    if naming.release_year and year is not None:
-        parts.append(f"({year})")
-    if naming.resolution and resolution:
-        parts.append(resolution)
-    dir_name = " ".join(parts)
+
+    if naming.plex_naming:
+        parts: list[str] = [safe_title]
+        if year is not None:
+            parts.append(f"({year})")
+        dir_name = " ".join(parts)
+        if tmdb_id is not None and tmdb_id.isdigit():
+            dir_name = f"{dir_name} {{tmdb-{tmdb_id}}}"
+    else:
+        parts = []
+        if naming.date_prefix:
+            parts.append(_format_timestamp())
+        parts.append(safe_title)
+        if naming.release_year and year is not None:
+            parts.append(f"({year})")
+        if naming.resolution and resolution:
+            parts.append(resolution)
+        dir_name = " ".join(parts)
+
     return os.path.join(settings.paths.library_movies, dir_name)
 
 
-def build_show_dir(title: str, year: int | None, season: int, resolution: str | None = None) -> str:
+def build_show_dir(title: str, year: int | None, season: int, resolution: str | None = None, tmdb_id: str | None = None) -> str:
     """Build the organized library directory path for a show episode.
+
+    When ``settings.symlink_naming.plex_naming`` is ``True`` the show directory
+    uses Plex agent-tag format (``Title (Year) {tmdb-XXXXX}``).  Season
+    subdirectories are always ``Season XX`` regardless of naming mode.
 
     Args:
         title: Show title (will be sanitized).
         year: First-air year, or None when unknown.
         season: Season number (zero-padded to two digits in the output).
         resolution: Requested resolution (e.g. "2160p"), included when enabled.
+        tmdb_id: Numeric TMDB identifier as a string, used when plex_naming is
+            True to add the ``{tmdb-XXXXX}`` agent tag.
 
     Returns:
         Absolute path like ``/path/to/library/shows/202603011430 Show Name (2024)/Season 01``
+        or ``/path/to/library/shows/Show Name (2024) {tmdb-12345}/Season 01`` in Plex mode.
     """
     naming = settings.symlink_naming
     safe_title = sanitize_name(title)
 
-    # Build core_name for matching existing directories
-    core_parts: list[str] = [safe_title]
-    if naming.release_year and year is not None:
-        core_parts.append(f"({year})")
-    core_name = " ".join(core_parts)
-
-    # Check for existing show directory first
-    existing = _find_existing_show_dir(settings.paths.library_shows, core_name)
-    if existing is not None:
-        show_dir = existing
+    if naming.plex_naming:
+        core_name = _build_plex_show_dir_name(safe_title, year, tmdb_id)
+        # Reuse an existing directory even if it was created under a different
+        # naming scheme (e.g. without a tmdb tag, or with a timestamp prefix).
+        existing = _find_existing_show_dir(settings.paths.library_shows, core_name)
+        show_dir = existing if existing is not None else core_name
     else:
-        parts: list[str] = []
-        if naming.date_prefix:
-            parts.append(_format_timestamp())
-        parts.append(core_name)
-        if naming.resolution and resolution:
-            parts.append(resolution)
-        show_dir = " ".join(parts)
+        # Build core_name for matching existing directories (legacy mode).
+        core_parts: list[str] = [safe_title]
+        if naming.release_year and year is not None:
+            core_parts.append(f"({year})")
+        core_name = " ".join(core_parts)
+
+        existing = _find_existing_show_dir(settings.paths.library_shows, core_name)
+        if existing is not None:
+            show_dir = existing
+        else:
+            parts: list[str] = []
+            if naming.date_prefix:
+                parts.append(_format_timestamp())
+            parts.append(core_name)
+            if naming.resolution and resolution:
+                parts.append(resolution)
+            show_dir = " ".join(parts)
 
     season_dir = f"Season {season:02d}"
     return os.path.join(settings.paths.library_shows, show_dir, season_dir)
@@ -306,19 +412,60 @@ class SymlinkManager:
             raise SourceNotFoundError(source_path)
 
         # --- Step 2: determine target directory ---
+        tmdb_id = str(media_item.tmdb_id) if media_item.tmdb_id else None
         if media_item.media_type == MediaType.MOVIE:
-            target_dir = build_movie_dir(media_item.title, media_item.year, media_item.requested_resolution)
+            target_dir = build_movie_dir(
+                media_item.title, media_item.year, media_item.requested_resolution, tmdb_id=tmdb_id
+            )
         else:
             season = media_item.season if media_item.season is not None else 1
             target_dir = await asyncio.to_thread(
-                build_show_dir, media_item.title, media_item.year, season, media_item.requested_resolution
+                build_show_dir,
+                media_item.title,
+                media_item.year,
+                season,
+                media_item.requested_resolution,
+                tmdb_id,
             )
 
         # --- Step 3: build full target symlink path ---
-        filename = os.path.basename(source_path)
-        # For shows with date_prefix enabled, prefix the episode filename
-        if media_item.media_type == MediaType.SHOW and settings.symlink_naming.date_prefix:
-            filename = f"{_format_timestamp()} {filename}"
+        naming = settings.symlink_naming
+        if naming.plex_naming:
+            # Generate Plex-compatible filename from media item metadata.
+            ext = os.path.splitext(os.path.basename(source_path))[1]
+            safe_title = sanitize_name(media_item.title)
+            year_part = f" ({media_item.year})" if media_item.year else ""
+            if media_item.media_type == MediaType.SHOW:
+                ep_season = media_item.season if media_item.season is not None else 1
+                ep_episode = media_item.episode
+
+                # For season packs, media_item.episode is None — infer the
+                # episode number from the individual source filename so that
+                # each file in the pack gets a distinct symlink name.
+                if ep_episode is None:
+                    ep_episode = _parse_episode_from_filename(
+                        os.path.basename(source_path)
+                    )
+
+                if ep_episode is not None:
+                    filename = f"{safe_title}{year_part} - S{ep_season:02d}E{ep_episode:02d}{ext}"
+                else:
+                    # Last resort: keep the raw source filename so at least the
+                    # file is accessible, even if it won't match Plex naming.
+                    logger.warning(
+                        "create_symlink: could not parse episode from %r for season pack "
+                        "media_item_id=%s — using raw filename",
+                        os.path.basename(source_path),
+                        media_item.id,
+                    )
+                    filename = os.path.basename(source_path)
+            else:
+                filename = f"{safe_title}{year_part}{ext}"
+        else:
+            filename = os.path.basename(source_path)
+            # For shows with date_prefix enabled, prefix the episode filename.
+            if media_item.media_type == MediaType.SHOW and naming.date_prefix:
+                filename = f"{_format_timestamp()} {filename}"
         target_path = os.path.join(target_dir, filename)
 
         logger.debug(

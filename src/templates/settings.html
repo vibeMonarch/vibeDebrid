@@ -472,6 +472,13 @@
                    class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
             <p class="text-xs text-vd-muted mt-1">Comma-separated list of release groups to ignore.</p>
           </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="filters-preferred-languages">Preferred Languages</label>
+            <input type="text" id="filters-preferred-languages"
+                   placeholder="English, Japanese, ..."
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Comma-separated, ordered by preference. Results in other languages are rejected. Leave empty to allow all. Available: English, French, German, Spanish, Portuguese, Italian, Dutch, Russian, Japanese, Korean, Chinese.</p>
+          </div>
           <div class="pt-2">
             <button type="button" onclick="saveSection('filters')"
                     class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
@@ -613,6 +620,18 @@
     <div id="body-symlink-naming" class="card-body collapsed">
       <div>
         <div class="px-5 pb-5 border-t border-vd-border pt-4 space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="text-sm text-gray-200">Plex naming</span>
+              <p class="text-xs text-vd-muted mt-0.5">Generate Plex-compatible filenames from metadata (e.g. <code class="text-gray-400">Show Name (2024) - S01E01.ext</code>). Overrides date prefix, year, and resolution settings.</p>
+            </div>
+            <label class="relative inline-flex cursor-pointer ml-4">
+              <input type="checkbox" id="sn-plex-naming" class="toggle-input sr-only" onchange="updateNamingPreview()">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div class="flex items-center justify-between">
               <div>
@@ -917,8 +936,9 @@
 
     // Filters
     const filters = s.filters || {};
-    setField('filters-blocked-keywords', (filters.blocked_keywords  || []).join(', '));
-    setField('filters-blocked-groups',   (filters.blocked_release_groups || []).join(', '));
+    setField('filters-blocked-keywords',    (filters.blocked_keywords        || []).join(', '));
+    setField('filters-blocked-groups',      (filters.blocked_release_groups  || []).join(', '));
+    setField('filters-preferred-languages', (filters.preferred_languages      || []).join(', '));
 
     // Retry
     const retry = s.retry || {};
@@ -936,6 +956,7 @@
 
     // Symlink Naming
     const sn = s.symlink_naming || {};
+    setToggle('sn-plex-naming',  sn.plex_naming === true);
     setToggle('sn-date-prefix',  sn.date_prefix !== false);
     setToggle('sn-release-year', sn.release_year !== false);
     setToggle('sn-resolution',   sn.resolution === true);
@@ -1054,10 +1075,13 @@
           .split(',').map(s => s.trim()).filter(Boolean);
         const groups = document.getElementById('filters-blocked-groups').value
           .split(',').map(s => s.trim()).filter(Boolean);
+        const preferredLangs = document.getElementById('filters-preferred-languages').value
+          .split(',').map(s => s.trim()).filter(Boolean);
         return {
           filters: {
             blocked_keywords:       keywords,
             blocked_release_groups: groups,
+            preferred_languages:    preferredLangs,
           }
         };
       }
@@ -1081,6 +1105,7 @@
       case 'symlink_naming': {
         return {
           symlink_naming: {
+            plex_naming:  getToggle('sn-plex-naming'),
             date_prefix:  getToggle('sn-date-prefix'),
             release_year: getToggle('sn-release-year'),
             resolution:   getToggle('sn-resolution'),
@@ -1229,36 +1254,59 @@
   function updateNamingPreview() {
     const preview = document.getElementById('naming-preview');
     if (!preview) return;
+    const plexNaming = getToggle('sn-plex-naming');
     const dp = getToggle('sn-date-prefix');
     const ry = getToggle('sn-release-year');
     const res = getToggle('sn-resolution');
-    const now = new Date();
-    const ts = String(now.getFullYear())
-      + String(now.getMonth() + 1).padStart(2, '0')
-      + String(now.getDate()).padStart(2, '0')
-      + String(now.getHours()).padStart(2, '0')
-      + String(now.getMinutes()).padStart(2, '0');
 
-    // Movie example
-    let movieParts = [];
-    if (dp) movieParts.push(ts);
-    movieParts.push('The Matrix');
-    if (ry) movieParts.push('(1999)');
-    if (res) movieParts.push('2160p');
-    const movieDir = movieParts.join(' ');
+    // Dim the other three toggles when plex naming is active
+    ['sn-date-prefix', 'sn-release-year', 'sn-resolution'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const row = el.closest('.flex.items-center');
+      if (row) {
+        row.style.opacity = plexNaming ? '0.4' : '1';
+        row.style.pointerEvents = plexNaming ? 'none' : '';
+      }
+    });
 
-    // Show example
-    let showParts = [];
-    if (dp) showParts.push(ts);
-    showParts.push('Breaking Bad');
-    if (ry) showParts.push('(2008)');
-    if (res) showParts.push('1080p');
-    const showDir = showParts.join(' ');
-    const epPrefix = dp ? ts + ' ' : '';
+    let movieLine, showLine;
+
+    if (plexNaming) {
+      movieLine = 'movies/The Matrix (1999) {tmdb-603}/The Matrix (1999).mkv';
+      showLine  = 'shows/Breaking Bad (2008) {tmdb-1396}/Season 01/Breaking Bad (2008) - S01E01.mkv';
+    } else {
+      const now = new Date();
+      const ts = String(now.getFullYear())
+        + String(now.getMonth() + 1).padStart(2, '0')
+        + String(now.getDate()).padStart(2, '0')
+        + String(now.getHours()).padStart(2, '0')
+        + String(now.getMinutes()).padStart(2, '0');
+
+      // Movie example
+      let movieParts = [];
+      if (dp) movieParts.push(ts);
+      movieParts.push('The Matrix');
+      if (ry) movieParts.push('(1999)');
+      if (res) movieParts.push('2160p');
+      const movieDir = movieParts.join(' ');
+
+      // Show example
+      let showParts = [];
+      if (dp) showParts.push(ts);
+      showParts.push('Breaking Bad');
+      if (ry) showParts.push('(2008)');
+      if (res) showParts.push('1080p');
+      const showDir = showParts.join(' ');
+      const epPrefix = dp ? ts + ' ' : '';
+
+      movieLine = 'movies/' + escapeHtml(movieDir) + '/The.Matrix.1999.2160p.mkv';
+      showLine  = 'shows/' + escapeHtml(showDir) + '/Season 01/' + epPrefix + 'Breaking.Bad.S01E01.mkv';
+    }
 
     preview.innerHTML =
-      '<div>movies/' + escapeHtml(movieDir) + '/The.Matrix.1999.2160p.mkv</div>' +
-      '<div>shows/' + escapeHtml(showDir) + '/Season 01/' + epPrefix + 'Breaking.Bad.S01E01.mkv</div>';
+      '<div>' + movieLine + '</div>' +
+      '<div>' + showLine + '</div>';
   }
 
   // ---------------------------------------------------------------------------

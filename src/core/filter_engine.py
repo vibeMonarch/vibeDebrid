@@ -6,8 +6,11 @@ minimum resolution). Rejected results are discarded entirely and never retried
 from the filter engine's perspective.
 
 Tier 2 — Quality Scoring: all results that survive Tier 1 receive a composite
-score across resolution, codec, audio, source, seeders, RD cache status, and
-season-pack preference. Results are sorted descending by score.
+score across resolution, codec, audio, source, seeders, RD cache status,
+season-pack preference, and language preference. Results are sorted descending
+by score. The approximate maximum score is ~120 pts when all categories align
+perfectly (resolution 40 + source 15 + codec 15 + language 15 + audio 10 +
+cached 10 + seeders 10 + season_pack 5).
 
 Tier 3 (retry/dormant strategy) is handled by queue_manager.py, not here.
 
@@ -115,6 +118,11 @@ _CACHED_BONUS: float = 10.0
 
 # Season pack bonus
 _SEASON_PACK_BONUS: float = 5.0
+
+# Language preference: max 15 pts (enough to counter 10 pts max for seeders)
+_LANGUAGE_MAX: float = 15.0
+_LANGUAGE_STEP: float = 3.0
+_LANGUAGE_MULTI_BONUS: float = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -298,20 +306,45 @@ class FilterEngine:
                 if release_group_lower == blocked.lower():
                     return False, f"blocked release group: {result.release_group!r}"
 
-        # 5. Required language
-        required_lang = settings.filters.required_language
-        if required_lang is not None:
-            languages_lower = [lang.lower() for lang in result.languages]
-            has_required = required_lang.lower() in languages_lower
-            has_multi = (
-                settings.filters.allow_multi_audio
-                and "multi" in languages_lower
-            )
-            if not has_required and not has_multi:
-                return False, (
-                    f"required language {required_lang!r} not present "
-                    f"(languages={result.languages})"
+        # 5. Language filter
+        preferred_langs = settings.filters.preferred_languages
+        if preferred_langs:
+            # New-style: reject anything not in the preferred list
+            preferred_lower = [lang.lower() for lang in preferred_langs]
+            if result.languages:
+                languages_lower = [lang.lower() for lang in result.languages]
+                has_preferred = any(lang in preferred_lower for lang in languages_lower)
+                has_multi = (
+                    settings.filters.allow_multi_audio
+                    and "multi" in languages_lower
                 )
+                if not has_preferred and not has_multi:
+                    return False, (
+                        f"no preferred language found "
+                        f"(detected={result.languages}, preferred={preferred_langs})"
+                    )
+            else:
+                # No language tag detected — assumed English.
+                # Only reject when English is NOT in the preferred list.
+                if "english" not in preferred_lower:
+                    return False, (
+                        "no language detected (assumed English) and English not in preferred languages"
+                    )
+        else:
+            # Legacy fallback: required_language (only applied when preferred_languages is empty)
+            required_lang = settings.filters.required_language
+            if required_lang is not None:
+                languages_lower = [lang.lower() for lang in result.languages]
+                has_required = required_lang.lower() in languages_lower
+                has_multi = (
+                    settings.filters.allow_multi_audio
+                    and "multi" in languages_lower
+                )
+                if not has_required and not has_multi:
+                    return False, (
+                        f"required language {required_lang!r} not present "
+                        f"(languages={result.languages})"
+                    )
 
         # 6. Minimum resolution (only enforced when resolution is known)
         if result.resolution is not None:
@@ -422,6 +455,9 @@ class FilterEngine:
         # --- Season pack (max 5 pts) ---
         breakdown["season_pack"] = _SEASON_PACK_BONUS if result.is_season_pack else 0.0
 
+        # --- Language preference (max 15 pts, 0 when preferred_languages unset) ---
+        breakdown["language"] = self._score_language(result.languages)
+
         total = sum(breakdown.values())
         return total, breakdown
 
@@ -503,6 +539,53 @@ class FilterEngine:
         # Clamp to not_in_list as the floor (never award negative points for
         # a value that is technically present but far down the list).
         return max(awarded, not_in_list)
+
+    def _score_language(self, languages: list[str]) -> float:
+        """Award points for language match against the preferred_languages list.
+
+        When ``preferred_languages`` is empty, returns 0.0 (no effect on
+        scoring).  When set, awards points based on the language's position in
+        the ordered preference list.  Untagged results (empty ``languages``
+        list) are treated as English, since releases without a language token
+        are assumed to be English.
+
+        Multi-audio releases receive a fixed bonus when ``allow_multi_audio``
+        is enabled, regardless of their position in the preference list.
+
+        Args:
+            languages: List of language strings detected from the torrent
+                       title (e.g. ``["Russian"]`` or ``[]`` for untagged).
+
+        Returns:
+            Points awarded: ``_LANGUAGE_MAX`` (15) for 1st preference,
+            decreasing by ``_LANGUAGE_STEP`` (3) per position, floored at
+            1.0 for any match.  ``_LANGUAGE_MULTI_BONUS`` (10) for multi.
+            0.0 when ``preferred_languages`` is not configured.
+        """
+        preferred_langs = settings.filters.preferred_languages
+        if not preferred_langs:
+            return 0.0
+
+        preferred_lower = [lang.lower() for lang in preferred_langs]
+
+        # Determine effective language list (untagged releases = English)
+        effective_langs = [lang.lower() for lang in languages] if languages else ["english"]
+
+        # Check position-based matches first — a preferred language may score
+        # higher than the fixed multi-audio bonus.
+        best_score = 0.0
+        for lang in effective_langs:
+            if lang in preferred_lower:
+                pos = preferred_lower.index(lang)
+                score = _LANGUAGE_MAX - pos * _LANGUAGE_STEP
+                score = max(score, 1.0)  # floor at 1.0 for any match
+                best_score = max(best_score, score)
+
+        # Multi-audio only fills in when no preferred language scored higher.
+        if best_score == 0.0 and "multi" in effective_langs and settings.filters.allow_multi_audio:
+            return _LANGUAGE_MULTI_BONUS
+
+        return best_score
 
     @staticmethod
     def _score_audio(
