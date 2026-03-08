@@ -126,6 +126,12 @@
     color: #86efac;
     cursor: default;
   }
+  .add-btn-library.add-btn-action,
+  .add-btn-queue.add-btn-action {
+    cursor: pointer;
+  }
+  .add-btn-library.add-btn-action:hover { background: #15803d; }
+  .add-btn-queue.add-btn-action:hover { background: #1e3a8a; }
   /* Section rows — horizontal scroll */
   .section-row {
     display: flex;
@@ -895,9 +901,25 @@
     // Add button
     var addBtn;
     if (item.queue_status === 'in_library') {
-      addBtn = '<button class="add-btn add-btn-library" disabled>In Library</button>';
+      if (item.media_type === 'tv') {
+        addBtn = '<button class="add-btn add-btn-library add-btn-action" ' +
+          'data-tmdb-id="' + escAttr(String(item.tmdb_id)) + '" ' +
+          'data-media-type="tv" ' +
+          'data-title="' + escAttr(item.title) + '" ' +
+          'data-year="' + escAttr(String(item.year || '')) + '">View Seasons</button>';
+      } else {
+        addBtn = '<button class="add-btn add-btn-library" disabled>In Library</button>';
+      }
     } else if (item.queue_status === 'in_queue') {
-      addBtn = '<button class="add-btn add-btn-queue" disabled>In Queue</button>';
+      if (item.media_type === 'tv') {
+        addBtn = '<button class="add-btn add-btn-queue add-btn-action" ' +
+          'data-tmdb-id="' + escAttr(String(item.tmdb_id)) + '" ' +
+          'data-media-type="tv" ' +
+          'data-title="' + escAttr(item.title) + '" ' +
+          'data-year="' + escAttr(String(item.year || '')) + '">View Seasons</button>';
+      } else {
+        addBtn = '<button class="add-btn add-btn-queue" disabled>In Queue</button>';
+      }
     } else {
       addBtn = '<button class="add-btn add-btn-available add-btn-action" ' +
         'data-tmdb-id="' + item.tmdb_id + '" ' +
@@ -1032,9 +1054,23 @@
   // Build the add-button HTML for a given queue_status / item data
   function addBtnHtml(queueStatus, tmdbId, mediaType, title, year) {
     if (queueStatus === 'in_library') {
+      if (mediaType === 'tv') {
+        return '<button class="add-btn add-btn-library add-btn-action" ' +
+          'data-tmdb-id="' + escAttr(String(tmdbId)) + '" ' +
+          'data-media-type="tv" ' +
+          'data-title="' + escAttr(title) + '" ' +
+          'data-year="' + escAttr(String(year || '')) + '">View Seasons</button>';
+      }
       return '<button class="add-btn add-btn-library" disabled>In Library</button>';
     }
     if (queueStatus === 'in_queue') {
+      if (mediaType === 'tv') {
+        return '<button class="add-btn add-btn-queue add-btn-action" ' +
+          'data-tmdb-id="' + escAttr(String(tmdbId)) + '" ' +
+          'data-media-type="tv" ' +
+          'data-title="' + escAttr(title) + '" ' +
+          'data-year="' + escAttr(String(year || '')) + '">View Seasons</button>';
+      }
       return '<button class="add-btn add-btn-queue" disabled>In Queue</button>';
     }
     return '<button class="add-btn add-btn-available add-btn-action" ' +
