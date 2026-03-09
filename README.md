@@ -64,9 +64,16 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Live updates via Server-Sent Events
 - Responsive design (mobile + desktop)
 
+**Plex Watchlist Sync**
+- Automatic watchlist polling (configurable interval, min 15min)
+- Movies added as WANTED, shows get S1 pack + monitoring
+- Mount index lookup before creating items (catches content already in RD)
+
 **Tools**
-- Library migration: import existing libraries from other tools
-- Duplicate manager: detect and resolve RD account duplicates
+- Library migration: import existing libraries from other tools with preview → execute flow
+- TMDB ID backfill: resolve tmdb_id for all items with only imdb_id
+- RD Bridge: link Real-Debrid account torrents to migrated items by matching symlink paths to RD filenames
+- Smart Cleanup: liveness-aware duplicate removal — checks actual filesystem state (LIVE/BRIDGED/DEAD) before deciding what to keep, with RD torrent cleanup
 
 ## Prerequisites
 
