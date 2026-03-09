@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1496 tests, all passing (as of 2026-03-09)
+- 1571 tests, all passing (as of 2026-03-09)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -28,10 +28,9 @@
 - Plex symlink naming mode — 2026-03-08
 - Plex Watchlist sync — 2026-03-09
 - TMDB ID backfill + migration dedup — 2026-03-09
-- [RD Bridge + Smart Cleanup](rd-cleanup.md) — 2026-03-09
+- [RD Bridge + Smart Cleanup + Account Cleanup](rd-cleanup.md) — 2026-03-09
 
 ## Remaining / Future Work
-- Issue #23 Phase 2: RD account categorize & clean (orphaned/dead/stale torrents)
 - Issue #28: Anime prefer original language (Japanese) over dubs
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
 - 2 unresolved IMDB IDs: tt1088540 (Bookworm), tt0203082 (Rurouni Trust&Betrayal) — not in TMDB

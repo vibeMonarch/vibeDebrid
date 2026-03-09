@@ -454,6 +454,162 @@
   </div><!-- /body-cleanup -->
 
 </div><!-- /cleanup card -->
+
+<!-- RD Account Cleanup card -->
+<div class="bg-vd-card border border-vd-border rounded-lg mb-6">
+
+  <!-- Card header -->
+  <button type="button"
+          onclick="toggleSection('rdcleanup')"
+          class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+    <div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-vd-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+      </svg>
+      <span class="font-semibold text-white">RD Account Cleanup</span>
+    </div>
+    <svg id="chevron-rdcleanup" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+
+  <!-- Card body -->
+  <div id="body-rdcleanup" class="section-body collapsed">
+    <div>
+      <div class="px-6 pb-6 space-y-6 border-t border-vd-border pt-5">
+
+        <!-- Description -->
+        <p class="text-sm text-vd-muted leading-relaxed">
+          Scan your entire Real-Debrid account to identify dead, stale, orphaned, and duplicate torrents.
+          Protected torrents (linked to vibeDebrid items) are never removed.
+        </p>
+
+        <!-- Scan button -->
+        <div class="flex items-center gap-3">
+          <button id="rd-scan-btn"
+                  type="button"
+                  onclick="runRdCleanupScan()"
+                  class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <svg id="rd-scan-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <svg id="rd-scan-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            <span id="rd-scan-btn-label">Scan RD Account</span>
+          </button>
+          <span id="rd-scan-status" class="hidden text-sm text-vd-muted italic">Fetching all RD torrents...</span>
+        </div>
+
+        <!-- Results section (hidden until scan completes) -->
+        <div id="rd-results-section" class="hidden space-y-5">
+
+          <!-- Summary badges -->
+          <div id="rd-summary-badges" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <!-- Populated by JS -->
+          </div>
+
+          <!-- Warnings panel -->
+          <div id="rd-warnings-panel" class="hidden bg-vd-bg border border-yellow-800 rounded-lg p-3">
+            <p class="text-xs font-semibold text-yellow-400 mb-1">Warnings</p>
+            <ul id="rd-warnings-list" class="text-xs text-yellow-300 space-y-0.5 font-mono"></ul>
+          </div>
+
+          <!-- Category filter tabs -->
+          <div class="flex flex-wrap gap-1.5" id="rd-filter-tabs">
+            <button type="button" onclick="rdFilterByCategory('all')"    id="rd-tab-all"       class="rd-tab rd-tab-active px-3 py-1 rounded text-xs font-medium transition-colors">All</button>
+            <button type="button" onclick="rdFilterByCategory('dead')"   id="rd-tab-dead"      class="rd-tab px-3 py-1 rounded text-xs font-medium transition-colors">Dead</button>
+            <button type="button" onclick="rdFilterByCategory('stale')"  id="rd-tab-stale"     class="rd-tab px-3 py-1 rounded text-xs font-medium transition-colors">Stale</button>
+            <button type="button" onclick="rdFilterByCategory('orphaned')" id="rd-tab-orphaned" class="rd-tab px-3 py-1 rounded text-xs font-medium transition-colors">Orphaned</button>
+            <button type="button" onclick="rdFilterByCategory('duplicate')" id="rd-tab-duplicate" class="rd-tab px-3 py-1 rounded text-xs font-medium transition-colors">Duplicate</button>
+            <button type="button" onclick="rdFilterByCategory('protected')" id="rd-tab-protected" class="rd-tab px-3 py-1 rounded text-xs font-medium transition-colors">Protected</button>
+          </div>
+
+          <!-- Torrent table -->
+          <div class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
+                    <th class="px-3 py-2 text-left w-8">
+                      <input type="checkbox" id="rd-select-all-cb" onchange="rdToggleSelectAll(this.checked)"
+                             class="rounded border-vd-border bg-vd-bg text-vd-accent focus:ring-vd-accent">
+                    </th>
+                    <th class="px-3 py-2 text-left">Filename</th>
+                    <th class="px-3 py-2 text-left">Size</th>
+                    <th class="px-3 py-2 text-left">RD Status</th>
+                    <th class="px-3 py-2 text-left">Category</th>
+                    <th class="px-3 py-2 text-left">Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="rd-torrent-tbody">
+                </tbody>
+              </table>
+              <p id="rd-table-overflow" class="hidden px-4 py-2 text-xs text-vd-muted italic border-t border-vd-border"></p>
+            </div>
+          </div>
+
+          <!-- Action bar -->
+          <div class="sticky bottom-0 bg-vd-card border border-vd-border rounded-lg px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            <span id="rd-selection-counter" class="text-sm text-vd-muted whitespace-nowrap">0 selected (0 B)</span>
+            <div class="flex flex-wrap gap-2 flex-1">
+              <button type="button" onclick="rdSelectAllDeadStale()"
+                      class="px-3 py-1 bg-vd-bg border border-vd-border hover:bg-white/5 text-xs text-gray-300 rounded transition-colors">
+                Select All Dead &amp; Stale
+              </button>
+              <button type="button" onclick="rdSelectAllOrphaned()"
+                      class="px-3 py-1 bg-vd-bg border border-vd-border hover:bg-white/5 text-xs text-gray-300 rounded transition-colors">
+                Select All Orphaned
+              </button>
+              <button type="button" onclick="rdDeselectAll()"
+                      class="px-3 py-1 bg-vd-bg border border-vd-border hover:bg-white/5 text-xs text-gray-300 rounded transition-colors">
+                Deselect All
+              </button>
+            </div>
+            <button id="rd-remove-btn"
+                    type="button"
+                    onclick="runRdCleanupExecute()"
+                    disabled
+                    class="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
+              <svg id="rd-remove-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+              </svg>
+              <svg id="rd-remove-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              <span id="rd-remove-btn-label">Remove Selected</span>
+            </button>
+          </div>
+
+        </div><!-- /rd-results-section -->
+
+        <!-- Execute result (hidden until execute completes) -->
+        <div id="rd-execute-result" class="hidden">
+          <div class="bg-vd-bg border border-green-700 rounded-lg p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <span class="font-semibold text-green-400">Cleanup complete</span>
+            </div>
+            <div id="rd-execute-stats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+              <!-- Populated by JS -->
+            </div>
+            <div id="rd-rate-limit-warn" class="hidden mb-3 p-2 bg-yellow-900/30 border border-yellow-700 rounded text-xs text-yellow-300">
+              Rate limit encountered — some deletions may have been skipped. Re-scan and retry.
+            </div>
+            <div id="rd-execute-errors-wrap" class="hidden">
+              <p class="text-xs text-red-400 font-medium mb-1">Errors during execution:</p>
+              <ul id="rd-execute-errors-list" class="text-xs text-red-300 space-y-0.5 font-mono"></ul>
+            </div>
+          </div>
+        </div><!-- /rd-execute-result -->
+
+      </div>
+    </div>
+  </div><!-- /body-rdcleanup -->
+
+</div><!-- /rdcleanup card -->
 {% endblock %}
 
 {% block scripts %}
@@ -1222,6 +1378,435 @@
     }
 
     document.getElementById('smart-result').classList.remove('hidden');
+  }
+
+})();
+
+// ---------------------------------------------------------------------------
+// RD Account Cleanup (Phase 2)
+// ---------------------------------------------------------------------------
+(function() {
+
+  var _rdScanData = null;   // Full RdCleanupScan response
+  var _activeFilter = 'all';
+  var _selectedIds = new Set();  // rd_id strings currently checked
+  var _executing = false;
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  function escRd(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0;
+    var val = bytes;
+    while (val >= 1024 && i < units.length - 1) {
+      val /= 1024;
+      i++;
+    }
+    return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  function statCardRd(label, value, sub, colorClass) {
+    return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
+      '<p class="text-xs text-vd-muted uppercase tracking-wider mb-1">' + escRd(label) + '</p>' +
+      '<p class="text-xl font-bold ' + colorClass + '">' + escRd(String(value)) + '</p>' +
+      (sub ? '<p class="text-xs text-vd-muted mt-0.5">' + escRd(sub) + '</p>' : '') +
+      '</div>';
+  }
+
+  var _CAT_COLORS = {
+    protected: { badge: 'bg-green-900/50 text-green-300 border-green-700',  stat: 'text-green-400'  },
+    dead:      { badge: 'bg-red-900/50 text-red-300 border-red-700',        stat: 'text-red-400'    },
+    stale:     { badge: 'bg-amber-900/50 text-amber-300 border-amber-700',  stat: 'text-amber-400'  },
+    orphaned:  { badge: 'bg-gray-700/60 text-gray-300 border-gray-600',     stat: 'text-gray-300'   },
+    duplicate: { badge: 'bg-blue-900/50 text-blue-300 border-blue-700',     stat: 'text-blue-400'   },
+  };
+
+  function categoryBadge(cat) {
+    var cfg = _CAT_COLORS[cat] || _CAT_COLORS.orphaned;
+    return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ' + cfg.badge + '">' +
+      escRd(cat.charAt(0).toUpperCase() + cat.slice(1)) + '</span>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tab styling
+  // ---------------------------------------------------------------------------
+  function updateTabStyles(activeTab) {
+    var tabs = ['all','dead','stale','orphaned','duplicate','protected'];
+    tabs.forEach(function(t) {
+      var el = document.getElementById('rd-tab-' + t);
+      if (!el) return;
+      if (t === activeTab) {
+        el.className = 'rd-tab rd-tab-active px-3 py-1 rounded text-xs font-medium transition-colors bg-vd-accent text-white';
+      } else {
+        el.className = 'rd-tab px-3 py-1 rounded text-xs font-medium transition-colors bg-vd-bg border border-vd-border text-vd-muted hover:text-gray-200 hover:bg-white/5';
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scan
+  // ---------------------------------------------------------------------------
+  window.runRdCleanupScan = function() {
+    if (_executing) return;
+    setRdScanLoading(true);
+    document.getElementById('rd-results-section').classList.add('hidden');
+    document.getElementById('rd-execute-result').classList.add('hidden');
+    _rdScanData = null;
+    _selectedIds.clear();
+    _activeFilter = 'all';
+
+    fetch('/api/tools/rd-cleanup/scan', { method: 'POST' })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      setRdScanLoading(false);
+      _rdScanData = data;
+      renderRdScanResults(data);
+    })
+    .catch(function(err) {
+      setRdScanLoading(false);
+      showToast('RD scan failed: ' + err.message, 'error');
+    });
+  };
+
+  function setRdScanLoading(loading) {
+    var btn = document.getElementById('rd-scan-btn');
+    var icon = document.getElementById('rd-scan-icon');
+    var spinner = document.getElementById('rd-scan-spinner');
+    var label = document.getElementById('rd-scan-btn-label');
+    var status = document.getElementById('rd-scan-status');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Scanning...' : 'Scan RD Account';
+    if (status) status.classList.toggle('hidden', !loading);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render scan results
+  // ---------------------------------------------------------------------------
+  function renderRdScanResults(data) {
+    // Summary badges
+    var summaries = data.summaries || [];
+    var catMap = {};
+    summaries.forEach(function(s) { catMap[s.category] = s; });
+
+    var order = ['protected','dead','stale','orphaned','duplicate'];
+    var badgesHtml = order.map(function(cat) {
+      var s = catMap[cat] || { count: 0, total_bytes: 0 };
+      var cfg = _CAT_COLORS[cat] || _CAT_COLORS.orphaned;
+      return statCardRd(
+        cat.charAt(0).toUpperCase() + cat.slice(1),
+        s.count,
+        formatBytes(s.total_bytes),
+        cfg.stat
+      );
+    }).join('');
+    document.getElementById('rd-summary-badges').innerHTML = badgesHtml;
+
+    // Warnings
+    var warningsPanel = document.getElementById('rd-warnings-panel');
+    var warningsList = document.getElementById('rd-warnings-list');
+    if (data.warnings && data.warnings.length > 0) {
+      warningsList.innerHTML = data.warnings.map(function(w) {
+        return '<li>' + escRd(w) + '</li>';
+      }).join('');
+      warningsPanel.classList.remove('hidden');
+    } else {
+      warningsPanel.classList.add('hidden');
+    }
+
+    // Apply default filter
+    _activeFilter = 'all';
+    updateTabStyles('all');
+    renderTorrentTable();
+
+    document.getElementById('rd-results-section').classList.remove('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Torrent table render (respects _activeFilter)
+  // ---------------------------------------------------------------------------
+  var TABLE_CAP_RD = 100;
+
+  function renderTorrentTable() {
+    if (!_rdScanData) return;
+
+    var allTorrents = _rdScanData.torrents || [];
+    var filtered = _activeFilter === 'all'
+      ? allTorrents
+      : allTorrents.filter(function(t) { return t.category === _activeFilter; });
+
+    var visible = filtered.slice(0, TABLE_CAP_RD);
+    var overflow = filtered.length - visible.length;
+
+    var tbody = document.getElementById('rd-torrent-tbody');
+    var overflowEl = document.getElementById('rd-table-overflow');
+
+    // Header checkbox — indeterminate if some selected
+    var allCb = document.getElementById('rd-select-all-cb');
+    if (allCb) {
+      var visibleCheckable = visible.filter(function(t) { return t.category !== 'protected'; });
+      var checkedCount = visibleCheckable.filter(function(t) { return _selectedIds.has(t.rd_id); }).length;
+      allCb.checked = visibleCheckable.length > 0 && checkedCount === visibleCheckable.length;
+      allCb.indeterminate = checkedCount > 0 && checkedCount < visibleCheckable.length;
+      allCb.disabled = _executing;
+    }
+
+    var rows = visible.map(function(t, idx) {
+      var isProtected = t.category === 'protected';
+      var checked = _selectedIds.has(t.rd_id);
+      var rowTint = isProtected ? ' bg-green-950/20' : (idx % 2 === 1 ? ' bg-vd-bg/30' : '');
+
+      var cbCell = isProtected
+        ? '<td class="px-3 py-1.5 w-8"></td>'
+        : '<td class="px-3 py-1.5 w-8"><input type="checkbox" ' +
+          'data-rdid="' + escRd(t.rd_id) + '" ' +
+          (checked ? 'checked ' : '') +
+          (_executing ? 'disabled ' : '') +
+          'onchange="rdToggleItem(this)" ' +
+          'class="rounded border-vd-border bg-vd-bg text-vd-accent focus:ring-vd-accent"></td>';
+
+      var shortName = t.filename.length > 60 ? t.filename.slice(0, 58) + '...' : t.filename;
+      var filenameCell = '<td class="px-3 py-1.5 font-mono text-xs text-gray-200" title="' + escRd(t.filename) + '">' +
+        escRd(shortName) + '</td>';
+
+      var sizeCell = '<td class="px-3 py-1.5 text-xs text-vd-muted whitespace-nowrap">' + formatBytes(t.filesize) + '</td>';
+      var statusCell = '<td class="px-3 py-1.5 text-xs text-vd-muted font-mono">' + escRd(t.status) + '</td>';
+      var catCell = '<td class="px-3 py-1.5">' + categoryBadge(t.category) + '</td>';
+      var reasonCell = '<td class="px-3 py-1.5 text-xs text-vd-muted max-w-xs truncate" title="' + escRd(t.reason) + '">' + escRd(t.reason) + '</td>';
+
+      return '<tr class="border-t border-vd-border/50' + rowTint + '">' +
+        cbCell + filenameCell + sizeCell + statusCell + catCell + reasonCell + '</tr>';
+    });
+
+    tbody.innerHTML = rows.join('');
+
+    if (overflow > 0) {
+      overflowEl.textContent = '... and ' + overflow + ' more in this category (not shown)';
+      overflowEl.classList.remove('hidden');
+    } else {
+      overflowEl.classList.add('hidden');
+    }
+
+    updateSelectionCounter();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filter by category tab
+  // ---------------------------------------------------------------------------
+  window.rdFilterByCategory = function(cat) {
+    _activeFilter = cat;
+    updateTabStyles(cat);
+    renderTorrentTable();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Checkbox handling
+  // ---------------------------------------------------------------------------
+  window.rdToggleItem = function(cb) {
+    var rdId = cb.getAttribute('data-rdid');
+    if (!rdId) return;
+    if (cb.checked) {
+      _selectedIds.add(rdId);
+    } else {
+      _selectedIds.delete(rdId);
+    }
+    // Update header checkbox state
+    var allCb = document.getElementById('rd-select-all-cb');
+    if (allCb) {
+      var allTorrents = _rdScanData ? _rdScanData.torrents || [] : [];
+      var filtered = _activeFilter === 'all'
+        ? allTorrents
+        : allTorrents.filter(function(t) { return t.category === _activeFilter; });
+      var visible = filtered.slice(0, TABLE_CAP_RD);
+      var checkable = visible.filter(function(t) { return t.category !== 'protected'; });
+      var checked = checkable.filter(function(t) { return _selectedIds.has(t.rd_id); }).length;
+      allCb.checked = checkable.length > 0 && checked === checkable.length;
+      allCb.indeterminate = checked > 0 && checked < checkable.length;
+    }
+    updateSelectionCounter();
+  };
+
+  window.rdToggleSelectAll = function(checked) {
+    if (!_rdScanData) return;
+    var allTorrents = _rdScanData.torrents || [];
+    var filtered = _activeFilter === 'all'
+      ? allTorrents
+      : allTorrents.filter(function(t) { return t.category === _activeFilter; });
+    var visible = filtered.slice(0, TABLE_CAP_RD);
+    visible.forEach(function(t) {
+      if (t.category === 'protected') return;
+      if (checked) {
+        _selectedIds.add(t.rd_id);
+      } else {
+        _selectedIds.delete(t.rd_id);
+      }
+    });
+    renderTorrentTable();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Quick-select helpers
+  // ---------------------------------------------------------------------------
+  window.rdSelectAllDeadStale = function() {
+    if (!_rdScanData) return;
+    (_rdScanData.torrents || []).forEach(function(t) {
+      if (t.category === 'dead' || t.category === 'stale') {
+        _selectedIds.add(t.rd_id);
+      }
+    });
+    renderTorrentTable();
+  };
+
+  window.rdSelectAllOrphaned = function() {
+    if (!_rdScanData) return;
+    (_rdScanData.torrents || []).forEach(function(t) {
+      if (t.category === 'orphaned') {
+        _selectedIds.add(t.rd_id);
+      }
+    });
+    renderTorrentTable();
+  };
+
+  window.rdDeselectAll = function() {
+    _selectedIds.clear();
+    renderTorrentTable();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Selection counter
+  // ---------------------------------------------------------------------------
+  function updateSelectionCounter() {
+    var counter = document.getElementById('rd-selection-counter');
+    var removeBtn = document.getElementById('rd-remove-btn');
+    if (!counter) return;
+
+    var count = _selectedIds.size;
+    var totalBytes = 0;
+    if (_rdScanData) {
+      (_rdScanData.torrents || []).forEach(function(t) {
+        if (_selectedIds.has(t.rd_id)) totalBytes += (t.filesize || 0);
+      });
+    }
+    counter.textContent = count + ' selected (' + formatBytes(totalBytes) + ')';
+    if (removeBtn) removeBtn.disabled = count === 0 || _executing;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Execute removal
+  // ---------------------------------------------------------------------------
+  window.runRdCleanupExecute = function() {
+    if (_executing || _selectedIds.size === 0) return;
+
+    var rdIds = Array.from(_selectedIds);
+    var count = rdIds.length;
+    var totalBytes = 0;
+    if (_rdScanData) {
+      (_rdScanData.torrents || []).forEach(function(t) {
+        if (_selectedIds.has(t.rd_id)) totalBytes += (t.filesize || 0);
+      });
+    }
+
+    var msg = 'This will permanently delete ' + count + ' torrent' +
+      (count === 1 ? '' : 's') + ' (' + formatBytes(totalBytes) + ') from your Real-Debrid account. ' +
+      'This cannot be undone. Continue?';
+    if (!confirm(msg)) return;
+
+    _executing = true;
+    setRdRemoveLoading(true);
+    document.getElementById('rd-execute-result').classList.add('hidden');
+
+    // Disable all checkboxes
+    renderTorrentTable();
+
+    fetch('/api/tools/rd-cleanup/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rd_ids: rdIds })
+    })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      _executing = false;
+      setRdRemoveLoading(false);
+      _selectedIds.clear();
+      renderRdCleanupResult(data);
+      var msg2 = 'Deleted ' + data.deleted + ' torrent' + (data.deleted === 1 ? '' : 's');
+      if (data.failed > 0) msg2 += ', ' + data.failed + ' failed';
+      showToast(msg2, data.failed > 0 ? 'warning' : 'success');
+    })
+    .catch(function(err) {
+      _executing = false;
+      setRdRemoveLoading(false);
+      renderTorrentTable();
+      showToast('Remove failed: ' + err.message, 'error');
+    });
+  };
+
+  function setRdRemoveLoading(loading) {
+    var btn = document.getElementById('rd-remove-btn');
+    var icon = document.getElementById('rd-remove-icon');
+    var spinner = document.getElementById('rd-remove-spinner');
+    var label = document.getElementById('rd-remove-btn-label');
+    if (!btn) return;
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Removing...' : 'Remove Selected';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render execute result
+  // ---------------------------------------------------------------------------
+  function renderRdCleanupResult(data) {
+    var statsEl = document.getElementById('rd-execute-stats');
+    statsEl.innerHTML =
+      statCardRd('Deleted', data.deleted, null, data.deleted > 0 ? 'text-green-400' : 'text-vd-muted') +
+      statCardRd('Failed', data.failed, null, data.failed > 0 ? 'text-red-400' : 'text-vd-muted') +
+      statCardRd('Rejected (Protected)', data.rejected_protected, null, data.rejected_protected > 0 ? 'text-yellow-400' : 'text-vd-muted') +
+      statCardRd('Rejected (Not Found)', data.rejected_not_found, null, data.rejected_not_found > 0 ? 'text-yellow-400' : 'text-vd-muted');
+
+    var rateLimitWarn = document.getElementById('rd-rate-limit-warn');
+    if (rateLimitWarn) rateLimitWarn.classList.toggle('hidden', !data.rate_limited);
+
+    var errorsWrap = document.getElementById('rd-execute-errors-wrap');
+    var errorsList = document.getElementById('rd-execute-errors-list');
+    if (data.errors && data.errors.length > 0) {
+      errorsList.innerHTML = data.errors.map(function(e) {
+        return '<li>' + escRd(e) + '</li>';
+      }).join('');
+      errorsWrap.classList.remove('hidden');
+    } else {
+      errorsWrap.classList.add('hidden');
+    }
+
+    // Hide results table, show execute result
+    document.getElementById('rd-results-section').classList.add('hidden');
+    document.getElementById('rd-execute-result').classList.remove('hidden');
   }
 
 })();

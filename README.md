@@ -74,6 +74,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - TMDB ID backfill: resolve tmdb_id for all items with only imdb_id
 - RD Bridge: link Real-Debrid account torrents to migrated items by matching symlink paths to RD filenames
 - Smart Cleanup: liveness-aware duplicate removal — checks actual filesystem state (LIVE/BRIDGED/DEAD) before deciding what to keep, with RD torrent cleanup
+- RD Account Cleanup: scan entire RD account, categorize torrents as Protected/Dead/Stale/Orphaned/Duplicate, selective removal with safety checks
 
 ## Prerequisites
 

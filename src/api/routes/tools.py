@@ -6,7 +6,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,13 @@ from src.core.cleanup import (
     execute_cleanup,
 )
 from src.core.rd_bridge import BridgeResult, bridge_rd_torrents
+from src.core.rd_cleanup import (
+    RdCleanupExecuteRequest,
+    RdCleanupExecuteResult,
+    RdCleanupScan,
+    execute_rd_cleanup,
+    scan_rd_account,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -648,6 +655,130 @@ async def cleanup_execute_endpoint(
             result.rd_torrents_failed,
         )
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# RD Account Cleanup routes (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/tools/rd-cleanup/scan", tags=["tools"])
+async def rd_cleanup_scan(
+    session: AsyncSession = Depends(get_db),
+) -> RdCleanupScan:
+    """Fetch and categorize all torrents in the user's Real-Debrid account.
+
+    Assigns every RD account torrent to a category bucket: Protected, Dead,
+    Stale, Duplicate, or Orphaned.  Results are cached for up to 5 minutes so
+    that a subsequent execute call can reuse the data without a second round-trip.
+
+    This is a read-only operation — nothing is modified.  Returns 409 when
+    another cleanup operation is already in progress.
+
+    Args:
+        session: Injected database session (read-only).
+
+    Returns:
+        RdCleanupScan with per-category summaries and per-torrent detail.
+    """
+    if _cleanup_lock.locked():
+        raise HTTPException(status_code=409, detail="Another cleanup operation is in progress")
+
+    try:
+        await _cleanup_lock.acquire()
+        result = await scan_rd_account(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from src.services.real_debrid import RealDebridRateLimitError
+
+        if isinstance(exc, RealDebridRateLimitError):
+            logger.warning("rd_cleanup_scan: RD rate limit hit: %s", exc)
+            raise HTTPException(
+                status_code=429,
+                detail="Real-Debrid rate limit reached — try again later",
+            )
+        logger.error("rd_cleanup_scan: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="RD cleanup scan failed — check server logs",
+        )
+    finally:
+        _cleanup_lock.release()
+
+    logger.info(
+        "rd_cleanup_scan: total=%d warnings=%d",
+        result.total_torrents,
+        len(result.warnings),
+    )
+    return result
+
+
+@router.post("/api/tools/rd-cleanup/execute", tags=["tools"])
+async def rd_cleanup_execute(
+    req: RdCleanupExecuteRequest,
+    session: AsyncSession = Depends(get_db),
+) -> RdCleanupExecuteResult:
+    """Delete the specified RD account torrents after safety checks.
+
+    Rejects any rd_id that resolves to a PROTECTED torrent (linked to a local
+    MediaItem or Symlink).  Unknown IDs are counted as ``rejected_not_found``
+    and skipped.  Deletions run concurrently (Semaphore(5)) with a stop_flag
+    that halts further attempts on the first rate-limit response.
+
+    After each successful deletion, the local dedup registry is updated via
+    ``mark_torrent_removed`` so future scrape decisions stay consistent.
+
+    Returns 400 when ``rd_ids`` is empty, 409 when another cleanup operation is
+    already in progress, 429 on a Real-Debrid rate-limit error.
+
+    Args:
+        req: List of RD torrent IDs the user wants deleted.
+        session: Injected database session.
+
+    Returns:
+        RdCleanupExecuteResult with counts for all outcomes.
+    """
+    if not req.rd_ids:
+        raise HTTPException(status_code=400, detail="rd_ids must not be empty")
+
+    if _cleanup_lock.locked():
+        raise HTTPException(status_code=409, detail="Another cleanup operation is in progress")
+
+    try:
+        await _cleanup_lock.acquire()
+        result = await execute_rd_cleanup(session, req.rd_ids)
+        await session.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from src.services.real_debrid import RealDebridRateLimitError
+
+        if isinstance(exc, RealDebridRateLimitError):
+            logger.warning("rd_cleanup_execute: RD rate limit hit: %s", exc)
+            raise HTTPException(
+                status_code=429,
+                detail="Real-Debrid rate limit reached — try again later",
+            )
+        logger.error("rd_cleanup_execute: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="RD cleanup execute failed — check server logs",
+        )
+    finally:
+        _cleanup_lock.release()
+
+    logger.info(
+        "rd_cleanup_execute: requested=%d deleted=%d failed=%d "
+        "rejected_protected=%d rejected_not_found=%d rate_limited=%s",
+        result.requested,
+        result.deleted,
+        result.failed,
+        result.rejected_protected,
+        result.rejected_not_found,
+        result.rate_limited,
+    )
     return result
 
 
