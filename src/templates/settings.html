@@ -819,6 +819,29 @@
             <input type="hidden" id="plex-show-section-ids" value="">
           </div>
 
+          <!-- Watchlist Sync toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-400" for="plex-watchlist-sync">Watchlist Sync</label>
+              <p class="text-xs text-vd-muted">Automatically add Plex watchlist items to the queue</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-4">
+              <input type="checkbox" id="plex-watchlist-sync" class="toggle-input sr-only"
+                     onchange="updateWatchlistPollVisibility()">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Poll Interval (only active when watchlist sync is on) -->
+          <div id="plex-watchlist-poll-row">
+            <label class="block text-sm text-gray-400 mb-1" for="plex-watchlist-poll">Poll Interval (minutes)</label>
+            <input type="number" id="plex-watchlist-poll" min="15" step="1"
+                   class="w-full sm:w-40 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+            <p class="text-xs text-vd-muted mt-1">How often to check the Plex watchlist for new items. Minimum 15 minutes.</p>
+          </div>
+
           <div class="pt-2">
             <button type="button" onclick="saveSection('plex')"
                     class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
@@ -986,6 +1009,9 @@
       document.getElementById('plex-scan-after-symlink').checked = s.plex.scan_after_symlink !== false;
       document.getElementById('plex-movie-section-ids').value = (s.plex.movie_section_ids || []).join(',');
       document.getElementById('plex-show-section-ids').value = (s.plex.show_section_ids || []).join(',');
+      document.getElementById('plex-watchlist-sync').checked = s.plex.watchlist_sync_enabled || false;
+      setField('plex-watchlist-poll', s.plex.watchlist_poll_minutes != null ? s.plex.watchlist_poll_minutes : 30);
+      updateWatchlistPollVisibility();
     }
   }
 
@@ -1130,12 +1156,14 @@
       case 'plex': {
         return {
           plex: {
-            enabled:            document.getElementById('plex-enabled').checked,
-            url:                document.getElementById('plex-url').value.trim(),
+            enabled:                  document.getElementById('plex-enabled').checked,
+            url:                      document.getElementById('plex-url').value.trim(),
             // INTENTIONALLY omit token — don't send the masked/display value back to the server
-            scan_after_symlink: document.getElementById('plex-scan-after-symlink').checked,
-            movie_section_ids:  document.getElementById('plex-movie-section-ids').value.split(',').filter(Boolean).map(Number),
-            show_section_ids:   document.getElementById('plex-show-section-ids').value.split(',').filter(Boolean).map(Number),
+            scan_after_symlink:       document.getElementById('plex-scan-after-symlink').checked,
+            movie_section_ids:        document.getElementById('plex-movie-section-ids').value.split(',').filter(Boolean).map(Number),
+            show_section_ids:         document.getElementById('plex-show-section-ids').value.split(',').filter(Boolean).map(Number),
+            watchlist_sync_enabled:   document.getElementById('plex-watchlist-sync').checked,
+            watchlist_poll_minutes:   (() => { const v = parseInt(document.getElementById('plex-watchlist-poll').value); return isNaN(v) || v < 15 ? 30 : v; })(),
           }
         };
       }
@@ -1307,6 +1335,19 @@
     preview.innerHTML =
       '<div>' + movieLine + '</div>' +
       '<div>' + showLine + '</div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plex watchlist sync visibility
+  // ---------------------------------------------------------------------------
+  function updateWatchlistPollVisibility() {
+    const enabled = document.getElementById('plex-watchlist-sync')?.checked;
+    const row = document.getElementById('plex-watchlist-poll-row');
+    const input = document.getElementById('plex-watchlist-poll');
+    if (!row || !input) return;
+    row.style.opacity = enabled ? '1' : '0.4';
+    row.style.pointerEvents = enabled ? '' : 'none';
+    input.disabled = !enabled;
   }
 
   // ---------------------------------------------------------------------------

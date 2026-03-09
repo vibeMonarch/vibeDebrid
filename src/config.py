@@ -133,6 +133,8 @@ class PlexConfig(BaseModel):
     movie_section_ids: list[int] = Field(default_factory=list)
     show_section_ids: list[int] = Field(default_factory=list)
     scan_after_symlink: bool = True
+    watchlist_sync_enabled: bool = False
+    watchlist_poll_minutes: int = Field(default=30, ge=15)
 
 
 class ServerConfig(BaseModel):

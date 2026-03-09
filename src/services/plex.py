@@ -63,6 +63,16 @@ class PlexPinResponse(BaseModel):
     auth_url: str
 
 
+class WatchlistItem(BaseModel):
+    """A single item from the Plex watchlist."""
+
+    title: str
+    year: int | None = None
+    media_type: str  # "movie" or "show"
+    tmdb_id: str | None = None
+    imdb_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -441,6 +451,141 @@ class PlexClient:
             logger.debug("plex.check_pin: pin_id=%d still pending", pin_id)
 
         return auth_token
+
+    async def get_watchlist(self) -> list[WatchlistItem]:
+        """Fetch all items from the Plex watchlist.
+
+        Calls ``GET https://discover.provider.plex.tv/library/sections/watchlist/all``
+        with pagination (page size 100) and parses each item's title, year, type,
+        and GUIDs (tmdb://, imdb://).
+
+        Uses the plex.tv metadata API (not the local server) so the token must
+        be a valid Plex account token obtained via OAuth.
+
+        Returns:
+            A list of WatchlistItem objects, or an empty list on any failure.
+        """
+        items: list[WatchlistItem] = []
+        page_start = 0
+        page_size = 100
+
+        async with httpx.AsyncClient(
+            base_url="https://discover.provider.plex.tv",
+            timeout=15.0,
+            headers={
+                "X-Plex-Token": settings.plex.token,
+                "Accept": "application/json",
+                "X-Plex-Client-Identifier": _PLEX_CLIENT_ID,
+                "X-Plex-Product": _PLEX_PRODUCT,
+            },
+            follow_redirects=True,
+        ) as client:
+            while True:
+                params: dict[str, Any] = {
+                    "X-Plex-Container-Start": page_start,
+                    "X-Plex-Container-Size": page_size,
+                    "includeGuids": 1,
+                }
+                try:
+                    response = await client.get(
+                        "/library/sections/watchlist/all",
+                        params=params,
+                    )
+                except httpx.ConnectError as exc:
+                    logger.warning("plex.get_watchlist: connection error (%s)", exc)
+                    return items
+                except httpx.TimeoutException as exc:
+                    logger.warning("plex.get_watchlist: request timed out (%s)", exc)
+                    return items
+                except httpx.RequestError as exc:
+                    logger.warning("plex.get_watchlist: network error (%s)", exc)
+                    return items
+
+                if response.status_code == 401:
+                    logger.error(
+                        "plex.get_watchlist: authentication failure (HTTP 401) "
+                        "— Plex token is invalid or expired; re-authentication needed"
+                    )
+                    return items
+
+                if not response.is_success:
+                    logger.error(
+                        "plex.get_watchlist: unexpected status %d body=%s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    return items
+
+                try:
+                    data: dict[str, Any] = response.json()
+                except ValueError as exc:
+                    logger.error("plex.get_watchlist: malformed JSON (%s)", exc)
+                    return items
+
+                container: dict[str, Any] = data.get("MediaContainer") or {}
+                metadata: list[dict[str, Any]] = container.get("Metadata") or []
+                total_size = int(container.get("totalSize") or 0)
+
+                for entry in metadata:
+                    try:
+                        raw_type = str(entry.get("type") or "")
+                        if raw_type == "movie":
+                            media_type = "movie"
+                        elif raw_type in ("show", "tv"):
+                            media_type = "show"
+                        else:
+                            # Skip non-movie/show types (e.g. music, photos)
+                            logger.debug(
+                                "plex.get_watchlist: skipping unsupported type %r for %r",
+                                raw_type,
+                                entry.get("title"),
+                            )
+                            continue
+
+                        title = str(entry.get("title") or "")
+                        year_raw = entry.get("year")
+                        year: int | None = int(year_raw) if year_raw is not None else None
+
+                        tmdb_id: str | None = None
+                        imdb_id: str | None = None
+                        for guid in entry.get("Guid") or []:
+                            guid_id = str(guid.get("id") or "")
+                            if guid_id.startswith("tmdb://"):
+                                tmdb_id = guid_id[len("tmdb://"):]
+                            elif guid_id.startswith("imdb://"):
+                                imdb_id = guid_id[len("imdb://"):]
+
+                        items.append(
+                            WatchlistItem(
+                                title=title,
+                                year=year,
+                                media_type=media_type,
+                                tmdb_id=tmdb_id,
+                                imdb_id=imdb_id,
+                            )
+                        )
+                    except (KeyError, ValueError, TypeError) as exc:
+                        logger.warning(
+                            "plex.get_watchlist: could not parse entry %r (%s)",
+                            entry.get("title"),
+                            exc,
+                        )
+
+                fetched_so_far = page_start + len(metadata)
+                logger.debug(
+                    "plex.get_watchlist: page start=%d fetched=%d total=%d",
+                    page_start,
+                    fetched_so_far,
+                    total_size,
+                )
+
+                if fetched_so_far >= total_size or not metadata:
+                    break
+
+                page_start += page_size
+
+        logger.info("plex.get_watchlist: fetched %d watchlist items", len(items))
+        return items
 
 
 # ---------------------------------------------------------------------------

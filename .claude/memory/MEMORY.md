@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1316 tests, all passing (as of 2026-03-08)
+- 1363 tests, all passing (as of 2026-03-09)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -26,8 +26,10 @@
 - XEM scene season restructuring (show detail + add) — 2026-03-08
 - Language filter/preference — 2026-03-08
 - Plex symlink naming mode — 2026-03-08
+- Plex Watchlist sync — 2026-03-09
 
 ## Remaining / Future Work
+- Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
 - Docker (Step 3): Dockerfile + docker-compose.yml
 
 ## Remaining Review Findings (not yet fixed)
@@ -50,6 +52,16 @@
 - `asyncio.Semaphore(5)` limits concurrent RD API calls
 - Failed RD deletions reported in `BulkResponse.errors`
 - Loading spinner on "Remove Selected" button (`bulkRemoving` state)
+
+## Mount Scan Optimization (Issue #25) — 2026-03-09
+- FUSE `readdir` is the dominant cost (~41s for 3104 files) — can't be optimized away
+- `WalkEntry` NamedTuple: lightweight walk with no PTN parsing (deferred to upsert)
+- `UpsertResult` NamedTuple: `(added, updated, unchanged, errors)`
+- Skip-unchanged: compare `(filename, filesize)` in `_upsert_records`; batch `UPDATE last_seen_at`
+- Stat-skip: `_load_known_files()` pre-loads DB; known files skip both `is_dir()` AND `stat()`
+- Startup scan skipped when DB has data — `get_index_stats()` check in `main.py`
+- `scan_directory()` always stats (passes `{}`) — targeted scans are small
+- `None == None` is True in Python (correct for filesize comparison); SQL NULL=NULL is FALSE
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` + `_upsert_records()` batch helper + `scan_directory()` targeted scan
@@ -157,6 +169,16 @@ Three interrelated bugs when adding anime with XEM scene seasons:
 - Pipeline (`scrape_pipeline.py`) and search (`search.py`) both pass `include_debrid_key=False`
 - Settings test endpoint keeps default `True` (tests user's configured opts work)
 - Zilean unaffected — Frieren S02 not in DMM hashlists yet (expected for airing content)
+
+## Plex Watchlist Sync — 2026-03-09
+- `PlexConfig.watchlist_sync_enabled: bool = False`, `watchlist_poll_minutes: int = Field(default=30, ge=15)`
+- `plex.py:get_watchlist()` — plex.tv metadata API, JSON, paginated (100/page), reuses single httpx client
+- `src/core/plex_watchlist.py:sync_watchlist()` — batch dedup (tmdb_id + imdb_id IN query), per-item savepoints
+- Movies: WANTED, source="plex_watchlist"; Shows: season=1, is_season_pack=True + auto-enable monitoring
+- Scheduler: always registered (early-exit when disabled), `max_instances=1`, min 15min interval
+- Items with no tmdb_id AND no imdb_id are skipped
+- Code review fix: `session.begin_nested()` for per-item isolation (avoids rollback-wipes-batch bug)
+- 38 tests in `tests/test_plex_watchlist.py`
 
 ## Key Conventions
 - Commit style: imperative summary, bullet details, `Co-Authored-By: Claude Opus 4.6`

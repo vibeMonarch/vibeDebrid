@@ -716,6 +716,37 @@ async def _job_check_monitored_shows() -> None:
         await session.close()
 
 
+async def _job_plex_watchlist_sync() -> None:
+    """Scheduled job: sync Plex watchlist items to the queue."""
+    if not settings.plex.token or not settings.plex.watchlist_sync_enabled:
+        return
+    logger.info("Scheduled job starting: plex_watchlist_sync")
+    from src.core.plex_watchlist import sync_watchlist  # noqa: PLC0415
+    session = async_session()
+    try:
+        result = await sync_watchlist(session)
+        await session.commit()
+        if result["added"] > 0:
+            logger.info(
+                "Scheduled job complete: plex_watchlist_sync added=%d skipped=%d errors=%d",
+                result["added"],
+                result["skipped"],
+                result["errors"],
+            )
+        else:
+            logger.debug(
+                "Scheduled job complete: plex_watchlist_sync — no new items "
+                "(skipped=%d errors=%d)",
+                result["skipped"],
+                result["errors"],
+            )
+    except Exception:
+        logger.exception("Scheduled job failed: plex_watchlist_sync")
+        await session.rollback()
+    finally:
+        await session.close()
+
+
 def _register_scheduled_jobs() -> None:
     """Register periodic jobs with the scheduler.
 
@@ -771,6 +802,19 @@ def _register_scheduled_jobs() -> None:
     logger.info(
         "Registered job: check_monitored_shows (every %d hours)",
         settings.scheduler.monitored_shows_hours,
+    )
+
+    scheduler.add_job(
+        _job_plex_watchlist_sync,
+        "interval",
+        minutes=max(15, settings.plex.watchlist_poll_minutes),
+        id="plex_watchlist_sync",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info(
+        "Registered job: plex_watchlist_sync (every %d min)",
+        max(15, settings.plex.watchlist_poll_minutes),
     )
 
 
