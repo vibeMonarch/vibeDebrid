@@ -163,6 +163,29 @@ async def sync_watchlist(session: AsyncSession) -> dict[str, int]:
             stats["skipped"] += 1
             continue
 
+        # --- Mount index check: skip if content already exists in Zurg mount ---
+        # This catches items added to RD outside of vibeDebrid (e.g. manually).
+        try:
+            from src.core.mount_scanner import mount_scanner  # noqa: PLC0415
+
+            mount_match = await mount_scanner.lookup(
+                session, wl_item.title, season=None, episode=None
+            )
+            if mount_match:
+                logger.info(
+                    "plex_watchlist.sync: skipping %r — already found in mount: %s",
+                    wl_item.title,
+                    mount_match[0].filepath,
+                )
+                stats["skipped"] += 1
+                continue
+        except Exception as exc:
+            logger.warning(
+                "plex_watchlist.sync: mount lookup failed for %r (%s), proceeding with add",
+                wl_item.title,
+                exc,
+            )
+
         # --- Build the MediaItem ---
         now = datetime.now(timezone.utc)
         tmdb_id_str = str(tmdb_id) if tmdb_id else None

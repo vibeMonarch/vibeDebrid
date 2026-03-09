@@ -1,5 +1,6 @@
 """FastAPI application entrypoint with startup/shutdown hooks and scheduler."""
 
+import asyncio
 import logging
 import os
 import sys
@@ -12,7 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -32,6 +33,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 scheduler = AsyncIOScheduler()
+
+# Module-level reference to the background backfill task.  Storing it prevents
+# the task from being garbage-collected before it completes.
+_bg_backfill_task: asyncio.Task[None] | None = None
 
 
 def setup_logging() -> None:
@@ -835,6 +840,43 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _register_scheduled_jobs()
     scheduler.start()
     logger.info("Scheduler started")
+
+    # Background task: backfill tmdb_ids for items that have imdb_id but no tmdb_id.
+    # Non-blocking — the app starts immediately and the backfill runs in the background.
+    async def _background_backfill() -> None:
+        from src.core.backfill import backfill_tmdb_ids  # noqa: PLC0415
+
+        async with async_session() as bf_session:
+            try:
+                bf_result = await backfill_tmdb_ids(bf_session)
+                await bf_session.commit()
+                if bf_result.resolved > 0:
+                    logger.info(
+                        "Backfill complete: resolved %d/%d tmdb_ids (%d rows updated)",
+                        bf_result.resolved,
+                        bf_result.total,
+                        bf_result.updated_rows,
+                    )
+            except Exception:
+                logger.exception("Background backfill failed")
+                await bf_session.rollback()
+
+    async with async_session() as check_session:
+        backfill_count = (
+            await check_session.execute(
+                text(
+                    "SELECT COUNT(DISTINCT imdb_id) FROM media_items "
+                    "WHERE tmdb_id IS NULL AND imdb_id IS NOT NULL"
+                )
+            )
+        ).scalar() or 0
+
+    if backfill_count > 0:
+        logger.info(
+            "Starting background backfill for %d unique IMDB IDs", backfill_count
+        )
+        global _bg_backfill_task
+        _bg_backfill_task = asyncio.create_task(_background_backfill())
 
     # Run mount scan on startup only if the index is empty (first-ever boot).
     # When the DB already has indexed files, skip the expensive FUSE walk —

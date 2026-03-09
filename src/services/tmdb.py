@@ -858,6 +858,102 @@ class TmdbClient:
         )
         return result
 
+    async def find_by_imdb_id(self, imdb_id: str) -> dict[str, Any] | None:
+        """Find a TMDB entry by IMDB ID.
+
+        Uses GET /find/{imdb_id}?external_source=imdb_id.  Checks movie_results
+        first, then tv_results.  For TV results, follows up with get_external_ids
+        to obtain the tvdb_id (not returned by the /find endpoint itself).
+
+        Args:
+            imdb_id: The IMDB ID string (e.g. ``"tt1234567"``).
+
+        Returns:
+            A dict with keys ``tmdb_id`` (int), ``tvdb_id`` (int|None), and
+            ``media_type`` (``"movie"`` or ``"tv"``), or None if not found or
+            on any error.
+        """
+        if not self._check_configured("find_by_imdb_id"):
+            return None
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.tmdb.base_url.rstrip("/"),
+                timeout=10.0,
+                headers={
+                    "Authorization": f"Bearer {settings.tmdb.api_key}",
+                    "User-Agent": "vibeDebrid/0.1",
+                },
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(
+                    f"/find/{imdb_id}",
+                    params={"external_source": "imdb_id"},
+                )
+        except httpx.ConnectError as exc:
+            logger.warning(
+                "tmdb.find_by_imdb_id: connection error imdb_id=%s (%s)", imdb_id, exc
+            )
+            return None
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "tmdb.find_by_imdb_id: request timed out imdb_id=%s (%s)", imdb_id, exc
+            )
+            return None
+        except httpx.RequestError as exc:
+            logger.warning(
+                "tmdb.find_by_imdb_id: network error imdb_id=%s (%s)", imdb_id, exc
+            )
+            return None
+
+        if self._handle_error_status(response, "find_by_imdb_id"):
+            return None
+
+        try:
+            data: dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.error(
+                "tmdb.find_by_imdb_id: malformed JSON imdb_id=%s (%s)", imdb_id, exc
+            )
+            return None
+
+        # Check movie_results first, then tv_results
+        movie_results: list[dict[str, Any]] = data.get("movie_results") or []
+        tv_results: list[dict[str, Any]] = data.get("tv_results") or []
+
+        if movie_results:
+            raw = movie_results[0]
+            tmdb_id_int = raw.get("id")
+            if not isinstance(tmdb_id_int, int):
+                return None
+            logger.debug(
+                "tmdb.find_by_imdb_id: imdb_id=%s → movie tmdb_id=%d",
+                imdb_id,
+                tmdb_id_int,
+            )
+            return {"tmdb_id": tmdb_id_int, "tvdb_id": None, "media_type": "movie"}
+
+        if tv_results:
+            raw = tv_results[0]
+            tmdb_id_int = raw.get("id")
+            if not isinstance(tmdb_id_int, int):
+                return None
+            # Fetch tvdb_id via external_ids — not included in /find response
+            tvdb_id: int | None = None
+            ext = await self.get_external_ids(tmdb_id_int, "tv")
+            if ext is not None:
+                tvdb_id = ext.tvdb_id
+            logger.debug(
+                "tmdb.find_by_imdb_id: imdb_id=%s → tv tmdb_id=%d tvdb_id=%s",
+                imdb_id,
+                tmdb_id_int,
+                tvdb_id,
+            )
+            return {"tmdb_id": tmdb_id_int, "tvdb_id": tvdb_id, "media_type": "tv"}
+
+        logger.debug("tmdb.find_by_imdb_id: no results for imdb_id=%s", imdb_id)
+        return None
+
     async def get_season_details(self, tmdb_id: int, season_number: int) -> TmdbSeasonDetail | None:
         """Fetch detailed season info including episode air dates.
 

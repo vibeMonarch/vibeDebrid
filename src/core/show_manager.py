@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -1126,9 +1126,16 @@ class ShowManager:
         tvdb_id: int | None = tmdb_show.tvdb_id
         new_items = 0
 
-        # Get all existing queue items for this show
+        # Get all existing queue items for this show.
+        # Also match by imdb_id when tmdb_id is absent — covers migrated items
+        # that may not yet have been backfilled with a tmdb_id.
+        conditions = [MediaItem.tmdb_id == tmdb_id_str]
+        if tmdb_show.imdb_id:
+            conditions.append(
+                (MediaItem.imdb_id == tmdb_show.imdb_id) & (MediaItem.tmdb_id.is_(None))
+            )
         result = await session.execute(
-            select(MediaItem).where(MediaItem.tmdb_id == tmdb_id_str)
+            select(MediaItem).where(or_(*conditions))
         )
         existing_items = list(result.scalars().all())
 

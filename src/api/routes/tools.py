@@ -11,6 +11,15 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
+from src.core.backfill import (
+    BackfillResult,
+    DeduplicateResult,
+    DuplicateGroup,
+    _backfill_lock,
+    backfill_tmdb_ids,
+    find_duplicates,
+    remove_duplicates,
+)
 from src.core.migration import (
     DuplicateMatch,
     FoundItem,
@@ -26,6 +35,9 @@ router = APIRouter()
 # Prevents two concurrent migration executions from corrupting the database
 # or filesystem state simultaneously.
 _migration_lock = asyncio.Lock()
+
+# Prevents two concurrent backfill/dedup runs from racing each other.
+_cleanup_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +231,140 @@ async def migration_execute(
         "config_updated": migration_result.config_updated,
         "errors": migration_result.errors,
     }
+
+
+# ---------------------------------------------------------------------------
+# Data Cleanup routes
+# ---------------------------------------------------------------------------
+
+
+class DeduplicateRequest(BaseModel):
+    """Request body for the deduplicate endpoint."""
+
+    groups: list[DuplicateGroup]
+    """Duplicate groups as returned by GET /api/tools/duplicates."""
+
+
+@router.post("/api/tools/backfill", tags=["tools"])
+async def run_backfill(
+    session: AsyncSession = Depends(get_db),
+) -> BackfillResult:
+    """Resolve tmdb_id for all items where imdb_id is set but tmdb_id is NULL.
+
+    Safe to run multiple times — items that already have a tmdb_id are untouched.
+    The shared ``_backfill_lock`` in ``backfill.py`` prevents concurrent runs
+    (whether triggered here or by the startup background task).  Returns 409 if
+    one is already in progress.
+
+    Args:
+        session: Injected database session.
+
+    Returns:
+        BackfillResult with total/resolved/failed/updated_rows counts.
+    """
+    # Check the shared lock (also held by the background task in main.py).
+    if _backfill_lock.locked() or _cleanup_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A data cleanup operation is already in progress",
+        )
+
+    try:
+        await _cleanup_lock.acquire()
+        # backfill_tmdb_ids acquires _backfill_lock internally.
+        result = await backfill_tmdb_ids(session)
+        await session.commit()
+    except Exception as exc:
+        logger.error("run_backfill: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Backfill failed: {exc}",
+        ) from exc
+    finally:
+        _cleanup_lock.release()
+
+    logger.info(
+        "run_backfill: total=%d resolved=%d failed=%d rows_updated=%d",
+        result.total,
+        result.resolved,
+        result.failed,
+        result.updated_rows,
+    )
+    return result
+
+
+@router.get("/api/tools/duplicates", tags=["tools"])
+async def get_duplicates(
+    session: AsyncSession = Depends(get_db),
+) -> list[DuplicateGroup]:
+    """Preview duplicate migration items grouped by (imdb_id, season, episode).
+
+    Only considers items with source='migration'.  Does NOT modify anything.
+
+    Args:
+        session: Injected database session.
+
+    Returns:
+        List of DuplicateGroup objects.
+    """
+    try:
+        groups = await find_duplicates(session)
+    except Exception as exc:
+        logger.error("get_duplicates: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Duplicate scan failed: {exc}",
+        ) from exc
+
+    return groups
+
+
+@router.post("/api/tools/deduplicate", tags=["tools"])
+async def deduplicate(
+    req: DeduplicateRequest,
+    session: AsyncSession = Depends(get_db),
+) -> DeduplicateResult:
+    """Delete duplicate MediaItems identified by the provided groups.
+
+    Also removes associated scrape_log, rd_torrents, and symlink records in
+    FK-safe order.  Returns 409 if a cleanup operation is already running.
+
+    Args:
+        req: Duplicate groups (as returned by GET /api/tools/duplicates).
+        session: Injected database session.
+
+    Returns:
+        DeduplicateResult with counts of removed/kept/groups.
+    """
+    if _cleanup_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A data cleanup operation is already in progress",
+        )
+
+    if not req.groups:
+        return DeduplicateResult()
+
+    try:
+        await _cleanup_lock.acquire()
+        result = await remove_duplicates(session, req.groups)
+        await session.commit()
+    except Exception as exc:
+        logger.error("deduplicate: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Deduplication failed: {exc}",
+        ) from exc
+    finally:
+        _cleanup_lock.release()
+
+    logger.info(
+        "deduplicate: removed=%d kept=%d groups=%d",
+        result.removed,
+        result.kept,
+        result.groups,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

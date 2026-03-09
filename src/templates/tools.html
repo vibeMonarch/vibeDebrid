@@ -269,6 +269,139 @@
   </div><!-- /body-migration -->
 
 </div><!-- /migration card -->
+<!-- Data Cleanup card -->
+<div class="bg-vd-card border border-vd-border rounded-lg mb-6">
+
+  <!-- Card header -->
+  <button type="button"
+          onclick="toggleSection('cleanup')"
+          class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+    <div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-vd-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+      </svg>
+      <span class="font-semibold text-white">Data Cleanup</span>
+    </div>
+    <svg id="chevron-cleanup" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+
+  <!-- Card body (open by default) -->
+  <div id="body-cleanup" class="section-body collapsed">
+    <div>
+      <div class="px-6 pb-6 space-y-6 border-t border-vd-border pt-5">
+
+        <!-- Description -->
+        <p class="text-sm text-vd-muted leading-relaxed">
+          Resolve missing TMDB IDs for migrated items and remove duplicate queue entries
+          that share the same IMDB ID, season, and episode.
+        </p>
+
+        <!-- Backfill section -->
+        <div class="space-y-3">
+          <div class="flex items-center gap-3">
+            <button id="backfill-btn"
+                    type="button"
+                    onclick="runBackfill()"
+                    class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <svg id="backfill-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+              </svg>
+              <svg id="backfill-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              <span id="backfill-btn-label">Backfill TMDB IDs</span>
+            </button>
+          </div>
+          <!-- Backfill result -->
+          <div id="backfill-result" class="hidden">
+            <div id="backfill-result-content" class="bg-vd-bg border border-vd-border rounded-lg p-4 space-y-2">
+            </div>
+          </div>
+        </div>
+
+        <hr class="border-vd-border">
+
+        <!-- Duplicates section -->
+        <div class="space-y-3">
+          <div class="flex items-center gap-3">
+            <button id="find-dupes-btn"
+                    type="button"
+                    onclick="runFindDuplicates()"
+                    class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <svg id="find-dupes-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
+              <svg id="find-dupes-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              <span id="find-dupes-btn-label">Find Duplicates</span>
+            </button>
+          </div>
+
+          <!-- Duplicate preview table (hidden until scan) -->
+          <div id="dupes-preview" class="hidden space-y-3">
+            <div class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+              <div class="flex items-center justify-between px-4 py-3">
+                <span class="text-sm font-semibold text-yellow-400">Duplicate Groups</span>
+                <span id="dupes-count-badge" class="text-xs bg-vd-card px-2 py-0.5 rounded-full text-vd-muted"></span>
+              </div>
+              <div class="border-t border-vd-border overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
+                      <th class="px-4 py-2 text-left">Title</th>
+                      <th class="px-4 py-2 text-left">IMDB</th>
+                      <th class="px-4 py-2 text-left">S/E</th>
+                      <th class="px-4 py-2 text-left">Keep ID</th>
+                      <th class="px-4 py-2 text-left">Remove IDs</th>
+                      <th class="px-4 py-2 text-left">Count</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dupes-tbody">
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Remove Duplicates button (only shown when duplicates found) -->
+            <div id="remove-dupes-wrap" class="hidden">
+              <button id="remove-dupes-btn"
+                      type="button"
+                      onclick="runRemoveDuplicates()"
+                      class="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <svg id="remove-dupes-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+                <svg id="remove-dupes-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span id="remove-dupes-btn-label">Remove Duplicates</span>
+              </button>
+            </div>
+
+            <!-- Dedup result -->
+            <div id="dedup-result" class="hidden">
+              <div class="bg-vd-bg border border-green-700 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                  <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                  </svg>
+                  <span class="font-semibold text-green-400">Deduplication complete</span>
+                </div>
+                <p id="dedup-result-text" class="text-sm text-gray-300"></p>
+              </div>
+            </div>
+          </div><!-- /dupes-preview -->
+
+        </div><!-- /duplicates section -->
+
+      </div>
+    </div>
+  </div><!-- /body-cleanup -->
+
+</div><!-- /cleanup card -->
 {% endblock %}
 
 {% block scripts %}
@@ -604,6 +737,236 @@
   // ---------------------------------------------------------------------------
   // Utility
   // ---------------------------------------------------------------------------
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+})();
+
+// ---------------------------------------------------------------------------
+// Data Cleanup — Backfill TMDB IDs
+// ---------------------------------------------------------------------------
+(function() {
+
+  var _dupeGroups = null;
+
+  // ---------------------------------------------------------------------------
+  // Backfill
+  // ---------------------------------------------------------------------------
+  window.runBackfill = function() {
+    setBackfillLoading(true);
+    document.getElementById('backfill-result').classList.add('hidden');
+
+    fetch('/api/tools/backfill', { method: 'POST' })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      setBackfillLoading(false);
+      renderBackfillResult(data);
+    })
+    .catch(function(err) {
+      setBackfillLoading(false);
+      showToast('Backfill failed: ' + err.message, 'error');
+    });
+  };
+
+  function setBackfillLoading(loading) {
+    var btn = document.getElementById('backfill-btn');
+    var icon = document.getElementById('backfill-icon');
+    var spinner = document.getElementById('backfill-spinner');
+    var label = document.getElementById('backfill-btn-label');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Running backfill...' : 'Backfill TMDB IDs';
+  }
+
+  function renderBackfillResult(data) {
+    var wrap = document.getElementById('backfill-result');
+    var content = document.getElementById('backfill-result-content');
+
+    var html = '';
+    if (data.total === 0) {
+      html = '<p class="text-sm text-vd-muted">Nothing to backfill — all items already have TMDB IDs.</p>';
+    } else {
+      var color = data.resolved > 0 ? 'text-green-400' : 'text-vd-muted';
+      html =
+        '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">' +
+        statCard2('Total', data.total, 'text-white') +
+        statCard2('Resolved', data.resolved, 'text-green-400') +
+        statCard2('Failed', data.failed, data.failed > 0 ? 'text-red-400' : 'text-vd-muted') +
+        statCard2('Rows Updated', data.updated_rows, color) +
+        '</div>';
+    }
+    content.innerHTML = html;
+    wrap.classList.remove('hidden');
+  }
+
+  function statCard2(label, value, colorClass) {
+    return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
+      '<p class="text-xs text-vd-muted uppercase tracking-wider mb-1">' + esc2(label) + '</p>' +
+      '<p class="text-2xl font-bold ' + colorClass + '">' + esc2(String(value)) + '</p>' +
+      '</div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Find Duplicates
+  // ---------------------------------------------------------------------------
+  window.runFindDuplicates = function() {
+    setFindDupesLoading(true);
+    _dupeGroups = null;
+    document.getElementById('dupes-preview').classList.add('hidden');
+    document.getElementById('dedup-result').classList.add('hidden');
+
+    fetch('/api/tools/duplicates')
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(groups) {
+      setFindDupesLoading(false);
+      _dupeGroups = groups;
+      renderDuplicateGroups(groups);
+    })
+    .catch(function(err) {
+      setFindDupesLoading(false);
+      showToast('Duplicate scan failed: ' + err.message, 'error');
+    });
+  };
+
+  function setFindDupesLoading(loading) {
+    var btn = document.getElementById('find-dupes-btn');
+    var icon = document.getElementById('find-dupes-icon');
+    var spinner = document.getElementById('find-dupes-spinner');
+    var label = document.getElementById('find-dupes-btn-label');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Scanning...' : 'Find Duplicates';
+  }
+
+  function renderDuplicateGroups(groups) {
+    var preview = document.getElementById('dupes-preview');
+    var tbody = document.getElementById('dupes-tbody');
+    var badge = document.getElementById('dupes-count-badge');
+    var removeWrap = document.getElementById('remove-dupes-wrap');
+
+    badge.textContent = groups.length + ' group' + (groups.length === 1 ? '' : 's');
+
+    if (groups.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-vd-muted text-sm">No duplicates found among migration items.</td></tr>';
+      removeWrap.classList.add('hidden');
+    } else {
+      var rows = groups.map(function(g, idx) {
+        var seInfo = g.season != null ? 'S' + pad2(g.season) + (g.episode != null ? 'E' + pad2(g.episode) : '') : '—';
+        var imdbLink = g.imdb_id
+          ? '<a href="https://www.imdb.com/title/' + esc2(g.imdb_id) + '" target="_blank" rel="noopener" class="text-vd-accent hover:underline font-mono text-xs">' + esc2(g.imdb_id) + '</a>'
+          : '<span class="text-vd-muted">—</span>';
+        var removeStr = g.remove_ids.map(String).join(', ');
+        var rowClass = idx % 2 === 1 ? 'bg-vd-bg/30' : '';
+        return '<tr class="' + rowClass + ' border-t border-vd-border/50">' +
+          '<td class="px-4 py-1.5 text-gray-200">' + esc2(g.title) + '</td>' +
+          '<td class="px-4 py-1.5">' + imdbLink + '</td>' +
+          '<td class="px-4 py-1.5 font-mono text-xs text-vd-muted">' + seInfo + '</td>' +
+          '<td class="px-4 py-1.5 font-mono text-xs text-green-400">' + esc2(String(g.keep_id)) + '</td>' +
+          '<td class="px-4 py-1.5 font-mono text-xs text-red-400">' + esc2(removeStr) + '</td>' +
+          '<td class="px-4 py-1.5 text-xs text-vd-muted">' + esc2(String(g.count)) + '</td>' +
+          '</tr>';
+      });
+      tbody.innerHTML = rows.join('');
+      removeWrap.classList.remove('hidden');
+    }
+
+    preview.classList.remove('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Remove Duplicates
+  // ---------------------------------------------------------------------------
+  window.runRemoveDuplicates = function() {
+    if (!_dupeGroups || !_dupeGroups.length) return;
+
+    var allRemoveIds = [];
+    _dupeGroups.forEach(function(g) {
+      allRemoveIds = allRemoveIds.concat(g.remove_ids);
+    });
+
+    var totalToRemove = allRemoveIds.length;
+    var msg = 'This will permanently delete ' + totalToRemove + ' duplicate item' +
+              (totalToRemove === 1 ? '' : 's') + ' and their symlinks. Continue?';
+    if (!confirm(msg)) return;
+
+    setRemoveDupesLoading(true);
+    document.getElementById('dedup-result').classList.add('hidden');
+
+    fetch('/api/tools/deduplicate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remove_ids: allRemoveIds })
+    })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      setRemoveDupesLoading(false);
+      renderDedupResult(data);
+      // Re-run find so the table refreshes
+      _dupeGroups = null;
+      document.getElementById('remove-dupes-wrap').classList.add('hidden');
+      showToast('Removed ' + data.removed + ' duplicate item' + (data.removed === 1 ? '' : 's'), 'success');
+    })
+    .catch(function(err) {
+      setRemoveDupesLoading(false);
+      showToast('Deduplication failed: ' + err.message, 'error');
+    });
+  };
+
+  function setRemoveDupesLoading(loading) {
+    var btn = document.getElementById('remove-dupes-btn');
+    var icon = document.getElementById('remove-dupes-icon');
+    var spinner = document.getElementById('remove-dupes-spinner');
+    var label = document.getElementById('remove-dupes-btn-label');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Removing...' : 'Remove Duplicates';
+  }
+
+  function renderDedupResult(data) {
+    var wrap = document.getElementById('dedup-result');
+    var textEl = document.getElementById('dedup-result-text');
+    textEl.textContent = 'Deleted ' + data.removed + ' item' + (data.removed === 1 ? '' : 's') +
+                         '. Scan again to confirm no duplicates remain.';
+    wrap.classList.remove('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTML escaping (local copy — tools.html has two independent IIFE scopes)
+  // ---------------------------------------------------------------------------
+  function esc2(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   function pad2(n) {
     return n < 10 ? '0' + n : String(n);
   }
