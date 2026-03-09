@@ -910,11 +910,12 @@
         throw new Error(data.detail || data.message || 'Failed to add torrent.');
       }
 
-      // Update all add buttons in the card to "Added" state
+      // Update all add buttons in the card to reflect outcome
+      const isQueued = data.status === 'queued';
       allAddBtns.forEach(b => {
         b.disabled = true;
         b.classList.remove('bg-vd-accent', 'hover:bg-vd-accent-hover');
-        b.classList.add('bg-green-700', 'cursor-default');
+        b.classList.add(isQueued ? 'bg-yellow-700' : 'bg-green-700', 'cursor-default');
         const bIcon    = b.querySelector('.add-icon');
         const bSpinner = b.querySelector('.add-spinner');
         if (bIcon)    bIcon.classList.add('hidden');
@@ -924,22 +925,32 @@
         const textNodes = [...b.childNodes].filter(n => n.nodeType === Node.TEXT_NODE);
         textNodes.forEach(n => n.remove());
 
-        // Insert checkmark svg + "Added"
-        const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        check.setAttribute('class', 'w-3.5 h-3.5 flex-shrink-0');
-        check.setAttribute('fill', 'none');
-        check.setAttribute('stroke', 'currentColor');
-        check.setAttribute('viewBox', '0 0 24 24');
-        check.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>';
-        b.appendChild(check);
+        // Insert icon + label
+        const iconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        iconSvg.setAttribute('class', 'w-3.5 h-3.5 flex-shrink-0');
+        iconSvg.setAttribute('fill', 'none');
+        iconSvg.setAttribute('stroke', 'currentColor');
+        iconSvg.setAttribute('viewBox', '0 0 24 24');
+        if (isQueued) {
+          // Warning/clock icon for queued state
+          iconSvg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>';
+        } else {
+          // Checkmark icon for added state
+          iconSvg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>';
+        }
+        b.appendChild(iconSvg);
 
         const label = document.createElement('span');
-        label.textContent = 'Added';
+        label.textContent = isQueued ? 'Queued' : 'Added';
         b.appendChild(label);
       });
 
-      const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
-      showToast(`Added to Real-Debrid${rdId}`, 'success');
+      if (isQueued) {
+        showToast('RD unavailable — item queued for retry', 'warning');
+      } else {
+        const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
+        showToast(`Added to Real-Debrid${rdId}`, 'success');
+      }
 
       // If we came from discover, redirect back after a short delay
       if (window._searchReturnTo === 'discover') {
@@ -1005,8 +1016,12 @@
         throw new Error(data.detail || data.message || 'Failed to add torrent.');
       }
 
-      const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
-      showToast(`Added to Real-Debrid${rdId}`, 'success');
+      if (data.status === 'queued') {
+        showToast('RD unavailable — item queued for retry', 'warning');
+      } else {
+        const rdId = data.rd_id ? ` (RD: ${data.rd_id})` : '';
+        showToast(`Added to Real-Debrid${rdId}`, 'success');
+      }
 
       // Clear inputs on success
       document.getElementById('manual-input').value = '';

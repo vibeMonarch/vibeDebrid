@@ -12,11 +12,14 @@ from typing import Literal
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from src.api.deps import get_db
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import filter_engine
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
+from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.real_debrid import RealDebridError, rd_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
@@ -256,22 +259,46 @@ async def search(body: SearchRequest) -> SearchResponse:
 
 
 @router.post("/check-cached")
-async def check_cached(body: CheckCachedRequest) -> CheckCachedResponse:
+async def check_cached(
+    body: CheckCachedRequest,
+    session: AsyncSession = Depends(get_db),
+) -> CheckCachedResponse:
     """Check if a single torrent hash is cached on Real-Debrid.
 
-    Uses the add-magnet/check-status/delete probe. Called by the frontend
-    per-hash after search results are displayed, so the UI can update
-    cache badges progressively without blocking the initial search.
+    First checks the local rd_torrents table — if the hash is already tracked
+    as an active torrent, returns cached=True immediately without probing RD.
+    This prevents the add-magnet/delete probe from accidentally deleting a
+    torrent the user already added.
+
+    Otherwise uses the add-magnet/check-status/delete probe.
 
     Args:
         body: Request with a single info_hash to check.
+        session: Injected async database session.
 
     Returns:
         The hash and its cached status.
     """
-    result = await rd_client.check_cached(body.info_hash, keep_if_cached=False)
+    normalized_hash = body.info_hash.strip().lower()
+    if not _HASH_RE.match(normalized_hash):
+        return CheckCachedResponse(info_hash=normalized_hash, cached=False)
+
+    existing = await session.execute(
+        select(RdTorrent.id).where(
+            RdTorrent.info_hash == normalized_hash,
+            RdTorrent.status == TorrentStatus.ACTIVE,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        logger.debug(
+            "check_cached: hash=%s already tracked in rd_torrents, skipping probe",
+            normalized_hash[:16],
+        )
+        return CheckCachedResponse(info_hash=normalized_hash, cached=True)
+
+    result = await rd_client.check_cached(normalized_hash, keep_if_cached=False)
     cached = result.cached is True  # coerce None→False for frontend
-    return CheckCachedResponse(info_hash=body.info_hash, cached=cached)
+    return CheckCachedResponse(info_hash=normalized_hash, cached=cached)
 
 
 @router.post("/add")
