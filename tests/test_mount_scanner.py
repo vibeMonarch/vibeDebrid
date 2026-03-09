@@ -40,6 +40,8 @@ from src.core.mount_scanner import (
     MountScanner,
     ScanDirectoryResult,
     ScanResult,
+    UpsertResult,
+    WalkEntry,
     _parse_filename,
     mount_scanner,
 )
@@ -250,7 +252,13 @@ class TestScan:
         assert isinstance(result, ScanResult)
 
     async def test_second_scan_updates_existing_rows(self, session: AsyncSession) -> None:
-        """A second scan over the same files updates rows, does not add duplicates."""
+        """A second scan over unchanged files counts them as unchanged (not updated).
+
+        The skip-unchanged optimisation avoids re-parsing filenames when the
+        filename and filesize are identical to the stored values.  The row is
+        still touched (last_seen_at refreshed) but counted as ``files_unchanged``
+        rather than ``files_updated``.
+        """
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "Movie.2024.mkv"), "wb").write(b"fake")
@@ -267,7 +275,9 @@ class TestScan:
 
         assert second.files_found == 1
         assert second.files_added == 0
-        assert second.files_updated == 1
+        # File content unchanged → skip-unchanged path; files_updated=0, files_unchanged=1.
+        assert second.files_updated == 0
+        assert second.files_unchanged == 1
         assert second.files_removed == 0
 
     async def test_scan_removes_stale_entries(self, session: AsyncSession) -> None:
@@ -424,12 +434,19 @@ class TestScan:
 
             original_walk = scanner._scandir_walk
 
-            def _walk_with_size_error(path: str):
-                records, errors = original_walk(path)
-                # Simulate a stat failure by bumping error count and clearing filesize
-                for r in records:
-                    r["filesize"] = None
-                return records, errors + 1  # simulate one extra error
+            def _walk_with_size_error(path: str, known_files: dict | None = None):
+                records, errors = original_walk(path, known_files)
+                # WalkEntry is a namedtuple (immutable), so rebuild with filesize=None.
+                patched = [
+                    WalkEntry(
+                        filepath=r.filepath,
+                        filename=r.filename,
+                        filesize=None,
+                        parent_dir=r.parent_dir,
+                    )
+                    for r in records
+                ]
+                return patched, errors + 1  # simulate one extra error
 
             with patch.object(scanner, "_scandir_walk", side_effect=_walk_with_size_error):
                 with patch("src.core.mount_scanner.settings") as mock_settings:
@@ -453,6 +470,123 @@ class TestScan:
                 result = await scanner.scan(session)
 
         assert result.files_found == len(VIDEO_EXTENSIONS)
+
+    async def test_scan_stale_deletion_and_unchanged_update_in_same_scan(
+        self, session: AsyncSession
+    ) -> None:
+        """Combined stale-deletion + unchanged-update in a single scan.
+
+        Pre-seed the DB with 3 files via a first scan.  On the second scan
+        only 2 of the 3 files exist (and are unchanged).  Verify:
+        - The 2 surviving files are counted as ``files_unchanged`` (bulk UPDATE
+          refreshed their ``last_seen_at`` before the stale-delete runs).
+        - The 1 missing file is deleted (``files_removed == 1``).
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f1 = os.path.join(tmpdir, "Movie.A.2020.mkv")
+            f2 = os.path.join(tmpdir, "Movie.B.2021.mkv")
+            f3 = os.path.join(tmpdir, "Movie.C.2022.mkv")
+            for fp in (f1, f2, f3):
+                open(fp, "wb").write(b"fake")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+
+                first = await scanner.scan(session)
+                assert first.files_added == 3
+                await session.flush()
+
+                # Remove one file to simulate it disappearing from the mount.
+                os.remove(f3)
+
+                second = await scanner.scan(session)
+
+        # The 2 surviving files are unchanged (same filename + filesize).
+        assert second.files_unchanged == 2
+        # The removed file is deleted from the index.
+        assert second.files_removed == 1
+        # No new inserts or updates.
+        assert second.files_added == 0
+        assert second.files_updated == 0
+
+    async def test_scan_filesize_change_between_scans_counts_as_unchanged(
+        self, session: AsyncSession
+    ) -> None:
+        """Full scan skips stat() for already-indexed files (stat-skip optimisation).
+
+        On the second scan the file's on-disk size has changed, but scan() pre-loads
+        the stored filesize from DB and passes it to _scandir_walk so that known files
+        skip the expensive FUSE stat() call.  As a result the second scan sees the
+        same (stale) size it wrote on the first scan and classifies the file as
+        unchanged.  This is the expected trade-off: full scans are fast; targeted
+        scan_directory() calls (which always stat) detect size changes for individual
+        directories.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, "Show.S01E01.1080p.mkv")
+            # First scan: file contains 4 bytes.
+            open(filepath, "wb").write(b"fake")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+
+                first = await scanner.scan(session)
+                assert first.files_added == 1
+                await session.flush()
+
+                # Grow the file so os.stat() would report a different size.
+                with open(filepath, "ab") as fh:
+                    fh.write(b"x" * 1024)
+
+                second = await scanner.scan(session)
+
+        # Stat was skipped for the already-indexed file → size unchanged in the walk →
+        # _upsert_records compares DB size to itself → unchanged.
+        assert second.files_unchanged == 1
+        assert second.files_updated == 0
+        assert second.files_added == 0
+        assert second.files_removed == 0
+
+    async def test_scan_directory_detects_filesize_change(
+        self, session: AsyncSession
+    ) -> None:
+        """scan_directory() always stats files so it detects size changes.
+
+        Unlike the full scan() which uses the stat-skip optimisation,
+        scan_directory() passes an empty known_files dict so that every file
+        is stat'd on each targeted scan.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "ShowFolder")
+            os.makedirs(subdir)
+            filepath = os.path.join(subdir, "Show.S01E01.1080p.mkv")
+            open(filepath, "wb").write(b"fake")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+
+                first = await scanner.scan_directory(session, "ShowFolder")
+                assert first.files_indexed == 1
+                await session.flush()
+
+                # Grow the file.
+                with open(filepath, "ab") as fh:
+                    fh.write(b"x" * 1024)
+
+                expected_filesize = os.path.getsize(filepath)
+                second = await scanner.scan_directory(session, "ShowFolder")
+
+        # scan_directory always stats → size change detected → files_indexed == 1
+        # (updated entry).
+        assert second.files_indexed == 1
+
+        # The DB record must carry the new (larger) filesize.
+        entry = await scanner.lookup_by_filepath(session, filepath)
+        assert entry is not None
+        assert entry.filesize == expected_filesize
 
 
 # ---------------------------------------------------------------------------
@@ -943,20 +1077,15 @@ class TestScanDirectory:
 # ---------------------------------------------------------------------------
 
 
-def _make_record(filepath: str, filename: str | None = None) -> dict:
-    """Build a minimal file-record dict suitable for _upsert_records."""
+def _make_record(filepath: str, filename: str | None = None, filesize: int = 1024) -> WalkEntry:
+    """Build a minimal WalkEntry suitable for _upsert_records."""
     name = filename or os.path.basename(filepath)
-    return {
-        "filepath": filepath,
-        "filename": name,
-        "parsed_title": os.path.splitext(name)[0].lower(),
-        "parsed_year": None,
-        "parsed_season": None,
-        "parsed_episode": None,
-        "parsed_resolution": None,
-        "parsed_codec": None,
-        "filesize": 1024,
-    }
+    return WalkEntry(
+        filepath=filepath,
+        filename=name,
+        filesize=filesize,
+        parent_dir=os.path.dirname(filepath),
+    )
 
 
 class TestBatchUpsert:
@@ -973,28 +1102,49 @@ class TestBatchUpsert:
             _make_record("/mnt/movie.c.mkv"),
         ]
         ts = _utcnow()
-        added, updated, errors = await scanner._upsert_records(session, records, ts)
+        result = await scanner._upsert_records(session, records, ts)
 
-        assert added == 3
-        assert updated == 0
-        assert errors == 0
+        assert result.added == 3
+        assert result.updated == 0
+        assert result.unchanged == 0
+        assert result.errors == 0
 
-    async def test_batch_upsert_updates_existing_records(
+    async def test_batch_upsert_unchanged_existing_records(
         self, session: AsyncSession
     ) -> None:
-        """Re-upserting identical filepaths increments updated, not added."""
+        """Re-upserting identical filepaths with matching filename/filesize counts as unchanged."""
         scanner = MountScanner()
         fp = "/mnt/existing.mkv"
-        await _insert_entry(session, filepath=fp, filename="existing.mkv")
+        # Insert with filesize=1024 (default in _make_record).
+        await _insert_entry(session, filepath=fp, filename="existing.mkv", filesize=1024)
         await session.flush()
 
-        records = [_make_record(fp)]
+        records = [_make_record(fp)]  # same filename, same filesize=1024
         ts = _utcnow()
-        added, updated, errors = await scanner._upsert_records(session, records, ts)
+        result = await scanner._upsert_records(session, records, ts)
 
-        assert added == 0
-        assert updated == 1
-        assert errors == 0
+        assert result.added == 0
+        assert result.updated == 0
+        assert result.unchanged == 1
+        assert result.errors == 0
+
+    async def test_batch_upsert_updates_changed_filesize(
+        self, session: AsyncSession
+    ) -> None:
+        """Re-upserting with a different filesize increments updated, not unchanged."""
+        scanner = MountScanner()
+        fp = "/mnt/existing.mkv"
+        await _insert_entry(session, filepath=fp, filename="existing.mkv", filesize=1024)
+        await session.flush()
+
+        records = [_make_record(fp, filesize=2048)]  # filesize changed → update
+        ts = _utcnow()
+        result = await scanner._upsert_records(session, records, ts)
+
+        assert result.added == 0
+        assert result.updated == 1
+        assert result.unchanged == 0
+        assert result.errors == 0
 
     async def test_batch_upsert_large_batch(self, session: AsyncSession) -> None:
         """Batches larger than 500 records are all inserted correctly."""
@@ -1002,11 +1152,12 @@ class TestBatchUpsert:
         n = 620
         records = [_make_record(f"/mnt/file{i:04d}.mkv") for i in range(n)]
         ts = _utcnow()
-        added, updated, errors = await scanner._upsert_records(session, records, ts)
+        result = await scanner._upsert_records(session, records, ts)
 
-        assert added == n
-        assert updated == 0
-        assert errors == 0
+        assert result.added == n
+        assert result.updated == 0
+        assert result.unchanged == 0
+        assert result.errors == 0
 
         # Verify they're all in the DB.
         stats = await scanner.get_index_stats(session)
@@ -1015,35 +1166,86 @@ class TestBatchUpsert:
     async def test_batch_upsert_mixed_insert_and_update(
         self, session: AsyncSession
     ) -> None:
-        """Mix of new and pre-existing filepaths splits correctly into added/updated."""
+        """Mix of new, unchanged, and changed filepaths splits correctly."""
         scanner = MountScanner()
         existing_fp = "/mnt/already.mkv"
-        await _insert_entry(session, filepath=existing_fp, filename="already.mkv")
+        await _insert_entry(session, filepath=existing_fp, filename="already.mkv", filesize=1024)
         await session.flush()
 
         records = [
-            _make_record(existing_fp),          # pre-existing → updated
-            _make_record("/mnt/brand_new_a.mkv"),  # new → added
-            _make_record("/mnt/brand_new_b.mkv"),  # new → added
+            _make_record(existing_fp),              # pre-existing, unchanged → unchanged
+            _make_record("/mnt/brand_new_a.mkv"),   # new → added
+            _make_record("/mnt/brand_new_b.mkv"),   # new → added
         ]
         ts = _utcnow()
-        added, updated, errors = await scanner._upsert_records(session, records, ts)
+        result = await scanner._upsert_records(session, records, ts)
 
-        assert added == 2
-        assert updated == 1
-        assert errors == 0
+        assert result.added == 2
+        assert result.updated == 0
+        assert result.unchanged == 1
+        assert result.errors == 0
 
     async def test_batch_upsert_empty_list_returns_zeros(
         self, session: AsyncSession
     ) -> None:
-        """Passing an empty records list returns (0, 0, 0) without touching the DB."""
+        """Passing an empty records list returns UpsertResult with all zeros."""
         scanner = MountScanner()
         ts = _utcnow()
-        added, updated, errors = await scanner._upsert_records(session, [], ts)
+        result = await scanner._upsert_records(session, [], ts)
 
-        assert added == 0
-        assert updated == 0
-        assert errors == 0
+        assert result.added == 0
+        assert result.updated == 0
+        assert result.unchanged == 0
+        assert result.errors == 0
+
+    async def test_upsert_records_error_resilience_when_ptn_fails_on_one_file(
+        self, session: AsyncSession
+    ) -> None:
+        """_upsert_records is resilient when _parse_filename raises for one entry.
+
+        When PTN raises ``RuntimeError`` for a specific filepath the per-file
+        exception handler must:
+        - increment ``errors`` by 1 for the failing file,
+        - continue processing the remaining files (``added == 2``),
+        - leave the errored filepath absent from the DB.
+        """
+        scanner = MountScanner()
+
+        bad_fp = "/mnt/bad.file.mkv"
+        good_fp_a = "/mnt/good.a.mkv"
+        good_fp_b = "/mnt/good.b.mkv"
+
+        records = [
+            _make_record(good_fp_a),
+            _make_record(bad_fp),
+            _make_record(good_fp_b),
+        ]
+        ts = _utcnow()
+
+        original_parse = __import__(
+            "src.core.mount_scanner", fromlist=["_parse_filename"]
+        )._parse_filename
+
+        def _flaky_parse(filename: str) -> dict:
+            if filename == os.path.basename(bad_fp):
+                raise RuntimeError("PTN exploded")
+            return original_parse(filename)
+
+        with patch("src.core.mount_scanner._parse_filename", side_effect=_flaky_parse):
+            result = await scanner._upsert_records(session, records, ts)
+
+        assert result.errors == 1
+        assert result.added == 2
+
+        # The two good files must be present in the index.
+        good_a = await scanner.lookup_by_filepath(session, good_fp_a)
+        good_b = await scanner.lookup_by_filepath(session, good_fp_b)
+        assert good_a is not None
+        assert good_b is not None
+
+        # The errored file must NOT be in the index.
+        bad_entry = await scanner.lookup_by_filepath(session, bad_fp)
+        assert bad_entry is None
 
 
 # ---------------------------------------------------------------------------
@@ -1052,10 +1254,15 @@ class TestBatchUpsert:
 
 
 class TestScandirWalk:
-    """Tests for MountScanner._scandir_walk — the synchronous filesystem walker."""
+    """Tests for MountScanner._scandir_walk — the synchronous filesystem walker.
+
+    _scandir_walk now returns ``WalkEntry`` namedtuples instead of dicts.
+    Records carry only raw filesystem metadata (filepath, filename, filesize,
+    parent_dir); PTN parsing is deferred to _upsert_records.
+    """
 
     def test_scandir_walk_finds_video_files(self) -> None:
-        """Video files in a directory are returned as records."""
+        """Video files in a directory are returned as WalkEntry records."""
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "Movie.2024.1080p.mkv"), "wb").write(b"v")
@@ -1064,10 +1271,20 @@ class TestScandirWalk:
             records, errors = scanner._scandir_walk(tmpdir)
 
         assert errors == 0
-        filenames = {r["filename"] for r in records}
+        filenames = {r.filename for r in records}
         assert "Movie.2024.1080p.mkv" in filenames
         assert "Show.S01E01.mkv" in filenames
         assert len(records) == 2
+
+    def test_scandir_walk_returns_walk_entries(self) -> None:
+        """_scandir_walk returns a list of WalkEntry namedtuples."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "Movie.2024.mkv"), "wb").write(b"v")
+            records, _ = scanner._scandir_walk(tmpdir)
+
+        assert len(records) == 1
+        assert isinstance(records[0], WalkEntry)
 
     def test_scandir_walk_skips_hidden_and_nonvideo(self) -> None:
         """Hidden files and non-video extensions are excluded from results."""
@@ -1082,7 +1299,7 @@ class TestScandirWalk:
 
         assert errors == 0
         assert len(records) == 1
-        assert records[0]["filename"] == "visible.mkv"
+        assert records[0].filename == "visible.mkv"
 
     def test_scandir_walk_skips_special_dirs(self) -> None:
         """__MACOSX and .Trash-1000 directories are skipped entirely."""
@@ -1100,7 +1317,7 @@ class TestScandirWalk:
 
         assert errors == 0
         assert len(records) == 1
-        assert records[0]["filename"] == "real.mkv"
+        assert records[0].filename == "real.mkv"
 
     def test_scandir_walk_recursive(self) -> None:
         """Video files in nested subdirectories are all discovered."""
@@ -1119,35 +1336,49 @@ class TestScandirWalk:
 
         assert errors == 0
         assert len(records) == 3
-        filenames = {r["filename"] for r in records}
+        filenames = {r.filename for r in records}
         assert "Show.S01E01.mkv" in filenames
         assert "Show.S01E02.mkv" in filenames
         assert "Show.S02E01.Extras.mkv" in filenames
 
-    def test_scandir_walk_record_has_required_keys(self) -> None:
-        """Every record dict contains all required metadata keys."""
+    def test_scandir_walk_entry_has_required_fields(self) -> None:
+        """Every WalkEntry has filepath, filename, filesize, and parent_dir fields."""
         scanner = MountScanner()
-        required_keys = {
-            "filepath", "filename", "parsed_title", "parsed_year",
-            "parsed_season", "parsed_episode", "parsed_resolution",
-            "parsed_codec", "filesize",
-        }
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "Movie.2024.mkv"), "wb").write(b"v")
             records, _ = scanner._scandir_walk(tmpdir)
 
         assert len(records) == 1
-        assert required_keys.issubset(records[0].keys())
+        entry = records[0]
+        # WalkEntry is a NamedTuple — verify all expected fields are present.
+        assert hasattr(entry, "filepath")
+        assert hasattr(entry, "filename")
+        assert hasattr(entry, "filesize")
+        assert hasattr(entry, "parent_dir")
+        # PTN-parsed fields are NOT present in WalkEntry (deferred to _upsert_records).
+        assert not hasattr(entry, "parsed_title")
 
     def test_scandir_walk_filepath_is_absolute(self) -> None:
-        """The filepath in each record is an absolute path."""
+        """The filepath in each WalkEntry is an absolute path."""
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "file.mkv"), "wb").write(b"v")
             records, _ = scanner._scandir_walk(tmpdir)
 
         assert len(records) == 1
-        assert os.path.isabs(records[0]["filepath"])
+        assert os.path.isabs(records[0].filepath)
+
+    def test_scandir_walk_parent_dir_is_correct(self) -> None:
+        """The parent_dir field matches the directory containing the file."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "Season 1")
+            os.makedirs(subdir)
+            open(os.path.join(subdir, "Show.S01E01.mkv"), "wb").write(b"v")
+            records, _ = scanner._scandir_walk(tmpdir)
+
+        assert len(records) == 1
+        assert records[0].parent_dir == subdir
 
     def test_scandir_walk_empty_dir_returns_empty_list(self) -> None:
         """Walking an empty directory returns an empty list with zero errors."""
@@ -1171,7 +1402,64 @@ class TestScandirWalk:
 
         assert errors == 0
         assert len(records) == 1
-        assert records[0]["filename"] == "visible.mkv"
+        assert records[0].filename == "visible.mkv"
+
+    def test_scandir_walk_skips_stat_for_known_files(self) -> None:
+        """Files present in known_files with a non-None filesize skip the stat() call.
+
+        Verifies three cases in one walk:
+        - A file in known_files with a real stored filesize reuses that size
+          (the actual file on disk has a different size, proving stat was not called).
+        - A file in known_files with filesize=None is stat'd again (retry path).
+        - A file not present in known_files at all is stat'd normally (new file path).
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Known file: 1 byte written, but known_files carries a fake 99999 size.
+            known_path = os.path.join(tmpdir, "known.mkv")
+            open(known_path, "wb").write(b"x")
+
+            # Known file with None size (previous stat failure): should be re-stat'd.
+            retry_path = os.path.join(tmpdir, "retry.mkv")
+            open(retry_path, "wb").write(b"yy")
+
+            # New file not in known_files at all: should be stat'd normally.
+            new_path = os.path.join(tmpdir, "new.mkv")
+            open(new_path, "wb").write(b"zzz")
+
+            known_files: dict[str, int | None] = {
+                known_path: 99999,   # fake stored size — stat must NOT be called
+                retry_path: None,    # stored as None — stat must be called to recover
+            }
+
+            records, errors = scanner._scandir_walk(tmpdir, known_files)
+
+        assert errors == 0
+        assert len(records) == 3
+
+        by_path = {r.filepath: r for r in records}
+
+        # known_path: should carry the stored fake size, not the real 1-byte size.
+        assert by_path[known_path].filesize == 99999
+
+        # retry_path: known_files had None → stat was called → real size (2 bytes).
+        assert by_path[retry_path].filesize == 2
+
+        # new_path: not in known_files → stat was called → real size (3 bytes).
+        assert by_path[new_path].filesize == 3
+
+    def test_scandir_walk_known_files_empty_dict_stats_everything(self) -> None:
+        """Passing an empty known_files dict causes all files to be stat'd normally."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "a.mkv"), "wb").write(b"abcd")
+
+            records, errors = scanner._scandir_walk(tmpdir, {})
+
+        assert errors == 0
+        assert len(records) == 1
+        # Real on-disk size is 4 bytes.
+        assert records[0].filesize == 4
 
 
 # ---------------------------------------------------------------------------

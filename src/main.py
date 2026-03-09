@@ -792,10 +792,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler.start()
     logger.info("Scheduler started")
 
-    # Run mount scan immediately on startup if configured
+    # Run mount scan on startup only if the index is empty (first-ever boot).
+    # When the DB already has indexed files, skip the expensive FUSE walk —
+    # the persisted data is still valid, and the scheduled scan will catch changes.
     if settings.mount_scanner.scan_on_startup:
-        logger.info("Running startup mount scan")
-        await _job_mount_scan()
+        async with async_session() as session:
+            stats = await mount_scanner.get_index_stats(session)
+        if stats["total_files"] == 0:
+            logger.info("Running startup mount scan (empty index)")
+            await _job_mount_scan()
+        else:
+            logger.info(
+                "Skipping startup mount scan — index already has %d files",
+                stats["total_files"],
+            )
 
     yield
 

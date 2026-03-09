@@ -25,11 +25,11 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 import PTN
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -55,6 +55,24 @@ _TV_N_EP_RE = re.compile(r"TV-(\d{1,2})\s*[-–]\s*(\d{1,3})")
 #   "[ASW] Show Name - 05 [1080p HEVC][ABCD1234].mkv"
 # Captures the episode number after " - " (space-dash-space).
 _ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
+
+
+class WalkEntry(NamedTuple):
+    """Lightweight record from the filesystem walk phase (no PTN parsing)."""
+
+    filepath: str
+    filename: str
+    filesize: int | None
+    parent_dir: str  # needed for _extract_season_from_path fallback
+
+
+class UpsertResult(NamedTuple):
+    """Result counters from _upsert_records."""
+
+    added: int
+    updated: int
+    unchanged: int
+    errors: int
 
 
 def _normalize_title(title: str) -> str:
@@ -130,7 +148,9 @@ class ScanResult(BaseModel):
     Attributes:
         files_found: Total video files discovered during the walk.
         files_added: New rows inserted into mount_index.
-        files_updated: Existing rows updated (last_seen_at / filesize refreshed).
+        files_updated: Existing rows updated (filename or filesize changed).
+        files_unchanged: Existing rows whose filename and filesize matched —
+            only last_seen_at was refreshed via a bulk UPDATE (no PTN re-parse).
         files_removed: Stale rows deleted (files no longer present in mount).
         duration_ms: Wall-clock time for the full scan, in milliseconds.
         errors: Number of individual file errors that were caught and skipped.
@@ -139,6 +159,7 @@ class ScanResult(BaseModel):
     files_found: int
     files_added: int
     files_updated: int
+    files_unchanged: int
     files_removed: int
     duration_ms: int
     errors: int
@@ -256,6 +277,7 @@ class MountScanner:
                 files_found=0,
                 files_added=0,
                 files_updated=0,
+                files_unchanged=0,
                 files_removed=0,
                 duration_ms=0,
                 errors=0,
@@ -263,10 +285,16 @@ class MountScanner:
 
         logger.info("scan: starting mount walk at %s", settings.paths.zurg_mount)
 
+        # Pre-load known filepaths to skip stat() on already-indexed files.
+        # This avoids one FUSE round-trip (~13ms) per file for the ~3000 files
+        # that are already indexed and have not changed.
+        known_files = await self._load_known_files(session)
+        logger.debug("scan: pre-loaded %d known filepaths from DB", len(known_files))
+
         # --- Phase 1: walk filesystem in thread (120s timeout guards FUSE hangs) ---
         try:
             file_records, walk_errors = await asyncio.wait_for(
-                asyncio.to_thread(self._scandir_walk, settings.paths.zurg_mount),
+                asyncio.to_thread(self._scandir_walk, settings.paths.zurg_mount, known_files),
                 timeout=120.0,
             )
         except TimeoutError:
@@ -274,7 +302,7 @@ class MountScanner:
                 "scan: filesystem walk timed out after 120s — mount may be hanging"
             )
             return ScanResult(
-                files_found=0, files_added=0, files_updated=0,
+                files_found=0, files_added=0, files_updated=0, files_unchanged=0,
                 files_removed=0, duration_ms=int((time.monotonic() - start_time) * 1000),
                 errors=1,
             )
@@ -283,8 +311,8 @@ class MountScanner:
         logger.info("scan: discovered %d video files (%d errors during walk)", files_found, walk_errors)
 
         # --- Phase 2: upsert records into DB ---
-        files_added, files_updated, upsert_errors = await self._upsert_records(
-            session, file_records, scan_started_at
+        upsert = await self._upsert_records(
+            session, file_records, scan_started_at, root_dir=settings.paths.zurg_mount
         )
 
         # --- Phase 3: remove stale entries ---
@@ -297,13 +325,14 @@ class MountScanner:
         await session.flush()
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        total_errors = walk_errors + upsert_errors
+        total_errors = walk_errors + upsert.errors
 
         logger.info(
-            "scan complete: found=%d added=%d updated=%d removed=%d errors=%d duration=%dms",
+            "scan complete: found=%d added=%d updated=%d unchanged=%d removed=%d errors=%d duration=%dms",
             files_found,
-            files_added,
-            files_updated,
+            upsert.added,
+            upsert.updated,
+            upsert.unchanged,
             files_removed,
             total_errors,
             duration_ms,
@@ -311,8 +340,9 @@ class MountScanner:
 
         return ScanResult(
             files_found=files_found,
-            files_added=files_added,
-            files_updated=files_updated,
+            files_added=upsert.added,
+            files_updated=upsert.updated,
+            files_unchanged=upsert.unchanged,
             files_removed=files_removed,
             duration_ms=duration_ms,
             errors=total_errors,
@@ -606,8 +636,10 @@ class MountScanner:
         scan_timestamp = datetime.now(timezone.utc)
 
         try:
+            # Targeted scan covers at most ~20 files — stat overhead is negligible,
+            # so pass an empty known_files dict (no pre-load needed here).
             file_records, walk_errors = await asyncio.wait_for(
-                asyncio.to_thread(self._scandir_walk, dir_path),
+                asyncio.to_thread(self._scandir_walk, dir_path, {}),
                 timeout=30.0,
             )
         except TimeoutError:
@@ -621,19 +653,20 @@ class MountScanner:
                 "scan_directory: %d errors during walk of %s", walk_errors, dir_path
             )
 
-        files_added, files_updated, upsert_errors = await self._upsert_records(
-            session, file_records, scan_timestamp
+        upsert = await self._upsert_records(
+            session, file_records, scan_timestamp, root_dir=dir_path
         )
 
-        total_indexed = files_added + files_updated
+        total_indexed = upsert.added + upsert.updated + upsert.unchanged
 
         logger.info(
-            "scan_directory: indexed %d files from %s (added=%d updated=%d errors=%d)",
+            "scan_directory: indexed %d files from %s (added=%d updated=%d unchanged=%d errors=%d)",
             total_indexed,
             dir_path,
-            files_added,
-            files_updated,
-            upsert_errors,
+            upsert.added,
+            upsert.updated,
+            upsert.unchanged,
+            upsert.errors,
         )
         return ScanDirectoryResult(files_indexed=total_indexed, matched_dir_path=dir_path)
 
@@ -838,32 +871,26 @@ class MountScanner:
             )
             filesize = None
 
-        parsed = _parse_filename(actual_filename)
-        record: dict[str, Any] = {
-            "filepath": file_path,
-            "filename": actual_filename,
-            "parsed_title": parsed.get("title"),
-            "parsed_year": parsed.get("year"),
-            "parsed_season": parsed.get("season"),
-            "parsed_episode": parsed.get("episode"),
-            "parsed_resolution": parsed.get("resolution"),
-            "parsed_codec": parsed.get("codec"),
-            "filesize": filesize,
-        }
-
+        walk_entry = WalkEntry(
+            filepath=file_path,
+            filename=actual_filename,
+            filesize=filesize,
+            parent_dir=os.path.dirname(file_path),
+        )
         scan_timestamp = datetime.now(timezone.utc)
-        files_added, files_updated, upsert_errors = await self._upsert_records(
-            session, [record], scan_timestamp
+        upsert = await self._upsert_records(
+            session, [walk_entry], scan_timestamp, root_dir=settings.paths.zurg_mount
         )
 
-        total_indexed = files_added + files_updated
+        total_indexed = upsert.added + upsert.updated + upsert.unchanged
         logger.info(
-            "_scan_single_file: indexed %d file(s) from %s (added=%d updated=%d errors=%d)",
+            "_scan_single_file: indexed %d file(s) from %s (added=%d updated=%d unchanged=%d errors=%d)",
             total_indexed,
             file_path,
-            files_added,
-            files_updated,
-            upsert_errors,
+            upsert.added,
+            upsert.updated,
+            upsert.unchanged,
+            upsert.errors,
         )
         return ScanDirectoryResult(files_indexed=total_indexed, matched_dir_path=None)
 
@@ -871,100 +898,185 @@ class MountScanner:
     # Private helpers — async DB
     # ------------------------------------------------------------------
 
-    async def _upsert_records(
-        self,
-        session: AsyncSession,
-        records: list[dict[str, Any]],
-        scan_timestamp: datetime,
-    ) -> tuple[int, int, int]:
-        """Batch-upsert file records into mount_index.
+    async def _load_known_files(self, session: AsyncSession) -> dict[str, int | None]:
+        """Pre-load filepath -> filesize map from mount_index for stat-skip optimisation.
 
-        Fetches all pre-existing rows whose ``filepath`` matches any record in
-        the provided list using batched ``WHERE filepath IN (...)`` queries
-        (batch size 500).  Set-based lookups then determine whether each record
-        needs an INSERT or an UPDATE, avoiding N individual SELECT queries.
+        Called once at the start of a full scan so that the walk phase can skip
+        the expensive FUSE ``stat()`` call for files already present in the DB
+        with a valid (non-None) filesize.
 
         Args:
             session: Active async SQLAlchemy session.
-            records: List of file metadata dicts as produced by
-                ``_scandir_walk``.  Each dict must have a ``"filepath"`` key.
-            scan_timestamp: Timestamp to write into ``last_seen_at`` for every
-                touched row.
 
         Returns:
-            A 3-tuple ``(files_added, files_updated, upsert_errors)``.
+            Dict mapping absolute filepath strings to their stored filesize
+            (which may be ``None`` when the previous stat failed).
+        """
+        result = await session.execute(
+            select(MountIndex.filepath, MountIndex.filesize)
+        )
+        return {row.filepath: row.filesize for row in result.all()}
+
+    async def _upsert_records(
+        self,
+        session: AsyncSession,
+        records: list[WalkEntry],
+        scan_timestamp: datetime,
+        root_dir: str = "",
+    ) -> UpsertResult:
+        """Batch-upsert file records into mount_index with skip-unchanged optimisation.
+
+        Fetches only ``filepath``, ``filename``, and ``filesize`` columns for
+        comparison first.  Files whose filename and filesize are identical to
+        the stored values are marked unchanged and receive only a bulk
+        ``last_seen_at`` timestamp update — PTN is never re-run on them.  Only
+        new or changed files are parsed and fully upserted.
+
+        Args:
+            session: Active async SQLAlchemy session.
+            records: List of ``WalkEntry`` namedtuples as produced by
+                ``_scandir_walk``.
+            scan_timestamp: Timestamp to write into ``last_seen_at`` for every
+                touched row.
+            root_dir: Walk root used for ``_extract_season_from_path`` fallback.
+                Pass an empty string to skip the path-based season inference.
+
+        Returns:
+            An ``UpsertResult`` with ``added``, ``updated``, ``unchanged``, and
+            ``errors`` counts.
         """
         if not records:
-            return 0, 0, 0
+            return UpsertResult(added=0, updated=0, unchanged=0, errors=0)
 
         _BATCH_SIZE = 500
 
-        # Build a filepath -> record map for fast lookup.
-        record_map: dict[str, dict[str, Any]] = {r["filepath"]: r for r in records}
+        # Build filepath -> WalkEntry map.
+        record_map: dict[str, WalkEntry] = {r.filepath: r for r in records}
         all_filepaths = list(record_map.keys())
 
-        # Fetch existing rows in batches.
-        existing_map: dict[str, MountIndex] = {}
+        # Phase 1: Fetch ONLY comparison columns (not full ORM objects).
+        existing_map: dict[str, tuple[str, int | None]] = {}
         for i in range(0, len(all_filepaths), _BATCH_SIZE):
             batch = all_filepaths[i : i + _BATCH_SIZE]
+            result = await session.execute(
+                select(
+                    MountIndex.filepath,
+                    MountIndex.filename,
+                    MountIndex.filesize,
+                ).where(MountIndex.filepath.in_(batch))
+            )
+            for row in result.all():
+                existing_map[row.filepath] = (row.filename, row.filesize)
+
+        # Phase 2: Classify records into unchanged vs new/changed.
+        unchanged_filepaths: list[str] = []
+        changed_or_new: list[WalkEntry] = []
+
+        for filepath, entry in record_map.items():
+            existing = existing_map.get(filepath)
+            if existing is not None:
+                old_filename, old_filesize = existing
+                # Both match → skip re-parse; None == None is True in Python
+                # which is correct: if stat failed both times treat as unchanged.
+                if old_filename == entry.filename and old_filesize == entry.filesize:
+                    unchanged_filepaths.append(filepath)
+                    continue
+            changed_or_new.append(entry)
+
+        # Phase 3: Batch-update last_seen_at for unchanged files.
+        files_unchanged = len(unchanged_filepaths)
+        for i in range(0, len(unchanged_filepaths), _BATCH_SIZE):
+            batch = unchanged_filepaths[i : i + _BATCH_SIZE]
+            await session.execute(
+                update(MountIndex)
+                .where(MountIndex.filepath.in_(batch))
+                .values(last_seen_at=scan_timestamp)
+            )
+
+        # Phase 4: Parse and upsert changed/new files.
+        # Fetch full ORM objects only for files that exist and have changed.
+        changed_filepaths = [
+            e.filepath for e in changed_or_new if e.filepath in existing_map
+        ]
+        changed_orm_map: dict[str, MountIndex] = {}
+        for i in range(0, len(changed_filepaths), _BATCH_SIZE):
+            batch = changed_filepaths[i : i + _BATCH_SIZE]
             result = await session.execute(
                 select(MountIndex).where(MountIndex.filepath.in_(batch))
             )
             for row in result.scalars().all():
-                existing_map[row.filepath] = row
+                changed_orm_map[row.filepath] = row
 
         files_added = 0
         files_updated = 0
         upsert_errors = 0
 
-        for filepath, record in record_map.items():
+        for entry in changed_or_new:
             try:
-                existing = existing_map.get(filepath)
-                if existing is None:
+                # Parse filename now (deferred from walk phase).
+                parsed = _parse_filename(entry.filename)
+
+                # Apply season-from-path fallback.
+                if parsed.get("season") is None and root_dir:
+                    dir_season = _extract_season_from_path(entry.parent_dir, root_dir)
+                    if dir_season is not None:
+                        parsed["season"] = dir_season
+
+                existing_obj = changed_orm_map.get(entry.filepath)
+                if existing_obj is None:
+                    # New file — INSERT.
                     new_entry = MountIndex(
-                        filepath=record["filepath"],
-                        filename=record["filename"],
-                        parsed_title=record["parsed_title"],
-                        parsed_year=record["parsed_year"],
-                        parsed_season=record["parsed_season"],
-                        parsed_episode=record["parsed_episode"],
-                        parsed_resolution=record["parsed_resolution"],
-                        parsed_codec=record["parsed_codec"],
-                        filesize=record["filesize"],
+                        filepath=entry.filepath,
+                        filename=entry.filename,
+                        parsed_title=parsed.get("title"),
+                        parsed_year=parsed.get("year"),
+                        parsed_season=parsed.get("season"),
+                        parsed_episode=parsed.get("episode"),
+                        parsed_resolution=parsed.get("resolution"),
+                        parsed_codec=parsed.get("codec"),
+                        filesize=entry.filesize,
                         last_seen_at=scan_timestamp,
                     )
                     session.add(new_entry)
                     files_added += 1
                 else:
-                    existing.filename = record["filename"]
-                    existing.parsed_title = record["parsed_title"]
-                    existing.parsed_year = record["parsed_year"]
-                    existing.parsed_season = record["parsed_season"]
-                    existing.parsed_episode = record["parsed_episode"]
-                    existing.parsed_resolution = record["parsed_resolution"]
-                    existing.parsed_codec = record["parsed_codec"]
-                    existing.filesize = record["filesize"]
-                    existing.last_seen_at = scan_timestamp
+                    # Changed file — UPDATE all fields.
+                    existing_obj.filename = entry.filename
+                    existing_obj.parsed_title = parsed.get("title")
+                    existing_obj.parsed_year = parsed.get("year")
+                    existing_obj.parsed_season = parsed.get("season")
+                    existing_obj.parsed_episode = parsed.get("episode")
+                    existing_obj.parsed_resolution = parsed.get("resolution")
+                    existing_obj.parsed_codec = parsed.get("codec")
+                    existing_obj.filesize = entry.filesize
+                    existing_obj.last_seen_at = scan_timestamp
                     files_updated += 1
             except Exception as exc:  # noqa: BLE001 — per-file resilience
                 logger.warning(
                     "_upsert_records: DB upsert failed for %r — %s",
-                    filepath,
+                    entry.filepath,
                     exc,
                 )
                 upsert_errors += 1
 
         await session.flush()
-        return files_added, files_updated, upsert_errors
+        return UpsertResult(
+            added=files_added,
+            updated=files_updated,
+            unchanged=files_unchanged,
+            errors=upsert_errors,
+        )
 
     # ------------------------------------------------------------------
     # Private helpers (run in thread)
     # ------------------------------------------------------------------
 
     def _scandir_walk(
-        self, dir_path: str
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Recursively walk a directory tree using ``os.scandir`` and parse video filenames.
+        self,
+        dir_path: str,
+        known_files: dict[str, int | None] | None = None,
+    ) -> tuple[list[WalkEntry], int]:
+        """Recursively walk a directory tree using ``os.scandir``.
 
         Prefer ``os.scandir`` over ``os.walk`` because ``DirEntry.stat()``
         reuses inode metadata already fetched by the underlying ``readdir``
@@ -972,21 +1084,32 @@ class MountScanner:
         to a separate ``os.path.getsize`` call.
 
         This method is designed to run inside ``asyncio.to_thread`` — it is
-        synchronous and may block on I/O.
+        synchronous and may block on I/O.  PTN filename parsing is intentionally
+        deferred to the async ``_upsert_records`` phase so that unchanged files
+        (same filename + filesize) never trigger a PTN re-parse.
+
+        When ``known_files`` is provided, files already present in the DB with
+        a non-None filesize skip the expensive FUSE ``stat()`` call entirely —
+        the stored size is reused instead.  Only new files or files whose
+        stored filesize is ``None`` (previous stat failure) are stat'd.
 
         Args:
             dir_path: Absolute path to start the recursive walk from.
+            known_files: Optional filepath -> filesize mapping pre-loaded from
+                mount_index.  Pass ``None`` or an empty dict to stat every
+                file unconditionally (backward-compatible default).
 
         Returns:
             A 2-tuple ``(records, error_count)`` where ``records`` is a list
-            of dicts containing parsed file metadata, and ``error_count`` is
-            the number of individual file errors encountered (file skipped but
-            scan continues).  Each dict has keys: ``filepath``, ``filename``,
-            ``parsed_title``, ``parsed_year``, ``parsed_season``,
-            ``parsed_episode``, ``parsed_resolution``, ``parsed_codec``,
-            ``filesize``.
+            of ``WalkEntry`` namedtuples containing only raw filesystem
+            metadata (filepath, filename, filesize, parent_dir), and
+            ``error_count`` is the number of individual file errors encountered
+            (file skipped but scan continues).
         """
-        records: list[dict[str, Any]] = []
+        if known_files is None:
+            known_files = {}
+
+        records: list[WalkEntry] = []
         error_count = 0
         stack: list[str] = [dir_path]
 
@@ -1000,6 +1123,23 @@ class MountScanner:
                 continue
 
             for entry in entries:
+                # Fast path: if this path is already in the DB, we know it's
+                # a video file (not a directory).  Skip both the is_dir()
+                # check and the stat() call — on FUSE mounts, is_dir() can
+                # trigger an implicit stat when d_type is DT_UNKNOWN.
+                known_size = known_files.get(entry.path)
+                if known_size is not None:
+                    filesize: int | None = known_size
+                    records.append(
+                        WalkEntry(
+                            filepath=entry.path,
+                            filename=entry.name,
+                            filesize=filesize,
+                            parent_dir=current_dir,
+                        )
+                    )
+                    continue
+
                 if entry.is_dir(follow_symlinks=False):
                     if not self._should_skip_dir(entry.name):
                         stack.append(entry.path)
@@ -1016,8 +1156,9 @@ class MountScanner:
                 if ext not in VIDEO_EXTENSIONS:
                     continue
 
+                # New file or previous stat failure (filesize=None) — must stat.
                 try:
-                    filesize: int | None = entry.stat(follow_symlinks=True).st_size
+                    filesize = entry.stat(follow_symlinks=True).st_size
                 except OSError as exc:
                     logger.warning(
                         "_scandir_walk: cannot stat %r — %s", entry.path, exc
@@ -1025,27 +1166,14 @@ class MountScanner:
                     filesize = None
                     error_count += 1
 
-                parsed = _parse_filename(filename)
-                record: dict[str, Any] = {
-                    "filepath": entry.path,
-                    "filename": filename,
-                    "parsed_title": parsed.get("title"),
-                    "parsed_year": parsed.get("year"),
-                    "parsed_season": parsed.get("season"),
-                    "parsed_episode": parsed.get("episode"),
-                    "parsed_resolution": parsed.get("resolution"),
-                    "parsed_codec": parsed.get("codec"),
-                    "filesize": filesize,
-                }
-                # Fall back to the parent directory name when the filename
-                # itself contains no season marker.  This handles anime
-                # collections organised as "Season 4/[Group] Show - 76.mkv"
-                # where the individual filenames omit the season number.
-                if record["parsed_season"] is None:
-                    dir_season = _extract_season_from_path(current_dir, dir_path)
-                    if dir_season is not None:
-                        record["parsed_season"] = dir_season
-                records.append(record)
+                records.append(
+                    WalkEntry(
+                        filepath=entry.path,
+                        filename=filename,
+                        filesize=filesize,
+                        parent_dir=current_dir,
+                    )
+                )
 
         return records, error_count
 
