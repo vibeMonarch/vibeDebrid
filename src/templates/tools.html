@@ -294,8 +294,9 @@
 
         <!-- Description -->
         <p class="text-sm text-vd-muted leading-relaxed">
-          Resolve missing TMDB IDs for migrated items and remove duplicate queue entries
-          that share the same IMDB ID, season, and episode.
+          Resolve missing TMDB IDs for migrated items, link Real-Debrid account torrents
+          to migrated items, and intelligently remove duplicate queue entries using
+          filesystem liveness checks (LIVE &gt; BRIDGED &gt; DEAD).
         </p>
 
         <!-- Backfill section -->
@@ -323,79 +324,130 @@
 
         <hr class="border-vd-border">
 
-        <!-- Duplicates section -->
+        <!-- Bridge RD Torrents section -->
         <div class="space-y-3">
           <div class="flex items-center gap-3">
-            <button id="find-dupes-btn"
+            <button id="bridge-btn"
                     type="button"
-                    onclick="runFindDuplicates()"
+                    onclick="runBridgeRd()"
                     class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              <svg id="find-dupes-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              <svg id="bridge-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
               </svg>
-              <svg id="find-dupes-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg id="bridge-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
               </svg>
-              <span id="find-dupes-btn-label">Find Duplicates</span>
+              <span id="bridge-btn-label">Bridge RD Torrents</span>
             </button>
+            <span id="bridge-status" class="hidden text-sm text-vd-muted italic">Scanning RD account...</span>
+          </div>
+          <p class="text-xs text-vd-muted leading-relaxed">
+            Link Real-Debrid account torrents to migrated items so duplicate removal can also
+            clean up the RD account. Run this before removing duplicates.
+          </p>
+          <!-- Bridge result -->
+          <div id="bridge-result" class="hidden">
+            <div id="bridge-result-content" class="bg-vd-bg border border-vd-border rounded-lg p-4 space-y-2">
+            </div>
+          </div>
+        </div>
+
+        <hr class="border-vd-border">
+
+        <!-- Smart Cleanup section -->
+        <div class="space-y-4">
+          <div>
+            <h3 class="text-sm font-semibold text-white mb-1">Smart Cleanup</h3>
+            <p class="text-xs text-vd-muted leading-relaxed">
+              Checks each duplicate's filesystem presence on the Zurg mount and RD torrent
+              registry to select the best copy to keep. Run Bridge RD Torrents first so
+              bridged items are correctly classified.
+            </p>
           </div>
 
-          <!-- Duplicate preview table (hidden until scan) -->
-          <div id="dupes-preview" class="hidden space-y-3">
-            <div class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
-              <div class="flex items-center justify-between px-4 py-3">
-                <span class="text-sm font-semibold text-yellow-400">Duplicate Groups</span>
-                <span id="dupes-count-badge" class="text-xs bg-vd-card px-2 py-0.5 rounded-full text-vd-muted"></span>
-              </div>
-              <div class="border-t border-vd-border overflow-x-auto">
-                <table class="w-full text-sm">
-                  <thead>
-                    <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
-                      <th class="px-4 py-2 text-left">Title</th>
-                      <th class="px-4 py-2 text-left">IMDB</th>
-                      <th class="px-4 py-2 text-left">S/E</th>
-                      <th class="px-4 py-2 text-left">Keep ID</th>
-                      <th class="px-4 py-2 text-left">Remove IDs</th>
-                      <th class="px-4 py-2 text-left">Count</th>
-                    </tr>
-                  </thead>
-                  <tbody id="dupes-tbody">
-                  </tbody>
-                </table>
-              </div>
+          <!-- Preview button -->
+          <div class="flex items-center gap-3">
+            <button id="smart-preview-btn"
+                    type="button"
+                    onclick="runSmartCleanupPreview()"
+                    class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <svg id="smart-preview-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+              </svg>
+              <svg id="smart-preview-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              <span id="smart-preview-btn-label">Preview Smart Cleanup</span>
+            </button>
+            <span id="smart-preview-status" class="hidden text-sm text-vd-muted italic">Checking filesystem...</span>
+          </div>
+
+          <!-- Preview results (hidden until preview loads) -->
+          <div id="smart-preview-section" class="hidden space-y-4">
+
+            <!-- Summary stats -->
+            <div id="smart-summary-stats" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             </div>
 
-            <!-- Remove Duplicates button (only shown when duplicates found) -->
-            <div id="remove-dupes-wrap" class="hidden">
-              <button id="remove-dupes-btn"
+            <!-- Warnings -->
+            <div id="smart-warnings-section" class="hidden bg-vd-bg border border-yellow-800 rounded-lg p-3">
+              <p class="text-xs font-semibold text-yellow-400 mb-1">Warnings</p>
+              <ul id="smart-warnings-list" class="text-xs text-yellow-300 space-y-0.5 font-mono"></ul>
+            </div>
+
+            <!-- Bridge reminder -->
+            <div id="smart-bridge-reminder" class="hidden bg-vd-bg border border-vd-border rounded-lg p-3 flex items-start gap-2">
+              <svg class="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <p class="text-xs text-yellow-300">No RD torrents are linked to migration items yet. Run <strong>Bridge RD Torrents</strong> above first so BRIDGED items can be correctly identified before cleanup.</p>
+            </div>
+
+            <!-- RD deletion summary -->
+            <div id="smart-rd-summary" class="hidden bg-vd-bg border border-vd-border rounded-lg p-3 space-y-1">
+              <p class="text-xs font-semibold text-gray-300">RD Account Impact</p>
+              <p id="smart-rd-summary-text" class="text-xs text-vd-muted"></p>
+            </div>
+
+            <!-- Groups accordion -->
+            <div id="smart-groups-container" class="space-y-2"></div>
+
+            <!-- Execute button -->
+            <div id="smart-execute-wrap" class="hidden pt-2">
+              <button id="smart-execute-btn"
                       type="button"
-                      onclick="runRemoveDuplicates()"
+                      onclick="runSmartCleanupExecute()"
                       class="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                <svg id="remove-dupes-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg id="smart-execute-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                 </svg>
-                <svg id="remove-dupes-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg id="smart-execute-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                 </svg>
-                <span id="remove-dupes-btn-label">Remove Duplicates</span>
+                <span id="smart-execute-btn-label">Run Cleanup</span>
               </button>
             </div>
 
-            <!-- Dedup result -->
-            <div id="dedup-result" class="hidden">
+            <!-- Result -->
+            <div id="smart-result" class="hidden">
               <div class="bg-vd-bg border border-green-700 rounded-lg p-4">
-                <div class="flex items-center gap-2 mb-2">
+                <div class="flex items-center gap-2 mb-3">
                   <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                   </svg>
-                  <span class="font-semibold text-green-400">Deduplication complete</span>
+                  <span class="font-semibold text-green-400">Smart Cleanup complete</span>
                 </div>
-                <p id="dedup-result-text" class="text-sm text-gray-300"></p>
+                <div id="smart-result-stats" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-3"></div>
+                <div id="smart-result-errors-wrap" class="hidden">
+                  <p class="text-xs text-red-400 font-medium mb-1">Errors during execution:</p>
+                  <ul id="smart-result-errors-list" class="text-xs text-red-300 space-y-0.5 font-mono"></ul>
+                </div>
               </div>
             </div>
-          </div><!-- /dupes-preview -->
 
-        </div><!-- /duplicates section -->
+          </div><!-- /smart-preview-section -->
+
+        </div><!-- /smart cleanup section -->
 
       </div>
     </div>
@@ -744,11 +796,44 @@
 })();
 
 // ---------------------------------------------------------------------------
-// Data Cleanup — Backfill TMDB IDs
+// Data Cleanup — Backfill TMDB IDs + Bridge RD Torrents + Smart Cleanup
 // ---------------------------------------------------------------------------
 (function() {
 
-  var _dupeGroups = null;
+  var _smartPreview = null;
+
+  // ---------------------------------------------------------------------------
+  // Shared helpers
+  // ---------------------------------------------------------------------------
+  function esc2(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+  function statCard2(label, value, colorClass) {
+    return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
+      '<p class="text-xs text-vd-muted uppercase tracking-wider mb-1">' + esc2(label) + '</p>' +
+      '<p class="text-2xl font-bold ' + colorClass + '">' + esc2(String(value)) + '</p>' +
+      '</div>';
+  }
+
+  function livenessBadge(liveness) {
+    if (liveness === 'live') {
+      return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900/50 text-green-300 border border-green-700">LIVE</span>';
+    }
+    if (liveness === 'bridged') {
+      return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-900/50 text-yellow-300 border border-yellow-700">BRIDGED</span>';
+    }
+    return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900/50 text-red-300 border border-red-700">DEAD</span>';
+  }
 
   // ---------------------------------------------------------------------------
   // Backfill
@@ -808,23 +893,14 @@
     wrap.classList.remove('hidden');
   }
 
-  function statCard2(label, value, colorClass) {
-    return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
-      '<p class="text-xs text-vd-muted uppercase tracking-wider mb-1">' + esc2(label) + '</p>' +
-      '<p class="text-2xl font-bold ' + colorClass + '">' + esc2(String(value)) + '</p>' +
-      '</div>';
-  }
-
   // ---------------------------------------------------------------------------
-  // Find Duplicates
+  // Bridge RD Torrents
   // ---------------------------------------------------------------------------
-  window.runFindDuplicates = function() {
-    setFindDupesLoading(true);
-    _dupeGroups = null;
-    document.getElementById('dupes-preview').classList.add('hidden');
-    document.getElementById('dedup-result').classList.add('hidden');
+  window.runBridgeRd = function() {
+    setBridgeLoading(true);
+    document.getElementById('bridge-result').classList.add('hidden');
 
-    fetch('/api/tools/duplicates')
+    fetch('/api/tools/bridge-rd', { method: 'POST' })
     .then(function(resp) {
       if (!resp.ok) {
         return resp.json().then(function(body) {
@@ -833,86 +909,262 @@
       }
       return resp.json();
     })
-    .then(function(groups) {
-      setFindDupesLoading(false);
-      _dupeGroups = groups;
-      renderDuplicateGroups(groups);
+    .then(function(data) {
+      setBridgeLoading(false);
+      renderBridgeResult(data);
+      if (data.matched > 0) {
+        showToast('Bridged ' + data.matched + ' item' + (data.matched === 1 ? '' : 's') + ' to RD torrents', 'success');
+      } else {
+        showToast('Bridge complete — no new links created', 'info');
+      }
     })
     .catch(function(err) {
-      setFindDupesLoading(false);
-      showToast('Duplicate scan failed: ' + err.message, 'error');
+      setBridgeLoading(false);
+      showToast('Bridge failed: ' + err.message, 'error');
     });
   };
 
-  function setFindDupesLoading(loading) {
-    var btn = document.getElementById('find-dupes-btn');
-    var icon = document.getElementById('find-dupes-icon');
-    var spinner = document.getElementById('find-dupes-spinner');
-    var label = document.getElementById('find-dupes-btn-label');
+  function setBridgeLoading(loading) {
+    var btn = document.getElementById('bridge-btn');
+    var icon = document.getElementById('bridge-icon');
+    var spinner = document.getElementById('bridge-spinner');
+    var label = document.getElementById('bridge-btn-label');
+    var status = document.getElementById('bridge-status');
     btn.disabled = loading;
     icon.classList.toggle('hidden', loading);
     spinner.classList.toggle('hidden', !loading);
-    label.textContent = loading ? 'Scanning...' : 'Find Duplicates';
+    label.textContent = loading ? 'Bridging...' : 'Bridge RD Torrents';
+    if (status) {
+      status.textContent = loading ? 'Scanning RD account...' : '';
+      status.classList.toggle('hidden', !loading);
+    }
   }
 
-  function renderDuplicateGroups(groups) {
-    var preview = document.getElementById('dupes-preview');
-    var tbody = document.getElementById('dupes-tbody');
-    var badge = document.getElementById('dupes-count-badge');
-    var removeWrap = document.getElementById('remove-dupes-wrap');
+  function renderBridgeResult(data) {
+    var wrap = document.getElementById('bridge-result');
+    var content = document.getElementById('bridge-result-content');
 
-    badge.textContent = groups.length + ' group' + (groups.length === 1 ? '' : 's');
+    var html = '<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">' +
+      statCard2('RD Torrents', data.total_rd_torrents, 'text-white') +
+      statCard2('Migration Items', data.total_migration_items, 'text-white') +
+      statCard2('Matched', data.matched, data.matched > 0 ? 'text-green-400' : 'text-vd-muted') +
+      statCard2('Already Bridged', data.already_bridged, 'text-vd-muted') +
+      statCard2('Unmatched', data.unmatched_items, data.unmatched_items > 0 ? 'text-yellow-400' : 'text-vd-muted') +
+      statCard2('Errors', data.errors ? data.errors.length : 0, (data.errors && data.errors.length > 0) ? 'text-red-400' : 'text-vd-muted') +
+      '</div>';
 
-    if (groups.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-vd-muted text-sm">No duplicates found among migration items.</td></tr>';
-      removeWrap.classList.add('hidden');
-    } else {
-      var rows = groups.map(function(g, idx) {
-        var seInfo = g.season != null ? 'S' + pad2(g.season) + (g.episode != null ? 'E' + pad2(g.episode) : '') : '—';
-        var imdbLink = g.imdb_id
-          ? '<a href="https://www.imdb.com/title/' + esc2(g.imdb_id) + '" target="_blank" rel="noopener" class="text-vd-accent hover:underline font-mono text-xs">' + esc2(g.imdb_id) + '</a>'
-          : '<span class="text-vd-muted">—</span>';
-        var removeStr = g.remove_ids.map(String).join(', ');
-        var rowClass = idx % 2 === 1 ? 'bg-vd-bg/30' : '';
-        return '<tr class="' + rowClass + ' border-t border-vd-border/50">' +
-          '<td class="px-4 py-1.5 text-gray-200">' + esc2(g.title) + '</td>' +
-          '<td class="px-4 py-1.5">' + imdbLink + '</td>' +
-          '<td class="px-4 py-1.5 font-mono text-xs text-vd-muted">' + seInfo + '</td>' +
-          '<td class="px-4 py-1.5 font-mono text-xs text-green-400">' + esc2(String(g.keep_id)) + '</td>' +
-          '<td class="px-4 py-1.5 font-mono text-xs text-red-400">' + esc2(removeStr) + '</td>' +
-          '<td class="px-4 py-1.5 text-xs text-vd-muted">' + esc2(String(g.count)) + '</td>' +
-          '</tr>';
-      });
-      tbody.innerHTML = rows.join('');
-      removeWrap.classList.remove('hidden');
+    if (data.errors && data.errors.length > 0) {
+      html += '<div class="mt-3">' +
+        '<p class="text-xs text-red-400 font-medium mb-1">Errors:</p>' +
+        '<ul class="text-xs text-red-300 space-y-0.5 font-mono">' +
+        data.errors.map(function(e) { return '<li>' + esc2(e) + '</li>'; }).join('') +
+        '</ul></div>';
     }
 
-    preview.classList.remove('hidden');
+    content.innerHTML = html;
+    wrap.classList.remove('hidden');
   }
 
   // ---------------------------------------------------------------------------
-  // Remove Duplicates
+  // Smart Cleanup — Preview
   // ---------------------------------------------------------------------------
-  window.runRemoveDuplicates = function() {
-    if (!_dupeGroups || !_dupeGroups.length) return;
+  window.runSmartCleanupPreview = function() {
+    setSmartPreviewLoading(true);
+    document.getElementById('smart-preview-section').classList.add('hidden');
+    document.getElementById('smart-result').classList.add('hidden');
+    _smartPreview = null;
 
-    var allRemoveIds = [];
-    _dupeGroups.forEach(function(g) {
-      allRemoveIds = allRemoveIds.concat(g.remove_ids);
+    fetch('/api/tools/cleanup/preview')
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      setSmartPreviewLoading(false);
+      _smartPreview = data;
+      renderSmartPreview(data);
+    })
+    .catch(function(err) {
+      setSmartPreviewLoading(false);
+      showToast('Cleanup preview failed: ' + err.message, 'error');
     });
+  };
 
-    var totalToRemove = allRemoveIds.length;
-    var msg = 'This will permanently delete ' + totalToRemove + ' duplicate item' +
-              (totalToRemove === 1 ? '' : 's') + ' and their symlinks. Continue?';
+  function setSmartPreviewLoading(loading) {
+    var btn = document.getElementById('smart-preview-btn');
+    var icon = document.getElementById('smart-preview-icon');
+    var spinner = document.getElementById('smart-preview-spinner');
+    var label = document.getElementById('smart-preview-btn-label');
+    var status = document.getElementById('smart-preview-status');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Analysing...' : 'Preview Smart Cleanup';
+    if (status) status.classList.toggle('hidden', !loading);
+  }
+
+  function renderSmartPreview(data) {
+    // Summary stats
+    var statsEl = document.getElementById('smart-summary-stats');
+    statsEl.innerHTML =
+      statCard2('Assessed', data.total_items_assessed, 'text-white') +
+      statCard2('Live', data.live_count, data.live_count > 0 ? 'text-green-400' : 'text-vd-muted') +
+      statCard2('Bridged', data.bridged_count, data.bridged_count > 0 ? 'text-yellow-400' : 'text-vd-muted') +
+      statCard2('Dead', data.dead_count, data.dead_count > 0 ? 'text-red-400' : 'text-vd-muted') +
+      statCard2('Groups', data.groups ? data.groups.length : 0, 'text-white') +
+      statCard2('To Remove', data.total_to_remove, data.total_to_remove > 0 ? 'text-red-400' : 'text-vd-muted');
+
+    // Warnings
+    var warningsSection = document.getElementById('smart-warnings-section');
+    var warningsList = document.getElementById('smart-warnings-list');
+    if (data.warnings && data.warnings.length > 0) {
+      warningsList.innerHTML = data.warnings.map(function(w) {
+        return '<li>' + esc2(w) + '</li>';
+      }).join('');
+      warningsSection.classList.remove('hidden');
+    } else {
+      warningsSection.classList.add('hidden');
+    }
+
+    // Bridge reminder (shown when no bridged items and some dead items with groups)
+    var bridgeReminder = document.getElementById('smart-bridge-reminder');
+    var hasBridged = data.bridged_count > 0 || data.live_count > 0;
+    var hasDeadGroups = data.total_to_remove > 0 && data.bridged_count === 0;
+    bridgeReminder.classList.toggle('hidden', hasBridged || !hasDeadGroups);
+
+    // RD deletion summary
+    var rdSummary = document.getElementById('smart-rd-summary');
+    var rdText = document.getElementById('smart-rd-summary-text');
+    var rdToDelete = (data.rd_ids_to_delete || []).length;
+    var rdProtected = (data.rd_ids_protected || []).length;
+    var symlinksDisk = data.symlinks_to_delete || 0;
+    if (rdToDelete > 0 || symlinksDisk > 0) {
+      var parts = [];
+      if (rdToDelete > 0) {
+        parts.push(rdToDelete + ' RD torrent' + (rdToDelete === 1 ? '' : 's') + ' will be deleted from your account');
+      }
+      if (rdProtected > 0) {
+        parts.push(rdProtected + ' protected (shared with kept items)');
+      }
+      if (symlinksDisk > 0) {
+        parts.push(symlinksDisk + ' symlink' + (symlinksDisk === 1 ? '' : 's') + ' will be removed from disk');
+      }
+      rdText.textContent = parts.join('. ') + '.';
+      rdSummary.classList.remove('hidden');
+    } else {
+      rdSummary.classList.add('hidden');
+    }
+
+    // Groups accordion
+    var container = document.getElementById('smart-groups-container');
+    var groups = data.groups || [];
+    if (groups.length === 0) {
+      container.innerHTML = '<p class="text-sm text-vd-muted py-2">No duplicate groups found among migration items.</p>';
+    } else {
+      container.innerHTML = groups.map(function(group, gi) {
+        var seInfo = group.season != null
+          ? ' S' + pad2(group.season) + (group.episode != null ? 'E' + pad2(group.episode) : '')
+          : '';
+        var title = esc2(group.title) + seInfo;
+        var groupId = 'smart-group-' + gi;
+
+        // Rows for all items (keeper first, then removes)
+        var allItems = [group.keep].concat(group.remove || []);
+        var rows = allItems.map(function(item, idx) {
+          var action = item.item_id === group.keep.item_id
+            ? '<span class="text-xs font-semibold text-green-400">KEEP</span>'
+            : '<span class="text-xs font-semibold text-red-400">REMOVE</span>';
+          var rdInfo = item.rd_filename
+            ? '<span class="font-mono text-vd-muted" title="' + esc2(item.rd_filename) + '">' + esc2(item.rd_filename.length > 30 ? item.rd_filename.slice(0, 28) + '...' : item.rd_filename) + '</span>'
+            : '<span class="text-vd-muted/50">—</span>';
+          var sourceLabel = item.source
+            ? '<span class="text-xs text-vd-muted">' + esc2(item.source) + '</span>'
+            : '<span class="text-vd-muted/50">—</span>';
+          var rowClass = idx % 2 === 1 ? 'bg-vd-bg/30' : '';
+          return '<tr class="' + rowClass + ' border-t border-vd-border/50">' +
+            '<td class="px-3 py-1.5 font-mono text-xs text-vd-muted">#' + esc2(String(item.item_id)) + '</td>' +
+            '<td class="px-3 py-1.5">' + action + '</td>' +
+            '<td class="px-3 py-1.5">' + livenessBadge(item.liveness) + '</td>' +
+            '<td class="px-3 py-1.5">' + sourceLabel + '</td>' +
+            '<td class="px-3 py-1.5 text-xs">' + rdInfo + '</td>' +
+            '</tr>';
+        });
+
+        var keeperLiveness = group.keep.liveness;
+        var headerBadge = livenessBadge(keeperLiveness);
+        var reasonText = esc2(group.reason || '');
+
+        return '<div class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">' +
+          '<button type="button" onclick="toggleTableSection(\'' + groupId + '\')" ' +
+          'class="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-white/5 transition-colors">' +
+          '<div class="flex items-center gap-2 flex-wrap">' +
+          '<span class="text-sm font-medium text-gray-200">' + title + '</span>' +
+          headerBadge +
+          '<span class="text-xs text-vd-muted">' + group.count + ' items</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-2">' +
+          '<span class="text-xs text-vd-muted hidden sm:block italic">' + reasonText + '</span>' +
+          '<svg id="chevron-' + groupId + '" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+          '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>' +
+          '</svg>' +
+          '</div>' +
+          '</button>' +
+          '<div id="body-' + groupId + '" class="section-body collapsed">' +
+          '<div>' +
+          '<div class="border-t border-vd-border overflow-x-auto">' +
+          '<table class="w-full text-sm">' +
+          '<thead><tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">' +
+          '<th class="px-3 py-1.5 text-left">ID</th>' +
+          '<th class="px-3 py-1.5 text-left">Action</th>' +
+          '<th class="px-3 py-1.5 text-left">Liveness</th>' +
+          '<th class="px-3 py-1.5 text-left">Source</th>' +
+          '<th class="px-3 py-1.5 text-left">RD Filename</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows.join('') + '</tbody>' +
+          '</table>' +
+          '<p class="px-3 py-1.5 text-xs text-vd-muted italic border-t border-vd-border/50">Reason: ' + reasonText + '</p>' +
+          '</div></div></div>' +
+          '</div>';
+      }).join('');
+    }
+
+    // Show/hide execute button
+    var executeWrap = document.getElementById('smart-execute-wrap');
+    executeWrap.classList.toggle('hidden', data.total_to_remove === 0);
+
+    document.getElementById('smart-preview-section').classList.remove('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Smart Cleanup — Execute
+  // ---------------------------------------------------------------------------
+  window.runSmartCleanupExecute = function() {
+    if (!_smartPreview || !_smartPreview.groups || !_smartPreview.groups.length) return;
+
+    var toRemove = _smartPreview.total_to_remove || 0;
+    var rdDelete = (_smartPreview.rd_ids_to_delete || []).length;
+
+    var msg = 'This will permanently delete ' + toRemove + ' duplicate item' +
+              (toRemove === 1 ? '' : 's') +
+              ' and their associated records.';
+    if (rdDelete > 0) {
+      msg += ' It will also delete ' + rdDelete + ' RD torrent' +
+             (rdDelete === 1 ? '' : 's') + ' from your Real-Debrid account.';
+    }
+    msg += ' Continue?';
     if (!confirm(msg)) return;
 
-    setRemoveDupesLoading(true);
-    document.getElementById('dedup-result').classList.add('hidden');
+    setSmartExecuteLoading(true);
+    document.getElementById('smart-result').classList.add('hidden');
 
-    fetch('/api/tools/deduplicate', {
+    fetch('/api/tools/cleanup/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ remove_ids: allRemoveIds })
+      body: JSON.stringify({ groups: _smartPreview.groups })
     })
     .then(function(resp) {
       if (!resp.ok) {
@@ -923,52 +1175,53 @@
       return resp.json();
     })
     .then(function(data) {
-      setRemoveDupesLoading(false);
-      renderDedupResult(data);
-      // Re-run find so the table refreshes
-      _dupeGroups = null;
-      document.getElementById('remove-dupes-wrap').classList.add('hidden');
-      showToast('Removed ' + data.removed + ' duplicate item' + (data.removed === 1 ? '' : 's'), 'success');
+      setSmartExecuteLoading(false);
+      renderSmartResult(data);
+      showToast('Removed ' + data.items_removed + ' item' + (data.items_removed === 1 ? '' : 's'), 'success');
+      // Hide the execute button and groups so the user sees the result clearly
+      document.getElementById('smart-execute-wrap').classList.add('hidden');
+      document.getElementById('smart-groups-container').innerHTML = '';
+      _smartPreview = null;
     })
     .catch(function(err) {
-      setRemoveDupesLoading(false);
-      showToast('Deduplication failed: ' + err.message, 'error');
+      setSmartExecuteLoading(false);
+      showToast('Cleanup failed: ' + err.message, 'error');
     });
   };
 
-  function setRemoveDupesLoading(loading) {
-    var btn = document.getElementById('remove-dupes-btn');
-    var icon = document.getElementById('remove-dupes-icon');
-    var spinner = document.getElementById('remove-dupes-spinner');
-    var label = document.getElementById('remove-dupes-btn-label');
+  function setSmartExecuteLoading(loading) {
+    var btn = document.getElementById('smart-execute-btn');
+    var icon = document.getElementById('smart-execute-icon');
+    var spinner = document.getElementById('smart-execute-spinner');
+    var label = document.getElementById('smart-execute-btn-label');
     btn.disabled = loading;
     icon.classList.toggle('hidden', loading);
     spinner.classList.toggle('hidden', !loading);
-    label.textContent = loading ? 'Removing...' : 'Remove Duplicates';
+    label.textContent = loading ? 'Running cleanup...' : 'Run Cleanup';
   }
 
-  function renderDedupResult(data) {
-    var wrap = document.getElementById('dedup-result');
-    var textEl = document.getElementById('dedup-result-text');
-    textEl.textContent = 'Deleted ' + data.removed + ' item' + (data.removed === 1 ? '' : 's') +
-                         '. Scan again to confirm no duplicates remain.';
-    wrap.classList.remove('hidden');
-  }
+  function renderSmartResult(data) {
+    var statsEl = document.getElementById('smart-result-stats');
+    statsEl.innerHTML =
+      statCard2('Groups', data.groups_processed, 'text-white') +
+      statCard2('Removed', data.items_removed, data.items_removed > 0 ? 'text-red-400' : 'text-vd-muted') +
+      statCard2('Kept', data.items_kept, 'text-green-400') +
+      statCard2('Symlinks', data.symlinks_deleted_from_disk, 'text-vd-muted') +
+      statCard2('RD Deleted', data.rd_torrents_deleted, data.rd_torrents_deleted > 0 ? 'text-green-400' : 'text-vd-muted') +
+      statCard2('RD Failed', data.rd_torrents_failed, data.rd_torrents_failed > 0 ? 'text-red-400' : 'text-vd-muted');
 
-  // ---------------------------------------------------------------------------
-  // HTML escaping (local copy — tools.html has two independent IIFE scopes)
-  // ---------------------------------------------------------------------------
-  function esc2(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+    var errorsWrap = document.getElementById('smart-result-errors-wrap');
+    var errorsList = document.getElementById('smart-result-errors-list');
+    if (data.errors && data.errors.length) {
+      errorsList.innerHTML = data.errors.map(function(e) {
+        return '<li>' + esc2(e) + '</li>';
+      }).join('');
+      errorsWrap.classList.remove('hidden');
+    } else {
+      errorsWrap.classList.add('hidden');
+    }
 
-  function pad2(n) {
-    return n < 10 ? '0' + n : String(n);
+    document.getElementById('smart-result').classList.remove('hidden');
   }
 
 })();

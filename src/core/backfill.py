@@ -76,6 +76,17 @@ class DeduplicateResult(BaseModel):
     """Total rows deleted."""
     kept: int = 0
     """Total rows retained (one per group)."""
+    rd_ids_to_delete: list[str] = []
+    """RD torrent IDs that should be deleted from the RD account.
+
+    Populated by ``remove_duplicates`` — contains only rd_ids belonging to the
+    removed items that are NOT also referenced by the kept items.  The route
+    handler performs the actual RD API deletions after the DB commit.
+    """
+    rd_torrents_deleted: int = 0
+    """Number of RD torrents successfully deleted from the account (set by route)."""
+    rd_torrents_failed: int = 0
+    """Number of RD torrent deletions that failed (set by route)."""
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +306,7 @@ async def remove_duplicates(
     """
     result = DeduplicateResult()
 
-    # Flatten remove_ids across all groups
+    # Flatten remove_ids across all groups.
     remove_ids: list[int] = []
     for g in groups:
         remove_ids.extend(g.remove_ids)
@@ -307,6 +318,44 @@ async def remove_duplicates(
     # can bind them without a Python list (not supported by text() bindparams).
     id_placeholders = ", ".join(f":id{i}" for i in range(len(remove_ids)))
     bind_params = {f"id{i}": v for i, v in enumerate(remove_ids)}
+
+    # ------------------------------------------------------------------
+    # Collect RD IDs to delete BEFORE the DELETE statements.
+    # We only delete an RD torrent from the account if it is NOT referenced
+    # by any of the kept items — shared season-pack torrents must be preserved.
+    # ------------------------------------------------------------------
+    remove_rd_rows = await session.execute(
+        text(
+            f"SELECT rd_id FROM rd_torrents "
+            f"WHERE media_item_id IN ({id_placeholders}) AND rd_id IS NOT NULL"
+        ).bindparams(**bind_params)
+    )
+    remove_rd_ids: set[str] = {row[0] for row in remove_rd_rows if row[0]}
+
+    if remove_rd_ids:
+        # Protect any rd_id referenced by ANY item outside the remove set —
+        # not just the kept duplicates. This guards queue-pipeline items that
+        # happen to share a season-pack torrent with a migration item.
+        keep_rd_rows = await session.execute(
+            text(
+                f"SELECT rd_id FROM rd_torrents "
+                f"WHERE media_item_id NOT IN ({id_placeholders}) AND rd_id IS NOT NULL"
+            ).bindparams(**bind_params)
+        )
+        keep_rd_ids: set[str] = {row[0] for row in keep_rd_rows if row[0]}
+    else:
+        keep_rd_ids = set()
+
+    # Only delete RD torrents that are not also linked to a kept item.
+    result.rd_ids_to_delete = list(remove_rd_ids - keep_rd_ids)
+
+    if result.rd_ids_to_delete:
+        logger.info(
+            "remove_duplicates: %d RD torrent(s) queued for account deletion "
+            "(%d preserved as shared with kept items)",
+            len(result.rd_ids_to_delete),
+            len(remove_rd_ids) - len(result.rd_ids_to_delete),
+        )
 
     # 1. Delete scrape_log rows (FK → media_items.id)
     await session.execute(

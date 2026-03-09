@@ -351,6 +351,42 @@ class RealDebridClient:
         logger.debug("list_torrents: returned %d items (page=%d)", len(data), page)
         return data
 
+    async def list_all_torrents(
+        self, page_size: int = 2500, max_pages: int = 10
+    ) -> list[dict[str, Any]]:
+        """Fetch all torrents from the RD account with pagination.
+
+        Calls ``list_torrents`` repeatedly, incrementing the page number, until
+        a response contains fewer than ``page_size`` items (i.e. the last page)
+        or ``max_pages`` is reached.
+
+        Args:
+            page_size: Number of results per page (RD cap: 2500).
+            max_pages: Safety limit to prevent infinite loops.
+
+        Returns:
+            Combined list of torrent summary dicts from all pages.
+
+        Raises:
+            RealDebridAuthError: If the API key is invalid.
+            RealDebridError: On other API failures.
+        """
+        all_torrents: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            page_results = await self.list_torrents(limit=page_size, page=page)
+            all_torrents.extend(page_results)
+            logger.debug(
+                "list_all_torrents: page=%d returned %d items (total so far: %d)",
+                page,
+                len(page_results),
+                len(all_torrents),
+            )
+            if len(page_results) < page_size:
+                # Last page — no more results to fetch.
+                break
+        logger.info("list_all_torrents: fetched %d total torrents", len(all_torrents))
+        return all_torrents
+
     async def get_torrent_info(self, torrent_id: str) -> dict[str, Any]:
         """Return full torrent info including file list and download links.
 

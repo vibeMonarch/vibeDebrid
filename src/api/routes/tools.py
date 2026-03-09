@@ -27,6 +27,14 @@ from src.core.migration import (
     execute_migration,
     preview_migration,
 )
+from src.core.cleanup import (
+    CleanupPreview,
+    CleanupResult,
+    assess_migration_items,
+    build_cleanup_preview,
+    execute_cleanup,
+)
+from src.core.rd_bridge import BridgeResult, bridge_rd_torrents
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +253,58 @@ class DeduplicateRequest(BaseModel):
     """Duplicate groups as returned by GET /api/tools/duplicates."""
 
 
+@router.post("/api/tools/bridge-rd", tags=["tools"])
+async def bridge_rd_torrents_endpoint(
+    session: AsyncSession = Depends(get_db),
+) -> BridgeResult:
+    """Link Real-Debrid account torrents to migrated MediaItems that lack an RdTorrent.
+
+    Fetches all torrents from the RD account, then for each migration item that
+    has a Symlink but no RdTorrent record, attempts to find the matching RD torrent
+    by comparing the symlink's source directory name against RD filenames.
+
+    Safe to run multiple times — items that already have an RdTorrent record are
+    counted as ``already_bridged`` and skipped.  Returns 409 if another cleanup
+    operation is already in progress.
+
+    Args:
+        session: Injected database session.
+
+    Returns:
+        BridgeResult with counts for all outcomes.
+    """
+    if _cleanup_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A data cleanup operation is already in progress",
+        )
+
+    try:
+        await _cleanup_lock.acquire()
+        result = await bridge_rd_torrents(session)
+        await session.commit()
+    except Exception as exc:
+        logger.error("bridge_rd_torrents_endpoint: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Bridge operation failed: {exc}",
+        ) from exc
+    finally:
+        _cleanup_lock.release()
+
+    logger.info(
+        "bridge_rd_torrents_endpoint: total_rd=%d migration_items=%d "
+        "matched=%d already_bridged=%d unmatched=%d errors=%d",
+        result.total_rd_torrents,
+        result.total_migration_items,
+        result.matched,
+        result.already_bridged,
+        result.unmatched_items,
+        len(result.errors),
+    )
+    return result
+
+
 @router.post("/api/tools/backfill", tags=["tools"])
 async def run_backfill(
     session: AsyncSession = Depends(get_db),
@@ -359,11 +419,235 @@ async def deduplicate(
         _cleanup_lock.release()
 
     logger.info(
-        "deduplicate: removed=%d kept=%d groups=%d",
+        "deduplicate: removed=%d kept=%d groups=%d rd_to_delete=%d",
         result.removed,
         result.kept,
         result.groups,
+        len(result.rd_ids_to_delete),
     )
+
+    # ------------------------------------------------------------------
+    # Delete RD torrents from the account after the DB commit.
+    # Rate-limit errors stop further deletions (stop_flag) but do not
+    # fail the overall response — the DB cleanup already succeeded.
+    # ------------------------------------------------------------------
+    if result.rd_ids_to_delete:
+        from src.services.real_debrid import RealDebridClient, RealDebridRateLimitError
+
+        rd_client = RealDebridClient()
+        sem = asyncio.Semaphore(5)
+        rd_failed: list[str] = []
+        stop_flag = False
+
+        async def _delete_rd(rd_id: str) -> None:
+            nonlocal stop_flag
+            async with sem:
+                if stop_flag:
+                    rd_failed.append(rd_id)
+                    return
+                try:
+                    await rd_client.delete_torrent(rd_id)
+                except RealDebridRateLimitError:
+                    stop_flag = True
+                    rd_failed.append(rd_id)
+                    logger.warning(
+                        "deduplicate: RD rate limit hit during account cleanup, "
+                        "stopping further deletions"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "deduplicate: RD delete failed rd_id=%s: %s", rd_id, exc
+                    )
+                    rd_failed.append(rd_id)
+
+        await asyncio.gather(*[_delete_rd(rid) for rid in result.rd_ids_to_delete])
+        result.rd_torrents_deleted = len(result.rd_ids_to_delete) - len(rd_failed)
+        result.rd_torrents_failed = len(rd_failed)
+
+        logger.info(
+            "deduplicate: RD account cleanup — deleted=%d failed=%d",
+            result.rd_torrents_deleted,
+            result.rd_torrents_failed,
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Smart Cleanup routes
+# ---------------------------------------------------------------------------
+
+
+class CleanupExecuteRequest(BaseModel):
+    """Request body for the smart cleanup execute endpoint.
+
+    The client only sends a confirmation flag — all item IDs to remove are
+    determined server-side by re-running the assessment, so a stale or crafted
+    request body cannot cause non-duplicate items to be deleted.
+    """
+
+    confirm: bool = True
+    """Must be True to proceed (default True for backwards compatibility)."""
+
+
+@router.get("/api/tools/cleanup/preview", tags=["tools"])
+async def cleanup_preview_endpoint(
+    session: AsyncSession = Depends(get_db),
+) -> CleanupPreview:
+    """Assess migration items and build a liveness-aware cleanup plan.
+
+    Checks the Zurg mount filesystem and RD torrent registry to determine
+    which duplicate to keep (LIVE > BRIDGED > DEAD).  Does NOT modify
+    anything — purely informational.
+
+    Returns 409 when another cleanup operation is already in progress.
+
+    Args:
+        session: Injected database session.
+
+    Returns:
+        CleanupPreview with groups, liveness counts, and RD deletion plan.
+    """
+    if _cleanup_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A data cleanup operation is already in progress",
+        )
+
+    try:
+        assessed = await assess_migration_items(session)
+        preview = await build_cleanup_preview(session, assessed)
+    except Exception as exc:
+        logger.error("cleanup_preview_endpoint: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cleanup preview failed: {exc}",
+        ) from exc
+
+    logger.info(
+        "cleanup_preview_endpoint: groups=%d to_remove=%d rd_to_delete=%d",
+        len(preview.groups),
+        preview.total_to_remove,
+        len(preview.rd_ids_to_delete),
+    )
+    return preview
+
+
+@router.post("/api/tools/cleanup/execute", tags=["tools"])
+async def cleanup_execute_endpoint(
+    req: CleanupExecuteRequest,
+    session: AsyncSession = Depends(get_db),
+) -> CleanupResult:
+    """Execute liveness-aware duplicate cleanup.
+
+    Re-runs the full server-side assessment on every call so the set of items
+    to delete is always derived from live database state — the request body
+    carries only a confirmation flag and no item IDs.
+
+    Deletes DB records in FK-safe order (scrape_log → rd_torrents → symlinks →
+    media_items) inside a savepoint for atomicity, removes broken symlinks from
+    disk, then calls the RD API to delete orphaned account torrents
+    (Semaphore(5) + stop_flag pattern).
+
+    Returns 409 when another cleanup operation is already in progress.
+
+    Args:
+        req: Confirmation flag (confirm=True required to proceed).
+        session: Injected database session.
+
+    Returns:
+        CleanupResult with counts for all outcomes.
+    """
+    if _cleanup_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A data cleanup operation is already in progress",
+        )
+
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="confirm must be true to proceed")
+
+    try:
+        await _cleanup_lock.acquire()
+
+        # Re-run the full server-side assessment so we never trust client-
+        # supplied item IDs.  A stale preview or crafted request body cannot
+        # cause non-duplicate items to be deleted.
+        assessed = await assess_migration_items(session)
+        current_preview = await build_cleanup_preview(session, assessed)
+
+        if not current_preview.groups:
+            return CleanupResult()
+
+        result = await execute_cleanup(session, current_preview)
+        await session.commit()
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await session.rollback()
+        logger.error("cleanup_execute_endpoint: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cleanup execution failed: {exc}",
+        ) from exc
+    finally:
+        _cleanup_lock.release()
+
+    rd_ids_to_delete = current_preview.rd_ids_to_delete
+
+    logger.info(
+        "cleanup_execute_endpoint: removed=%d kept=%d symlinks_disk=%d rd_to_delete=%d",
+        result.items_removed,
+        result.items_kept,
+        result.symlinks_deleted_from_disk,
+        len(rd_ids_to_delete),
+    )
+
+    # ------------------------------------------------------------------
+    # Delete RD torrents from the account after the DB commit.
+    # Semaphore(5) + stop_flag mirrors the pattern in deduplicate().
+    # ------------------------------------------------------------------
+    if rd_ids_to_delete:
+        from src.services.real_debrid import RealDebridClient, RealDebridRateLimitError
+
+        rd_client = RealDebridClient()
+        sem = asyncio.Semaphore(5)
+        rd_failed: list[str] = []
+        stop_flag = False
+
+        async def _delete_rd(rd_id: str) -> None:
+            nonlocal stop_flag
+            async with sem:
+                if stop_flag:
+                    rd_failed.append(rd_id)
+                    return
+                try:
+                    await rd_client.delete_torrent(rd_id)
+                except RealDebridRateLimitError:
+                    stop_flag = True
+                    rd_failed.append(rd_id)
+                    logger.warning(
+                        "cleanup_execute_endpoint: RD rate limit hit, stopping deletions"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "cleanup_execute_endpoint: RD delete failed rd_id=%s: %s",
+                        rd_id,
+                        exc,
+                    )
+                    rd_failed.append(rd_id)
+
+        await asyncio.gather(*[_delete_rd(rid) for rid in rd_ids_to_delete])
+        result.rd_torrents_deleted = len(rd_ids_to_delete) - len(rd_failed)
+        result.rd_torrents_failed = len(rd_failed)
+
+        logger.info(
+            "cleanup_execute_endpoint: RD account cleanup — deleted=%d failed=%d",
+            result.rd_torrents_deleted,
+            result.rd_torrents_failed,
+        )
+
     return result
 
 

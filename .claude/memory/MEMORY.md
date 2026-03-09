@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1363 tests, all passing (as of 2026-03-09)
+- 1496 tests, all passing (as of 2026-03-09)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -27,9 +27,14 @@
 - Language filter/preference — 2026-03-08
 - Plex symlink naming mode — 2026-03-08
 - Plex Watchlist sync — 2026-03-09
+- TMDB ID backfill + migration dedup — 2026-03-09
+- [RD Bridge + Smart Cleanup](rd-cleanup.md) — 2026-03-09
 
 ## Remaining / Future Work
+- Issue #23 Phase 2: RD account categorize & clean (orphaned/dead/stale torrents)
+- Issue #28: Anime prefer original language (Japanese) over dubs
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
+- 2 unresolved IMDB IDs: tt1088540 (Bookworm), tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
 - Docker (Step 3): Dockerfile + docker-compose.yml
 
 ## Remaining Review Findings (not yet fixed)
@@ -172,13 +177,20 @@ Three interrelated bugs when adding anime with XEM scene seasons:
 
 ## Plex Watchlist Sync — 2026-03-09
 - `PlexConfig.watchlist_sync_enabled: bool = False`, `watchlist_poll_minutes: int = Field(default=30, ge=15)`
-- `plex.py:get_watchlist()` — plex.tv metadata API, JSON, paginated (100/page), reuses single httpx client
+- `plex.py:get_watchlist()` — discover.provider.plex.tv (NOT metadata), JSON, paginated, `includeGuids=1`
 - `src/core/plex_watchlist.py:sync_watchlist()` — batch dedup (tmdb_id + imdb_id IN query), per-item savepoints
-- Movies: WANTED, source="plex_watchlist"; Shows: season=1, is_season_pack=True + auto-enable monitoring
+- Movies: WANTED, source="plex_watchlist"; Shows: S1 pack + monitoring + immediate `_check_single_show`
+- Mount index lookup before creating items (catches content added to RD outside vibeDebrid)
 - Scheduler: always registered (early-exit when disabled), `max_instances=1`, min 15min interval
-- Items with no tmdb_id AND no imdb_id are skipped
-- Code review fix: `session.begin_nested()` for per-item isolation (avoids rollback-wipes-batch bug)
 - 38 tests in `tests/test_plex_watchlist.py`
+
+## TMDB ID Backfill — 2026-03-09
+- `tmdb.find_by_imdb_id()`: `/find/{imdb_id}?external_source=imdb_id`, resolves tmdb_id + tvdb_id
+- `backfill.py:backfill_tmdb_ids()`: Semaphore(10), gather(return_exceptions=True), batch UPDATE by imdb_id
+- Startup: non-blocking background task with `_backfill_lock` shared with API endpoint
+- `show_manager._check_single_show`: or_ query fallback for imdb_id when tmdb_id is NULL
+- Real data: 73/75 resolved, 1350 rows enriched
+- 35 tests in `tests/test_backfill.py`
 
 ## Key Conventions
 - Commit style: imperative summary, bullet details, `Co-Authored-By: Claude Opus 4.6`
