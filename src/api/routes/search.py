@@ -93,6 +93,8 @@ class AddRequest(BaseModel):
     magnet_or_hash: str
     title: str
     imdb_id: str | None = None
+    tmdb_id: int | None = None
+    tvdb_id: int | None = None
     media_type: str = "movie"
     year: int | None = None
     season: int | None = None
@@ -363,6 +365,8 @@ async def add_torrent(
     # fails we fall back to WANTED so the pipeline can pick it up later.
     item = MediaItem(
         imdb_id=body.imdb_id,
+        tmdb_id=str(body.tmdb_id) if body.tmdb_id is not None else None,
+        tvdb_id=body.tvdb_id,
         title=body.title,
         year=body.year,
         media_type=media_type,

@@ -360,12 +360,20 @@
                 bestMatch = item;
               }
             }
+            // Store tmdb_id and year from the best match
+            payload.tmdb_id = bestMatch.tmdb_id || null;
+            const rawDate = bestMatch.release_date || bestMatch.first_air_date || '';
+            payload.year = rawDate.length >= 4 ? parseInt(rawDate.substring(0, 4), 10) : null;
+
             const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(bestMatch.tmdb_id));
             if (resolveResp.ok) {
               const resolveData = await resolveResp.json();
               if (resolveData.imdb_id) {
                 payload.imdb_id = resolveData.imdb_id;
                 document.getElementById('imdb_id').value = resolveData.imdb_id;
+              }
+              if (resolveData.tvdb_id) {
+                payload.tvdb_id = resolveData.tvdb_id;
               }
             }
           }
@@ -829,8 +837,10 @@
       magnet_or_hash:  infoHash,
       title:           _lastSearchPayload.query,
       imdb_id:         _lastSearchPayload.imdb_id || null,
+      tmdb_id:         _lastSearchPayload.tmdb_id || null,
+      tvdb_id:         _lastSearchPayload.tvdb_id || null,
       media_type:      _lastSearchPayload.media_type,
-      year:            null,
+      year:            _lastSearchPayload.year || null,
       season:          season,
       episode:         episode,
       is_season_pack:  isSeasonPack,

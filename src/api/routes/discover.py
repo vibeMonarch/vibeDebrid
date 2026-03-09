@@ -584,6 +584,7 @@ class ResolveResponse(BaseModel):
     """Response for GET /api/discover/resolve/{media_type}/{tmdb_id}."""
 
     imdb_id: str | None = None
+    tvdb_id: int | None = None
 
 
 @router.get("/resolve/{media_type}/{tmdb_id}")
@@ -618,5 +619,6 @@ async def resolve_imdb(
 
     ext_ids = await tmdb_client.get_external_ids(tmdb_id, media_type)
     imdb_id = ext_ids.imdb_id if ext_ids is not None else None
+    tvdb_id = ext_ids.tvdb_id if ext_ids is not None else None
 
-    return ResolveResponse(imdb_id=imdb_id)
+    return ResolveResponse(imdb_id=imdb_id, tvdb_id=tvdb_id)
