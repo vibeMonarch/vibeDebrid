@@ -66,6 +66,7 @@ from src.core.rd_cleanup import (
     _build_summaries,
     _categorize_all,
     _categorize_torrent,
+    _extract_mount_name_any_base,
     _last_scan_cache,
     _normalize_title,
     _parse_added,
@@ -1094,3 +1095,84 @@ class TestBuildProtectionSets:
         assert active_hashes == set()
         assert active_rd_ids == set()
         assert symlink_names == set()
+
+    async def test_symlink_alternative_mount_path_fallback(self, session: AsyncSession):
+        """Symlinks with a different mount base (e.g. rclone_RD/__all__/) are
+        still detected via the /__all__/ fallback extraction."""
+        from src.core.rd_cleanup import _build_protection_sets
+
+        # Source path uses a DIFFERENT base than the configured zurg_mount
+        alt_source = "/opt/homeserver/Zurg/mnt/rclone_RD/__all__/Reservation.Dogs.S01/ep01.mkv"
+        _make_symlink(session, source_path=alt_source)
+        await session.flush()
+
+        with patch("src.config.settings") as mock_settings:
+            mock_settings.paths.zurg_mount = ZURG_MOUNT  # /mnt/zurg/__all__
+            _, _, symlink_names = await _build_protection_sets(session)
+
+        assert len(symlink_names) > 0
+        assert "reservation.dogs.s01" in symlink_names
+
+    async def test_symlink_both_mount_paths_merged(self, session: AsyncSession):
+        """Protection set includes names from both the configured mount and
+        alternative mount bases."""
+        from src.core.rd_cleanup import _build_protection_sets
+
+        # One symlink uses the configured mount
+        normal_source = f"{ZURG_MOUNT}/Show.A.S01/ep01.mkv"
+        _make_symlink(session, source_path=normal_source, target_path="/lib/a.mkv")
+
+        # Another uses an alternative mount
+        alt_source = "/other/mount/__all__/Show.B.S02/ep01.mkv"
+        _make_symlink(session, source_path=alt_source, target_path="/lib/b.mkv")
+        await session.flush()
+
+        with patch("src.config.settings") as mock_settings:
+            mock_settings.paths.zurg_mount = ZURG_MOUNT
+            _, _, symlink_names = await _build_protection_sets(session)
+
+        assert "show.a.s01" in symlink_names
+        assert "show.b.s02" in symlink_names
+
+
+# ---------------------------------------------------------------------------
+# 11. _extract_mount_name_any_base — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractMountNameAnyBase:
+    def test_standard_zurg_path(self):
+        result = _extract_mount_name_any_base(
+            "/mnt/zurg/__all__/Breaking.Bad.S01/ep01.mkv"
+        )
+        assert result == "Breaking.Bad.S01"
+
+    def test_rclone_rd_path(self):
+        result = _extract_mount_name_any_base(
+            "/opt/homeserver/Zurg/mnt/rclone_RD/__all__/Reservation.Dogs.S01/ep01.mkv"
+        )
+        assert result == "Reservation.Dogs.S01"
+
+    def test_single_file_torrent(self):
+        result = _extract_mount_name_any_base(
+            "/mnt/zurg/__all__/Some.Movie.2024.mkv"
+        )
+        assert result == "Some.Movie.2024.mkv"
+
+    def test_no_all_marker(self):
+        result = _extract_mount_name_any_base("/mnt/other/path/file.mkv")
+        assert result is None
+
+    def test_all_at_end_no_trailing(self):
+        result = _extract_mount_name_any_base("/mnt/zurg/__all__")
+        assert result is None
+
+    def test_all_at_end_with_trailing_slash(self):
+        result = _extract_mount_name_any_base("/mnt/zurg/__all__/")
+        assert result is None
+
+    def test_deeply_nested(self):
+        result = _extract_mount_name_any_base(
+            "/a/b/c/__all__/TorrentDir/season1/ep01.mkv"
+        )
+        assert result == "TorrentDir"

@@ -42,6 +42,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.rd_bridge import _extract_mount_relative_name, _normalize_name
+
+# Matches the Zurg /__all__/ virtual directory in any mount path.
+_ALL_DIR_MARKER = "/__all__/"
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
 
@@ -64,6 +67,32 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
+
+def _extract_mount_name_any_base(source_path: str) -> str | None:
+    """Extract the torrent directory/file name from a Zurg mount path.
+
+    Unlike ``_extract_mount_relative_name`` (which requires the exact mount
+    prefix), this finds ``/__all__/`` anywhere in the path and returns the
+    first component after it.  Handles symlinks that reference alternative
+    mount points (e.g. ``rclone_RD/__all__/`` vs ``__all__/``).
+
+    Args:
+        source_path: Absolute symlink source path.
+
+    Returns:
+        The torrent directory name (first component after ``/__all__/``),
+        or None when the marker is not found.
+    """
+    idx = source_path.find(_ALL_DIR_MARKER)
+    if idx == -1:
+        return None
+    rest = source_path[idx + len(_ALL_DIR_MARKER):]
+    if not rest:
+        return None
+    # First path component after /__all__/
+    slash = rest.find("/")
+    return rest[:slash] if slash != -1 else rest
 
 
 class RdTorrentCategory(str, enum.Enum):
@@ -323,17 +352,31 @@ async def _build_protection_sets(
     )
     active_rd_ids: set[str] = {row[0] for row in rdid_rows if row[0]}
 
-    # Symlink mount names
+    # Symlink mount names — try configured zurg_mount first, fall back to
+    # /__all__/ marker detection for alternative mount paths.
     symlink_rows = await session.execute(select(Symlink.source_path))
     zurg_mount: str = settings.paths.zurg_mount.rstrip("/")
     symlink_mount_names: set[str] = set()
+    fallback_count = 0
     for (source_path,) in symlink_rows:
         if not source_path:
             continue
         mount_name = _extract_mount_relative_name(source_path, zurg_mount)
+        if mount_name is None:
+            mount_name = _extract_mount_name_any_base(source_path)
+            if mount_name is not None:
+                fallback_count += 1
         if mount_name:
             symlink_mount_names.add(mount_name.lower())
             symlink_mount_names.add(_normalize_name(mount_name).lower())
+
+    if fallback_count:
+        logger.warning(
+            "rd_cleanup: %d symlinks used /__all__/ fallback extraction "
+            "(source_path does not start with zurg_mount=%r)",
+            fallback_count,
+            zurg_mount,
+        )
 
     logger.debug(
         "rd_cleanup: protection sets — active_hashes=%d active_rd_ids=%d "
