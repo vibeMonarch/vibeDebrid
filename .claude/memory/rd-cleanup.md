@@ -104,11 +104,18 @@ Replaces the naive "lowest ID wins" dedup with liveness-aware keeper selection.
 ### Key Design Decisions
 - No auto-delete — all deletion is user-initiated
 - Execute re-validates categories server-side (cached or fresh)
-- Semaphore(5) + stop_flag on rate limit (same pattern as Phase 1)
+- Sequential deletion loop (replaced Semaphore(5)+gather after rate-limit blast radius incident)
 - `mark_torrent_removed()` for each deleted torrent in local registry
 - Imports `_extract_mount_relative_name` and `_normalize_name` from `rd_bridge.py`
+
+## Incident: Mount Path Mismatch (2026-03-09)
+- **Root cause**: `_build_protection_sets` only checked `zurg_mount` prefix; symlinks via `rclone_RD/__all__/` invisible
+- **Impact**: 205 RD torrents deleted, 984 broken symlinks across 46 titles
+- **Fix applied**: `_extract_mount_name_any_base()` fallback finds `/__all__/` anywhere in path
+- **Recovery**: items → WANTED → season pack consolidation → processed by pipeline
+- **Remaining (Issue #29)**: same bug in `rd_bridge.py:287` and `cleanup.py:464`, plus safety hardening (empty protection set should hard-fail, stale cache risk, gather blast radius in tools.py)
 
 ## Tests
 - 46 tests in `tests/test_rd_bridge.py`
 - 51 tests in `tests/test_cleanup.py`
-- 75 tests in `tests/test_rd_cleanup.py`
+- 84 tests in `tests/test_rd_cleanup.py` (75 + 9 for mount fallback)

@@ -26,7 +26,7 @@ VALID_TRANSITIONS: dict[QueueState, set[QueueState]] = {
     QueueState.UNRELEASED: {QueueState.WANTED},
     QueueState.WANTED: {QueueState.SCRAPING},
     QueueState.SCRAPING: {QueueState.ADDING, QueueState.SLEEPING, QueueState.CHECKING, QueueState.COMPLETE},
-    QueueState.ADDING: {QueueState.CHECKING},
+    QueueState.ADDING: {QueueState.CHECKING, QueueState.SLEEPING},
     QueueState.CHECKING: {QueueState.COMPLETE, QueueState.SLEEPING},
     QueueState.SLEEPING: {QueueState.SCRAPING, QueueState.DORMANT},
     QueueState.DORMANT: {QueueState.SCRAPING},

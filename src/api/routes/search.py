@@ -92,6 +92,7 @@ class AddRequest(BaseModel):
 
     magnet_or_hash: str
     title: str
+    release_title: str | None = None
     imdb_id: str | None = None
     tmdb_id: int | None = None
     tvdb_id: int | None = None
@@ -418,7 +419,7 @@ async def add_torrent(
                 info_hash=info_hash,
                 magnet_uri=magnet_uri,
                 media_item_id=item.id,
-                filename=body.title,
+                filename=body.release_title or body.title,
                 filesize=None,
                 resolution=None,
                 cached=None,
@@ -439,7 +440,7 @@ async def add_torrent(
                 "episode": body.episode,
             }
             selected_result_payload: dict[str, str | None] = {
-                "title": body.title,
+                "title": body.release_title or body.title,
                 "info_hash": info_hash,
                 "rd_id": rd_id,
             }

@@ -24,7 +24,7 @@ from src.core.mount_scanner import mount_scanner
 from src.core.symlink_manager import symlink_manager
 from src.models.media_item import MediaItem, QueueState
 from src.models.torrent import RdTorrent, TorrentStatus
-from src.services.real_debrid import rd_client
+from src.services.real_debrid import rd_client, RealDebridError
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +311,24 @@ async def _job_queue_processor() -> None:
                             item.id, rd_filename,
                         )
                     await queue_manager.transition(session, item.id, QueueState.CHECKING)
+            except RealDebridError as e:
+                if e.status_code == 404 or "unknown_ressource" in str(e):
+                    logger.warning(
+                        "ADDING item id=%d: RD torrent %s no longer exists (404), transitioning to SLEEPING",
+                        item.id, torrent.rd_id if torrent else "unknown",
+                    )
+                    try:
+                        await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                    except Exception:
+                        logger.exception(
+                            "Failed to transition ADDING item id=%d to SLEEPING after 404",
+                            item.id,
+                        )
+                else:
+                    logger.exception(
+                        "Failed to check RD status for ADDING item id=%d title=%s",
+                        item.id, item.title,
+                    )
             except Exception:
                 logger.exception(
                     "Failed to check RD status for ADDING item id=%d title=%s",
@@ -350,6 +368,32 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=None,
                                 )
+                            # RD filename refresh: torrent.filename may be stale (e.g.
+                            # stored as item title instead of actual RD torrent name).
+                            # Re-fetch from RD API and retry scan+lookup if it differs.
+                            if not matches and torrent.rd_id:
+                                try:
+                                    rd_info = await rd_client.get_torrent_info(torrent.rd_id)
+                                    rd_filename = rd_info.get("filename")
+                                    if rd_filename and rd_filename != torrent.filename:
+                                        logger.info(
+                                            "CHECKING season pack id=%d: refreshing torrent filename %r → %r",
+                                            item.id, torrent.filename, rd_filename,
+                                        )
+                                        torrent.filename = rd_filename
+                                        scan_result = await mount_scanner.scan_directory(session, rd_filename)
+                                        if scan_result.files_indexed > 0:
+                                            matches = await mount_scanner.lookup(
+                                                session,
+                                                title=item.title,
+                                                season=item.season,
+                                                episode=None,
+                                            )
+                                except Exception:
+                                    logger.warning(
+                                        "CHECKING season pack id=%d: RD filename refresh failed",
+                                        item.id,
+                                    )
                             # Path-based fallback: PTN may parse individual filenames
                             # differently from the item title (e.g. disc rips, episode
                             # title filenames), so fall back to directory prefix lookup.
@@ -489,6 +533,32 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=item.episode,
                                 )
+                            # RD filename refresh: torrent.filename may be stale (e.g.
+                            # stored as item title instead of actual RD torrent name).
+                            # Re-fetch from RD API and retry scan+lookup if it differs.
+                            if not matches and torrent.rd_id:
+                                try:
+                                    rd_info = await rd_client.get_torrent_info(torrent.rd_id)
+                                    rd_filename = rd_info.get("filename")
+                                    if rd_filename and rd_filename != torrent.filename:
+                                        logger.info(
+                                            "CHECKING item id=%d: refreshing torrent filename %r → %r",
+                                            item.id, torrent.filename, rd_filename,
+                                        )
+                                        torrent.filename = rd_filename
+                                        scan_result = await mount_scanner.scan_directory(session, rd_filename)
+                                        if scan_result.files_indexed > 0:
+                                            matches = await mount_scanner.lookup(
+                                                session,
+                                                title=item.title,
+                                                season=item.season,
+                                                episode=item.episode,
+                                            )
+                                except Exception:
+                                    logger.warning(
+                                        "CHECKING item id=%d: RD filename refresh failed",
+                                        item.id,
+                                    )
                             # Path-based fallback: PTN may parse individual filenames
                             # differently from the item title (e.g. disc rips, episode
                             # title filenames), so fall back to directory prefix lookup.

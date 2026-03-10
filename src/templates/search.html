@@ -747,6 +747,7 @@
                    bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                    focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-1 focus:ring-offset-vd-card"
             data-hash="${escapeHtml(item.info_hash)}"
+            data-title="${escapeHtml(item.title)}"
             data-season="${item.season}"
             data-episode="${item.episode}"
             data-season-pack="${item.is_season_pack}"
@@ -801,6 +802,7 @@
                  bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                  focus:outline-none focus:ring-2 focus:ring-vd-accent"
           data-hash="${escapeHtml(item.info_hash)}"
+          data-title="${escapeHtml(item.title)}"
           data-season="${item.season}"
           data-episode="${item.episode}"
           data-season-pack="${item.is_season_pack}"
@@ -832,10 +834,12 @@
     const isSeasonPack = btn.dataset.seasonPack === 'true';
     const season = btn.dataset.season !== 'null' && btn.dataset.season !== 'undefined' ? parseInt(btn.dataset.season, 10) : null;
     const episode = isSeasonPack ? null : (btn.dataset.episode !== 'null' && btn.dataset.episode !== 'undefined' ? parseInt(btn.dataset.episode, 10) : null);
+    const releaseTitle = btn.dataset.title || null;
 
     const payload = {
       magnet_or_hash:  infoHash,
       title:           _lastSearchPayload.query,
+      release_title:   releaseTitle,
       imdb_id:         _lastSearchPayload.imdb_id || null,
       tmdb_id:         _lastSearchPayload.tmdb_id || null,
       tvdb_id:         _lastSearchPayload.tvdb_id || null,

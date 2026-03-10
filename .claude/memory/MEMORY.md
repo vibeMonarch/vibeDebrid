@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1571 tests, all passing (as of 2026-03-09)
+- 1580 tests, all passing (as of 2026-03-09)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -29,6 +29,7 @@
 - Plex Watchlist sync — 2026-03-09
 - TMDB ID backfill + migration dedup — 2026-03-09
 - [RD Bridge + Smart Cleanup + Account Cleanup](rd-cleanup.md) — 2026-03-09
+- Search add fixes: silent failure UX, check_cached race condition, missing year/tmdb_id — 2026-03-09
 
 ## Remaining / Future Work
 - Issue #28: Anime prefer original language (Japanese) over dubs
@@ -39,7 +40,6 @@
 ## Remaining Review Findings (not yet fixed)
 - `scrape_pipeline.py:868`: `session.rollback()` mid-pipeline can corrupt ORM state
 - `settings.py:51`: unvalidated `dict[str,Any]` body allows arbitrary key injection
-- `search.py:272`: no error handling on `check_cached` — RD down = 500
 - `search.py:430-441`: direct `item.state =` bypasses queue_manager (tech debt)
 - Services: broad `except Exception` on JSON parsing — should be `except ValueError`
 - `filter_engine.py:287`: regex compiled inside hot loop
@@ -114,6 +114,9 @@
 - Season pack false positive (2026-03-08): PTN can't parse anime `S2 - 06` notation → `_SEASON_DASH_EP_RE` regex fallback in both torrentio.py and zilean.py
 - Season pack scoring bias (2026-03-08): `prefer_season_packs` param on `filter_and_rank`; pipeline passes `item.is_season_pack` so episode items don't give +5 bonus to season pack results
 - Anime CHECKING failures (2026-03-08): PTN can't parse `[Group] Title - NN` filenames → `_ANIME_DASH_EP_RE` regex fallback. Complete collections (flat, absolute ep numbering) → TMDB-based absolute episode range mapping. Single-file anime torrents (title mismatch) → no-filter fallback with single-file guard. Season pack filter hard-rejects single-episode results (`prefer_season_packs=True` in Tier 1)
+- Search add silent failure (2026-03-09): `/api/add` returns HTTP 200 with `status="queued"` when `add_magnet` fails (e.g. RD rate limit from cache checking burst). Frontend now shows yellow "Queued" warning instead of green "Added"
+- check_cached race condition (2026-03-09): search `/api/check-cached` used `add_magnet`/`delete_torrent` probe with `keep_if_cached=False`. If hash already in user's RD account, `add_magnet` returns existing rd_id, then `finally` deletes it. Fix: query `rd_torrents` table first, skip probe if hash already tracked as ACTIVE
+- Search add missing metadata (2026-03-09): `AddRequest` lacked `tmdb_id`/`tvdb_id` fields, frontend hardcoded `year: null`. TMDB auto-resolve had the data but only saved `imdb_id`. Fix: capture year/tmdb_id/tvdb_id from TMDB resolve, pass in add payload, populate on MediaItem. Also added `tvdb_id` to discover resolve endpoint response
 
 ## Season Pack Split — 2026-03-08
 - When no season packs available, auto-splits into individual episode queue items
