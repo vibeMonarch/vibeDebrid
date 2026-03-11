@@ -544,9 +544,13 @@ class SymlinkManager:
         2. The resolved destination of the symlink (the ``source_path``) still
            exists on disk (``os.path.exists``).
 
-        Broken symlinks have their ``valid`` flag set to ``False`` and a WARNING
-        is logged.  Healthy symlinks have ``last_checked_at`` updated to the
-        current UTC time.
+        Broken symlinks are marked ``valid=False``, removed from disk, and
+        their empty parent directories are cleaned up so that Plex detects the
+        missing media on its next scan.  Healthy symlinks have
+        ``last_checked_at`` updated to the current UTC time.
+
+        A mount-health pre-flight check prevents mass symlink deletion when the
+        Zurg/rclone FUSE mount is transiently unavailable.
 
         Args:
             session: Caller-managed async database session.
@@ -555,6 +559,22 @@ class SymlinkManager:
             A ``VerifyResult`` summarising the outcome of the health check.
         """
         now = datetime.now(timezone.utc)
+
+        # Pre-flight: verify the Zurg mount root is accessible.  A transient
+        # mount outage makes every symlink destination appear missing; deleting
+        # them all would be catastrophic.
+        mount_root = settings.paths.zurg_mount
+        mount_ok = await asyncio.to_thread(os.path.isdir, mount_root)
+        if not mount_ok:
+            logger.warning(
+                "verify_symlinks: mount root %r is not accessible, "
+                "skipping verification to avoid mass symlink deletion",
+                mount_root,
+            )
+            return VerifyResult(
+                total_checked=0, valid_count=0,
+                broken_count=0, already_invalid=0,
+            )
 
         # Count already-invalid so the summary is accurate.
         already_invalid_result = await session.execute(
@@ -584,6 +604,11 @@ class SymlinkManager:
                     symlink.target_path,
                     symlink.media_item_id,
                 )
+                # Clean up empty parent dirs left behind.
+                parent = os.path.dirname(symlink.target_path)
+                grandparent = os.path.dirname(parent)
+                await self._try_remove_empty_dir(parent)
+                await self._try_remove_empty_dir(grandparent)
                 continue
 
             # The symlink exists — now verify its destination.
@@ -598,6 +623,28 @@ class SymlinkManager:
                     symlink.source_path,
                     symlink.media_item_id,
                 )
+                # Remove the dead symlink from disk so Plex can detect
+                # the missing media and clean up its library.
+                try:
+                    await asyncio.to_thread(os.unlink, symlink.target_path)
+                except FileNotFoundError:
+                    pass  # Already removed by another process.
+                except OSError as exc:
+                    logger.warning(
+                        "verify_symlinks: could not remove dead symlink %r — %s",
+                        symlink.target_path,
+                        exc,
+                    )
+                    continue
+                logger.info(
+                    "verify_symlinks: removed dead symlink %r",
+                    symlink.target_path,
+                )
+                # Clean up empty parent/grandparent directories.
+                parent = os.path.dirname(symlink.target_path)
+                grandparent = os.path.dirname(parent)
+                await self._try_remove_empty_dir(parent)
+                await self._try_remove_empty_dir(grandparent)
             else:
                 symlink.last_checked_at = now
                 valid_count += 1
