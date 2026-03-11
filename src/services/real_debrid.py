@@ -111,12 +111,15 @@ class CacheCheckResult(BaseModel):
         rd_id: The RD torrent ID if the torrent was kept (keep_if_cached=True
                and cached), otherwise None.
         has_video_files: Whether the torrent contains video files.
+        blocked: True when RD returned HTTP 451 (infringing_file) — the hash
+                 is permanently unavailable and must not be retried.
     """
 
     info_hash: str
     cached: bool | None
     rd_id: str | None = None
     has_video_files: bool = True
+    blocked: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +538,16 @@ class RealDebridClient:
             return CacheCheckResult(
                 info_hash=info_hash, cached=cached, has_video_files=has_video,
             )
+        except RealDebridError as exc:
+            if exc.status_code == 451:
+                logger.warning(
+                    "check_cached: hash=%s blocked by RD (451 infringing_file)",
+                    info_hash,
+                )
+                # should_keep is False so the finally block will attempt cleanup.
+                return CacheCheckResult(info_hash=info_hash, cached=False, blocked=True)
+            logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
+            return CacheCheckResult(info_hash=info_hash, cached=None)
         except Exception as exc:
             logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
             return CacheCheckResult(info_hash=info_hash, cached=None)

@@ -509,6 +509,7 @@ class ScrapePipeline:
             session,
             item,
             best=best,
+            ranked=ranked,
             cached_set=cached_set,
             cache_results=cache_results,
             scrape_results_count=total_count,
@@ -928,6 +929,7 @@ class ScrapePipeline:
         item: MediaItem,
         *,
         best: FilteredResult,
+        ranked: list[FilteredResult],
         cached_set: set[str],
         cache_results: dict[str, CacheCheckResult],
         scrape_results_count: int,
@@ -939,7 +941,13 @@ class ScrapePipeline:
         If the cache check already kept the torrent (rd_id in cache_results),
         the add_magnet call is skipped and the existing rd_id is reused.
 
-        On add_magnet failure: transitions to SLEEPING, returns error result.
+        When add_magnet returns HTTP 451 (infringing_file), the candidate is
+        permanently blocked and the pipeline falls back to the next ranked
+        candidate.  Only transient errors (rate limit, network) abort the loop
+        and send the item to SLEEPING immediately — burning through all
+        candidates would risk exhausting the RD rate limit.
+
+        On add_magnet failure (non-451): transitions to SLEEPING, returns error result.
         On select_files failure: logs warning but does NOT change state (the
         torrent is already in RD and will be processed by the CHECKING step).
 
@@ -947,6 +955,7 @@ class ScrapePipeline:
             session: Caller-managed async database session.
             item: The MediaItem being acquired.
             best: The top-ranked FilteredResult from the filter engine.
+            ranked: Full ordered list of FilteredResults (used for fallback).
             cached_set: Info hashes known to be cached in RD.
             cache_results: Results from check_cached_batch (may contain rd_ids).
             scrape_results_count: Total raw results count (for PipelineResult).
@@ -956,95 +965,135 @@ class ScrapePipeline:
         Returns:
             A PipelineResult describing the outcome.
         """
-        info_hash: str = best.result.info_hash
-        magnet_uri = f"magnet:?xt=urn:btih:{info_hash}"
-        is_cached = info_hash in cached_set
+        # Build the candidate list from all ranked results, skipping any hashes
+        # that were already flagged as blocked (451) during the cache check.
+        blocked_hashes: set[str] = {
+            h for h, cr in cache_results.items() if cr.blocked
+        }
+        candidates: list[FilteredResult] = [
+            fr for fr in ranked if fr.result.info_hash not in blocked_hashes
+        ]
 
-        logger.info(
-            "scrape_pipeline: adding to RD — item id=%d title=%r hash=%s "
-            "score=%.1f cached=%s",
-            item.id,
-            item.title,
-            info_hash,
-            best.score,
-            is_cached,
-        )
+        # If best was blocked during cache check, candidates list will start
+        # with a different entry — that's fine, the loop handles it.
+        # If the original best is still available it will always be first since
+        # ranked is already ordered by score and best == ranked[0].
 
-        # --- Reuse rd_id from cache check if available ---
-        existing_cr = cache_results.get(info_hash)
         rd_id: str = ""
-        if existing_cr and existing_cr.rd_id:
-            rd_id = existing_cr.rd_id
+        info_hash: str = ""
+        selected_best: FilteredResult = best  # will be updated if we fall back
+        transient_error: Exception | None = None
+
+        for candidate in candidates:
+            candidate_hash: str = candidate.result.info_hash
+            candidate_magnet = f"magnet:?xt=urn:btih:{candidate_hash}"
+
+            # Reuse rd_id from cache check when the torrent was already kept.
+            existing_cr = cache_results.get(candidate_hash)
+            if existing_cr and existing_cr.rd_id:
+                rd_id = existing_cr.rd_id
+                info_hash = candidate_hash
+                selected_best = candidate
+                logger.info(
+                    "scrape_pipeline: reusing kept rd_id=%s from cache check "
+                    "for hash=%s (item id=%d)",
+                    rd_id, info_hash, item.id,
+                )
+                break
+
             logger.info(
-                "scrape_pipeline: reusing kept rd_id=%s from cache check for hash=%s",
-                rd_id, info_hash,
+                "scrape_pipeline: adding to RD — item id=%d title=%r hash=%s "
+                "score=%.1f cached=%s",
+                item.id,
+                item.title,
+                candidate_hash,
+                candidate.score,
+                candidate_hash in cached_set,
             )
-        else:
-            # --- add_magnet ---
+
             try:
-                add_response = await rd_client.add_magnet(magnet_uri)
+                add_response = await rd_client.add_magnet(candidate_magnet)
             except RealDebridError as exc:
+                if exc.status_code == 451:
+                    logger.warning(
+                        "scrape_pipeline: hash=%s blocked by RD (451 infringing_file) "
+                        "for item id=%d — trying next candidate",
+                        candidate_hash,
+                        item.id,
+                    )
+                    continue  # Try the next ranked candidate
+                # Any other RealDebridError (rate limit, auth, etc.) is transient —
+                # stop the loop immediately rather than burning through candidates.
                 logger.error(
                     "scrape_pipeline: add_magnet failed for item id=%d hash=%s: %s",
                     item.id,
-                    info_hash,
+                    candidate_hash,
                     exc,
                 )
-                await self._log_scrape(
-                    session,
-                    media_item_id=item.id,
-                    scraper="pipeline",
-                    query_params=json.dumps(
-                        {"magnet_uri": magnet_uri, "step": "add_magnet"}
-                    ),
-                    results_count=scrape_results_count,
-                    results_summary=None,
-                    selected_result=json.dumps({"info_hash": info_hash, "error": str(exc)}),
-                    duration_ms=total_duration_ms,
-                )
-                await self._cleanup_kept_torrents(cache_results)
-                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
-                return PipelineResult(
-                    item_id=item.id,
-                    action="error",
-                    message=f"RD add_magnet failed: {exc}",
-                    selected_hash=info_hash,
-                    scrape_results_count=scrape_results_count,
-                    filtered_results_count=filtered_results_count,
-                )
+                transient_error = exc
+                break
             except Exception as exc:
                 logger.error(
-                    "scrape_pipeline: unexpected error in add_magnet for item id=%d: %s",
+                    "scrape_pipeline: unexpected error in add_magnet for item id=%d "
+                    "hash=%s: %s",
                     item.id,
+                    candidate_hash,
                     exc,
                     exc_info=True,
                 )
-                await self._cleanup_kept_torrents(cache_results)
-                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
-                return PipelineResult(
-                    item_id=item.id,
-                    action="error",
-                    message=f"Unexpected error adding magnet: {exc}",
-                    selected_hash=info_hash,
-                    scrape_results_count=scrape_results_count,
-                    filtered_results_count=filtered_results_count,
-                )
+                transient_error = exc
+                break
 
             rd_id = str(add_response.get("id", ""))
+            if not rd_id:
+                logger.error(
+                    "scrape_pipeline: add_magnet returned empty rd_id for item "
+                    "id=%d hash=%s",
+                    item.id,
+                    candidate_hash,
+                )
+                transient_error = ValueError("add_magnet returned empty torrent ID")
+                break
 
+            info_hash = candidate_hash
+            selected_best = candidate
+            break  # Success
+
+        # --- Handle loop outcomes ---
         if not rd_id:
+            # Either all candidates were blocked (451) or a transient error occurred.
+            if transient_error is not None:
+                err_msg = f"RD add_magnet failed: {transient_error}"
+            else:
+                err_msg = (
+                    f"All {len(candidates)} candidate(s) are blocked by RD "
+                    "(HTTP 451 infringing_file)"
+                )
             logger.error(
-                "scrape_pipeline: add_magnet returned empty rd_id for item id=%d hash=%s",
+                "scrape_pipeline: %s for item id=%d",
+                err_msg,
                 item.id,
-                info_hash,
+            )
+            failed_hash = info_hash or best.result.info_hash
+            await self._log_scrape(
+                session,
+                media_item_id=item.id,
+                scraper="pipeline",
+                query_params=json.dumps(
+                    {"magnet_uri": f"magnet:?xt=urn:btih:{failed_hash}", "step": "add_magnet"}
+                ),
+                results_count=scrape_results_count,
+                results_summary=None,
+                selected_result=json.dumps({"info_hash": failed_hash, "error": err_msg}),
+                duration_ms=total_duration_ms,
             )
             await self._cleanup_kept_torrents(cache_results)
             await queue_manager.transition(session, item.id, QueueState.SLEEPING)
             return PipelineResult(
                 item_id=item.id,
                 action="error",
-                message="RD add_magnet returned empty torrent ID",
-                selected_hash=info_hash,
+                message=err_msg,
+                selected_hash=failed_hash,
                 scrape_results_count=scrape_results_count,
                 filtered_results_count=filtered_results_count,
             )
@@ -1072,6 +1121,9 @@ class ScrapePipeline:
                 exc,
             )
 
+        is_cached = info_hash in cached_set
+        magnet_uri = f"magnet:?xt=urn:btih:{info_hash}"
+
         # --- Register in local dedup registry ---
         try:
             await dedup_engine.register_torrent(
@@ -1080,9 +1132,9 @@ class ScrapePipeline:
                 info_hash=info_hash,
                 magnet_uri=magnet_uri,
                 media_item_id=item.id,
-                filename=best.result.title,
-                filesize=best.result.size_bytes,
-                resolution=best.result.resolution,
+                filename=selected_best.result.title,
+                filesize=selected_best.result.size_bytes,
+                resolution=selected_best.result.resolution,
                 cached=is_cached,
             )
         except Exception as exc:
@@ -1104,12 +1156,12 @@ class ScrapePipeline:
             {
                 "info_hash": info_hash,
                 "rd_id": rd_id,
-                "title": best.result.title,
-                "score": best.score,
-                "score_breakdown": best.score_breakdown,
-                "resolution": best.result.resolution,
+                "title": selected_best.result.title,
+                "score": selected_best.score,
+                "score_breakdown": selected_best.score_breakdown,
+                "resolution": selected_best.result.resolution,
                 "cached": is_cached,
-                "size_bytes": best.result.size_bytes,
+                "size_bytes": selected_best.result.size_bytes,
             }
         )
         await self._log_scrape(
@@ -1143,7 +1195,7 @@ class ScrapePipeline:
             item_id=item.id,
             action="added_to_rd",
             message=(
-                f"Torrent added to RD: {best.result.title} "
+                f"Torrent added to RD: {selected_best.result.title} "
                 f"(hash={info_hash}, rd_id={rd_id})"
             ),
             selected_hash=info_hash,
