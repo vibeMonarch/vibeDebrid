@@ -46,6 +46,7 @@ class DiscoverItem(BaseModel):
     queue_status: QueueStatusBadge = QueueStatusBadge.AVAILABLE
     queue_item_id: int | None = None
     imdb_id: str | None = None
+    original_language: str | None = None
 
 
 class TrendingResponse(BaseModel):
@@ -86,6 +87,7 @@ class AddToQueueRequest(BaseModel):
     media_type: str  # "movie" or "tv"
     title: str
     year: int | None = None
+    original_language: str | None = None
 
 
 class AddToQueueResponse(BaseModel):
@@ -182,6 +184,7 @@ async def _enrich_with_queue_status(
                     vote_average=item.vote_average,
                     queue_status=badge,
                     queue_item_id=db_id,
+                    original_language=item.original_language,
                 )
             )
         else:
@@ -196,6 +199,7 @@ async def _enrich_with_queue_status(
                     vote_average=item.vote_average,
                     queue_status=QueueStatusBadge.AVAILABLE,
                     queue_item_id=None,
+                    original_language=item.original_language,
                 )
             )
 
@@ -543,6 +547,7 @@ async def add_to_queue(
         season=item_season,
         episode=item_episode,
         is_season_pack=item_is_season_pack,
+        original_language=body.original_language,
     )
     session.add(item)
     try:

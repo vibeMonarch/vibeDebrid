@@ -39,6 +39,7 @@ class MediaItemResponse(BaseModel):
     next_retry_at: str | None = None
     state_changed_at: str | None = None
     created_at: str | None = None
+    original_language: str | None = None
 
     @classmethod
     def from_orm_item(cls, item: MediaItem) -> "MediaItemResponse":
@@ -58,6 +59,7 @@ class MediaItemResponse(BaseModel):
             next_retry_at=item.next_retry_at.isoformat() if item.next_retry_at else None,
             state_changed_at=item.state_changed_at.isoformat() if item.state_changed_at else None,
             created_at=item.created_at.isoformat() if item.created_at else None,
+            original_language=item.original_language,
         )
 
 
@@ -376,6 +378,77 @@ async def change_state(
         return MediaItemResponse.from_orm_item(item)
     except ItemNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{item_id}/rescrape-original")
+async def rescrape_original_language(
+    item_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Force re-scrape preferring original language.
+
+    Backlills original_language from TMDB if missing, then transitions the
+    item back to WANTED with a flag in metadata_json so the scrape pipeline
+    applies stronger original-language preference during scoring.
+
+    Raises:
+        HTTPException 404: When the item is not found.
+        HTTPException 400: When the item is English-original or has no
+            original_language to apply preference for.
+    """
+    import json as _json
+
+    result = await session.execute(
+        select(MediaItem).where(MediaItem.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Backfill original_language if missing
+    if not item.original_language and item.tmdb_id:
+        try:
+            from src.services.tmdb import tmdb_client as _tmdb_client
+
+            tmdb_id_int = int(item.tmdb_id)
+            if item.media_type == MediaType.MOVIE:
+                _detail = await _tmdb_client.get_movie_details(tmdb_id_int)
+            else:
+                _detail = await _tmdb_client.get_show_details(tmdb_id_int)
+            if _detail is not None and _detail.original_language:
+                item.original_language = _detail.original_language
+        except Exception as exc:
+            logger.warning(
+                "rescrape_original_language: TMDB lookup failed for item id=%d: %s",
+                item_id, exc,
+            )
+
+    if not item.original_language or item.original_language.lower() in ("en", "english"):
+        raise HTTPException(
+            status_code=400,
+            detail="Item is English-original, no language preference to apply",
+        )
+
+    # Store force flag in metadata
+    meta = _json.loads(item.metadata_json) if item.metadata_json else {}
+    meta["force_original_language"] = True
+    item.metadata_json = _json.dumps(meta)
+
+    # Transition back to WANTED for re-scraping
+    await queue_manager.force_transition(session, item_id, QueueState.WANTED)
+    await session.commit()
+
+    logger.info(
+        "rescrape_original_language: item id=%d queued for re-scrape with "
+        "original_language=%r",
+        item_id,
+        item.original_language,
+    )
+
+    return {
+        "status": "ok",
+        "message": f"Re-scraping with original language preference ({item.original_language})",
+    }
 
 
 @router.delete("/{item_id}")

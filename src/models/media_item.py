@@ -59,6 +59,7 @@ class MediaItem(Base):
     source: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column("metadata", Text, nullable=True)
     air_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    original_language: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

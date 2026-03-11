@@ -171,6 +171,38 @@ class ScrapePipeline:
             A PipelineResult describing the outcome.
         """
         # ------------------------------------------------------------------
+        # Step 0 — Backfill original_language from TMDB if missing
+        # Only runs when prefer_original_language is enabled AND TMDB is
+        # configured — avoids unnecessary API calls when the feature is off.
+        # ------------------------------------------------------------------
+        if (
+            item.original_language is None
+            and item.tmdb_id
+            and settings.filters.prefer_original_language
+            and settings.tmdb.enabled
+            and settings.tmdb.api_key
+        ):
+            try:
+                from src.services.tmdb import tmdb_client as _tmdb_client
+
+                tmdb_id_int = int(item.tmdb_id)
+                if item.media_type == MediaType.MOVIE:
+                    _detail = await _tmdb_client.get_movie_details(tmdb_id_int)
+                else:
+                    _detail = await _tmdb_client.get_show_details(tmdb_id_int)
+                if _detail is not None and _detail.original_language:
+                    item.original_language = _detail.original_language
+                    logger.debug(
+                        "scrape_pipeline: backfilled original_language=%r for item id=%d",
+                        item.original_language,
+                        item.id,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "original_language backfill failed for item %d: %s", item.id, exc
+                )
+
+        # ------------------------------------------------------------------
         # Step 1 — Mount check
         # ------------------------------------------------------------------
         mount_result = await self._step_mount_check(session, item)
@@ -262,12 +294,33 @@ class ScrapePipeline:
                 filtered_results_count=0,
             )
 
+        # Resolve original language name for scoring.
+        from src.services.tmdb import iso_to_language_name
+        orig_lang_name = iso_to_language_name(item.original_language) or item.original_language
+
+        # Check for force_original_language flag in metadata and clear it.
+        force_original = False
+        if item.metadata_json:
+            try:
+                _meta = json.loads(item.metadata_json)
+                force_original = bool(_meta.pop("force_original_language", False))
+                if force_original:
+                    item.metadata_json = json.dumps(_meta)
+                    logger.info(
+                        "scrape_pipeline: force_original_language flag detected for "
+                        "item id=%d original_language=%r",
+                        item.id, orig_lang_name,
+                    )
+            except (ValueError, TypeError):
+                pass
+
         # Filter and rank first, then probe RD cache on the top candidates.
         ranked = filter_engine.filter_and_rank(
             combined,  # type: ignore[arg-type]
             profile_name=item.quality_profile,
             cached_hashes=set(),
             prefer_season_packs=bool(item.is_season_pack),
+            original_language=orig_lang_name,
         )
 
         # --- Hash-based dedup: skip cache check if top result already registered ---
@@ -347,7 +400,19 @@ class ScrapePipeline:
                 profile_name=item.quality_profile,
                 cached_hashes=cached_set,
                 prefer_season_packs=bool(item.is_season_pack),
+                original_language=orig_lang_name,
             )
+
+        # When force_original is set, double the original_language score component
+        # to give it stronger weight over quality factors.
+        if force_original and orig_lang_name and ranked:
+            for fr in ranked:
+                ol_score = fr.score_breakdown.get("original_language", 0.0)
+                if ol_score != 0.0:
+                    extra = ol_score  # Double by adding an equal amount
+                    fr.score_breakdown["original_language"] = ol_score + extra
+                    fr.score += extra
+            ranked.sort(key=lambda fr: fr.score, reverse=True)
 
         logger.debug(
             "scrape_pipeline: %d/%d top results cached for item id=%d",
@@ -1313,6 +1378,7 @@ class ScrapePipeline:
                 episode=ep_num,
                 is_season_pack=False,
                 quality_profile=item.quality_profile,
+                original_language=item.original_language,
             )
             session.add(new_item)
             created += 1

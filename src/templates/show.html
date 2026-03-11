@@ -56,7 +56,8 @@
 <script>
   // If we came from discover, navigate to /discover so it auto-restores sessionStorage state
   (function () {
-    var fromDiscover = new URLSearchParams(window.location.search).get('from') === 'discover';
+    var params = new URLSearchParams(window.location.search);
+    var fromDiscover = params.get('from') === 'discover';
     var backLink = document.getElementById('back-link');
     if (fromDiscover) {
       backLink.addEventListener('click', function (e) {
@@ -64,6 +65,8 @@
         window.location.href = '/discover';
       });
     }
+    // Store original_language passed from discover page for threading into add payload
+    window._discoverOriginalLanguage = params.get('original_language') || null;
   }());
 </script>
 
@@ -435,6 +438,7 @@
         seasons: seasons,
         quality_profile: quality_profile,
         subscribe: subscribe,
+        original_language: _showData.original_language || window._discoverOriginalLanguage || null,
       };
 
       const resp = await fetch('/api/show/add', {

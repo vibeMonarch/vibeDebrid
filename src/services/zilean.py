@@ -54,6 +54,13 @@ _SEASON_DASH_EP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Dub / Dual Audio detection — used to tag results with "Dubbed" or "Dual Audio".
+# _DUB_RE matches "DUB" and "DUBBED" but not "DUBLIN" (word boundary prevents it).
+_DUB_RE = re.compile(r"\bDUB(?:BED)?\b", re.IGNORECASE)
+# _DUAL_AUDIO_RE requires "AUDIO" after "DUAL" (with optional separator) to avoid
+# false positives in show titles like "Dual.Survival.S01E01".
+_DUAL_AUDIO_RE = re.compile(r"\bDUAL[\.\s-]?AUDIO\b", re.IGNORECASE)
+
 # Known language tokens that appear in torrent names (mirrors torrentio.py set).
 _LANGUAGE_TOKENS: dict[str, str] = {
     "FRENCH": "French",
@@ -468,6 +475,13 @@ class ZileanClient:
             if lang_name not in seen and _LANGUAGE_ABBREV_RES[abbrev].search(raw_title):
                 found.append(lang_name)
                 seen.add(lang_name)
+        # Dub / Dual Audio detection
+        if _DUB_RE.search(raw_title) and "Dubbed" not in seen:
+            found.append("Dubbed")
+            seen.add("Dubbed")
+        if _DUAL_AUDIO_RE.search(raw_title) and "Dual Audio" not in seen:
+            found.append("Dual Audio")
+            seen.add("Dual Audio")
         return found
 
 

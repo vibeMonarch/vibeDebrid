@@ -31,6 +31,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+ISO_639_1_TO_LANGUAGE: dict[str, str] = {
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "nl": "Dutch",
+    "ru": "Russian",
+}
+
+
+def iso_to_language_name(code: str | None) -> str | None:
+    """Convert ISO 639-1 code to the language name used in torrent parsing."""
+    if code is None:
+        return None
+    return ISO_639_1_TO_LANGUAGE.get(code.lower())
+
+
 class TmdbItem(BaseModel):
     """A single movie or TV show item from TMDB."""
 
@@ -42,6 +64,7 @@ class TmdbItem(BaseModel):
     poster_path: str | None = None
     vote_average: float = 0.0
     imdb_id: str | None = None  # only populated when external IDs are fetched
+    original_language: str | None = None
 
 
 class TmdbExternalIds(BaseModel):
@@ -95,6 +118,7 @@ class TmdbShowDetail(BaseModel):
     genres: list[dict] = []
     next_episode_to_air: TmdbEpisodeAirInfo | None = None
     last_episode_to_air: TmdbEpisodeAirInfo | None = None
+    original_language: str | None = None
 
 
 class TmdbEpisodeInfo(BaseModel):
@@ -196,6 +220,7 @@ class TmdbClient:
         overview: str = raw.get("overview") or ""
         poster_path: str | None = raw.get("poster_path") or None
         vote_average: float = float(raw.get("vote_average") or 0.0)
+        original_language: str | None = raw.get("original_language") or None
 
         return TmdbItem(
             tmdb_id=tmdb_id,
@@ -205,6 +230,7 @@ class TmdbClient:
             overview=overview,
             poster_path=poster_path,
             vote_average=vote_average,
+            original_language=original_language,
         )
 
     def _handle_error_status(self, response: httpx.Response, context: str) -> bool:
@@ -850,6 +876,7 @@ class TmdbClient:
             genres=raw_genres,
             next_episode_to_air=next_episode_to_air,
             last_episode_to_air=last_episode_to_air,
+            original_language=data.get("original_language") or None,
         )
 
         logger.debug(
@@ -953,6 +980,42 @@ class TmdbClient:
 
         logger.debug("tmdb.find_by_imdb_id: no results for imdb_id=%s", imdb_id)
         return None
+
+    async def get_movie_details(self, tmdb_id: int) -> TmdbItem | None:
+        """Fetch basic movie details from TMDB /movie/{id} endpoint.
+
+        Args:
+            tmdb_id: The TMDB numeric identifier for the movie.
+
+        Returns:
+            A TmdbItem with original_language populated, or None on any failure.
+        """
+        if not self._check_configured("get_movie_details"):
+            return None
+
+        try:
+            async with self._build_client() as client:
+                response = await client.get(f"/movie/{tmdb_id}")
+        except httpx.ConnectError as exc:
+            logger.warning("tmdb.get_movie_details: connection error tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+        except httpx.TimeoutException as exc:
+            logger.warning("tmdb.get_movie_details: request timed out tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+        except httpx.RequestError as exc:
+            logger.warning("tmdb.get_movie_details: network error tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+
+        if self._handle_error_status(response, "get_movie_details"):
+            return None
+
+        try:
+            data: dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.error("tmdb.get_movie_details: malformed JSON tmdb_id=%d (%s)", tmdb_id, exc)
+            return None
+
+        return self._parse_item(data, media_type="movie")
 
     async def get_season_details(self, tmdb_id: int, season_number: int) -> TmdbSeasonDetail | None:
         """Fetch detailed season info including episode air dates.

@@ -93,6 +93,9 @@ class FiltersConfig(BaseModel):
     preferred_languages: list[str] = Field(default_factory=list)  # Ordered list, e.g. ["English", "Japanese"]
     required_language: str | None = None  # Legacy fallback; ignored when preferred_languages is set
     allow_multi_audio: bool = True
+    prefer_original_language: bool = False
+    dub_penalty: int = Field(default=20, ge=0, le=50)
+    dual_audio_bonus: int = Field(default=10, ge=0, le=30)
 
 
 class RetryConfig(BaseModel):

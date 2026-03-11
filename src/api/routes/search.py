@@ -102,6 +102,7 @@ class AddRequest(BaseModel):
     episode: int | None = None
     is_season_pack: bool = False
     quality_profile: str | None = None
+    original_language: str | None = None
 
 
 class AddResponse(BaseModel):
@@ -378,6 +379,7 @@ async def add_torrent(
         state_changed_at=datetime.now(UTC),
         quality_profile=body.quality_profile,
         retry_count=0,
+        original_language=body.original_language,
     )
     session.add(item)
     # Flush to obtain item.id before the RD calls so dedup can reference it.

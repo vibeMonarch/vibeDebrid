@@ -95,6 +95,7 @@ class AddSeasonsRequest(BaseModel):
     seasons: list[int]
     quality_profile: str | None = None
     subscribe: bool = False
+    original_language: str | None = None
 
 
 class AddSeasonsResult(BaseModel):
@@ -565,6 +566,7 @@ class ShowManager:
                 is_season_pack=False,
                 quality_profile=request.quality_profile,
                 air_date=air_date_value,
+                original_language=request.original_language,
             )
             session.add(item)
             existing_keys.add(key)
@@ -687,6 +689,7 @@ class ShowManager:
                 is_season_pack=False,
                 quality_profile=request.quality_profile,
                 air_date=air_date_value,
+                original_language=request.original_language,
             )
             session.add(item)
             existing_keys.add(key)
@@ -755,6 +758,10 @@ class ShowManager:
         tvdb_id: int | None = show_detail.tvdb_id if show_detail else None
         if show_detail and show_detail.next_episode_to_air:
             airing_season_num = show_detail.next_episode_to_air.season_number
+
+        # Backfill original_language from TMDB when not provided in request.
+        if request.original_language is None and show_detail is not None and show_detail.original_language:
+            request = request.model_copy(update={"original_language": show_detail.original_language})
 
         # Build existing_keys from DB for duplicate episode checks.
         result = await session.execute(
@@ -835,6 +842,7 @@ class ShowManager:
                         episode=None,
                         is_season_pack=True,
                         quality_profile=request.quality_profile,
+                        original_language=request.original_language,
                     )
                     session.add(item)
                     existing_keys.add(pack_key)
@@ -908,6 +916,7 @@ class ShowManager:
                         episode=None,
                         is_season_pack=True,
                         quality_profile=request.quality_profile,
+                        original_language=request.original_language,
                     )
                     session.add(item)
                     existing_keys.add((season_num, None))
@@ -1199,6 +1208,7 @@ class ShowManager:
                     if (season_num, ep_num) in existing_keys:
                         continue
 
+                    _orig_lang = tmdb_show.original_language if isinstance(tmdb_show.original_language, str) else None
                     item = MediaItem(
                         title=show.title,
                         year=show.year,
@@ -1215,6 +1225,7 @@ class ShowManager:
                         episode=ep_num,
                         is_season_pack=False,
                         quality_profile=show.quality_profile,
+                        original_language=_orig_lang,
                     )
                     session.add(item)
                     new_items += 1
@@ -1243,6 +1254,7 @@ class ShowManager:
                     continue
 
                 # New season we haven't tracked yet — add as season pack
+                _orig_lang = tmdb_show.original_language if isinstance(tmdb_show.original_language, str) else None
                 item = MediaItem(
                     title=show.title,
                     year=show.year,
@@ -1259,6 +1271,7 @@ class ShowManager:
                     episode=None,
                     is_season_pack=True,
                     quality_profile=show.quality_profile,
+                    original_language=_orig_lang,
                 )
                 session.add(item)
                 new_items += 1

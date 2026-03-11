@@ -69,6 +69,13 @@ _SEASON_DASH_EP_RE = re.compile(
 # so that scrape-pipeline queries return all results, not just RD-cached ones.
 _DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")
 
+# Dub / Dual Audio detection — used to tag results with "Dubbed" or "Dual Audio".
+# _DUB_RE matches "DUB" and "DUBBED" but not "DUBLIN" (word boundary prevents it).
+_DUB_RE = re.compile(r"\bDUB(?:BED)?\b", re.IGNORECASE)
+# _DUAL_AUDIO_RE requires "AUDIO" after "DUAL" (with optional separator) to avoid
+# false positives in show titles like "Dual.Survival.S01E01".
+_DUAL_AUDIO_RE = re.compile(r"\bDUAL[\.\s-]?AUDIO\b", re.IGNORECASE)
+
 # Cached-in-RD indicator.  When the Torrentio opts URL includes an RD API key,
 # cached streams are tagged with ⚡ in the ``name`` field (e.g. "⚡ Torrentio\n1080p")
 # or with "[RD+]" / "RD+" in the title/name.  We check both fields.
@@ -666,6 +673,13 @@ class TorrentioClient:
             if lang_name not in seen and _LANGUAGE_ABBREV_RES[abbrev].search(release_name):
                 found.append(lang_name)
                 seen.add(lang_name)
+        # Dub / Dual Audio detection
+        if _DUB_RE.search(release_name) and "Dubbed" not in seen:
+            found.append("Dubbed")
+            seen.add("Dubbed")
+        if _DUAL_AUDIO_RE.search(release_name) and "Dual Audio" not in seen:
+            found.append("Dual Audio")
+            seen.add("Dual Audio")
         return found
 
 

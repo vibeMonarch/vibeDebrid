@@ -149,6 +149,7 @@ class FilterEngine:
         profile_name: str | None = None,
         cached_hashes: set[str] | None = None,
         prefer_season_packs: bool = False,
+        original_language: str | None = None,
     ) -> list[FilteredResult]:
         """Apply Tier 1 hard filters then Tier 2 quality scoring to a result list.
 
@@ -170,6 +171,10 @@ class FilterEngine:
                 pack results also earn a +5 scoring bonus.  Defaults to False
                 so that calls without an explicit value (e.g. tests, search)
                 are unaffected.
+            original_language: ISO 639-1 code or language name of the content's
+                original language (e.g. ``"ja"`` or ``"Japanese"``).  Used to
+                score dubs/subs preference when ``prefer_original_language`` is
+                enabled.  Defaults to None (no original language scoring).
 
         Returns:
             List of FilteredResult objects sorted by score descending.
@@ -200,7 +205,9 @@ class FilterEngine:
                 rejected_count += 1
                 continue
 
-            score, breakdown = self._calculate_score(result, profile, resolved_cached, prefer_season_packs)
+            score, breakdown = self._calculate_score(
+                result, profile, resolved_cached, prefer_season_packs, original_language
+            )
             ranked.append(
                 FilteredResult(
                     result=result,
@@ -238,6 +245,7 @@ class FilterEngine:
         profile_name: str | None = None,
         cached_hashes: set[str] | None = None,
         prefer_season_packs: bool = False,
+        original_language: str | None = None,
     ) -> FilteredResult | None:
         """Return the highest-scored result, or None if all were rejected.
 
@@ -249,6 +257,8 @@ class FilterEngine:
             prefer_season_packs: When True, single-episode results are
                 hard-rejected (Tier 1) and season pack results earn a +5
                 scoring bonus.  Defaults to False.
+            original_language: ISO 639-1 code or language name for original
+                language scoring.  Defaults to None.
 
         Returns:
             The top-ranked FilteredResult, or None when the list is empty or
@@ -259,6 +269,7 @@ class FilterEngine:
             profile_name=profile_name,
             cached_hashes=cached_hashes,
             prefer_season_packs=prefer_season_packs,
+            original_language=original_language,
         )
         return ranked[0] if ranked else None
 
@@ -410,6 +421,7 @@ class FilterEngine:
         profile: QualityProfile,
         cached_hashes: set[str],
         prefer_season_packs: bool = False,
+        original_language: str | None = None,
     ) -> tuple[float, dict[str, float]]:
         """Compute the composite quality score for a result.
 
@@ -424,6 +436,8 @@ class FilterEngine:
             prefer_season_packs: When True, season pack results receive the
                 ``_SEASON_PACK_BONUS`` score increment.  Pass False for
                 single-episode requests to avoid inflating season pack ranks.
+            original_language: ISO 639-1 code or language name of the
+                content's original language.  Used to score dub preference.
 
         Returns:
             A 2-tuple ``(total_score, breakdown)`` where ``breakdown`` maps
@@ -483,6 +497,11 @@ class FilterEngine:
 
         # --- Language preference (max 15 pts, 0 when preferred_languages unset) ---
         breakdown["language"] = self._score_language(result.languages)
+
+        # --- Original language preference (variable pts, 0 when disabled) ---
+        breakdown["original_language"] = self._score_original_language(
+            result.languages, original_language
+        )
 
         total = sum(breakdown.values())
         return total, breakdown
@@ -612,6 +631,53 @@ class FilterEngine:
             return _LANGUAGE_MULTI_BONUS
 
         return best_score
+
+    def _score_original_language(
+        self, languages: list[str], original_language: str | None
+    ) -> float:
+        """Score based on original language preference.
+
+        Only active when ``prefer_original_language`` is True and
+        ``original_language`` is not None and not English.  Penalises dubs
+        and rewards dual-audio or original-language releases.
+
+        Args:
+            languages: Language tags detected from the torrent title.
+            original_language: The content's original language (ISO 639-1
+                code or full language name), or None when unknown.
+
+        Returns:
+            A float score delta (can be negative for dubs).  0.0 when the
+            feature is disabled or original_language is English/None.
+        """
+        if not settings.filters.prefer_original_language:
+            return 0.0
+        if original_language is None or original_language.lower() in ("en", "english"):
+            return 0.0
+
+        score = 0.0
+        effective_langs = {lang.lower() for lang in languages}
+        orig_lower = original_language.lower()
+
+        # Penalise detected dubs
+        if "dubbed" in effective_langs:
+            # Don't penalise if dubbed INTO the original language (edge case)
+            if orig_lower not in effective_langs:
+                score -= settings.filters.dub_penalty
+
+        # Bonus for dual audio
+        if "dual audio" in effective_langs:
+            score += settings.filters.dual_audio_bonus
+
+        # Bonus for original language match
+        if orig_lower in effective_langs:
+            score += 15.0
+        elif not effective_langs - {"dubbed", "dual audio"}:
+            # No language tags at all (assumed English) — moderate penalty
+            # for non-English content whose language is undetected.
+            score -= settings.filters.dub_penalty / 2
+
+        return score
 
     @staticmethod
     def _score_audio(

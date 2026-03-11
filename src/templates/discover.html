@@ -867,6 +867,7 @@
     card.dataset.title = item.title;
     card.dataset.mediaType = item.media_type || '';
     card.dataset.year = String(item.year || '');
+    card.dataset.originalLanguage = item.original_language || '';
 
     // Status badge
     var statusBadge = '';
@@ -925,7 +926,14 @@
         'data-tmdb-id="' + item.tmdb_id + '" ' +
         'data-media-type="' + escAttr(item.media_type) + '" ' +
         'data-title="' + escAttr(item.title) + '" ' +
-        'data-year="' + escAttr(String(item.year || '')) + '">Add to Library</button>';
+        'data-year="' + escAttr(String(item.year || '')) + '" ' +
+        'data-original-language="' + escAttr(item.original_language || '') + '">Add to Library</button>';
+    }
+
+    // Language badge — shown when original_language is non-English and set
+    var langBadge = '';
+    if (item.original_language && item.original_language !== 'en') {
+      langBadge = '<span style="margin-left:auto;font-size:0.6rem;font-weight:700;letter-spacing:0.04em;padding:0.1rem 0.35rem;border-radius:0.25rem;background:rgba(99,102,241,0.25);color:#a5b4fc;border:1px solid rgba(99,102,241,0.4);text-transform:uppercase;">' + escHtml(item.original_language.toUpperCase()) + '</span>';
     }
 
     card.innerHTML =
@@ -942,6 +950,7 @@
           '<span>·</span>' +
           '<svg class="star-icon" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>' +
           '<span>' + rating + '</span>' +
+          langBadge +
         '</div>' +
         addBtn +
       '</div>';
@@ -995,11 +1004,14 @@
     var tmdbId = btn.dataset.tmdbId;
     var mediaType = btn.dataset.mediaType;
     var title = btn.dataset.title;
+    var originalLanguage = btn.dataset.originalLanguage || btn.closest('.poster-card')?.dataset.originalLanguage || '';
 
     // TV shows go to the show detail page
     if (mediaType === 'tv') {
       saveDiscoverState();
-      window.location.href = '/show/' + encodeURIComponent(tmdbId) + '?from=discover';
+      var tvParams = new URLSearchParams({ from: 'discover' });
+      if (originalLanguage) tvParams.set('original_language', originalLanguage);
+      window.location.href = '/show/' + encodeURIComponent(tmdbId) + '?' + tvParams.toString();
       return;
     }
 
@@ -1016,6 +1028,7 @@
       if (data.imdb_id) params.set('imdb_id', data.imdb_id);
       params.set('media_type', 'movie');
       params.set('from', 'discover');
+      if (originalLanguage) params.set('original_language', originalLanguage);
 
       saveDiscoverState();
       window.location.href = '/search?' + params.toString();

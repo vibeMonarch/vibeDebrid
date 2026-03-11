@@ -88,6 +88,14 @@ async def _migrate_add_columns() -> None:
             if "duplicate column" not in str(exc).lower():
                 logger.warning("Migration tvdb_id: %s", exc)
 
+        # original_language (added for Prefer Original Language feature)
+        try:
+            await conn.execute(text("ALTER TABLE media_items ADD COLUMN original_language VARCHAR"))
+            logger.info("Migration: added original_language column")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.warning("Migration original_language: %s", exc)
+
 
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""

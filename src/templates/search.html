@@ -837,18 +837,19 @@
     const releaseTitle = btn.dataset.title || null;
 
     const payload = {
-      magnet_or_hash:  infoHash,
-      title:           _lastSearchPayload.query,
-      release_title:   releaseTitle,
-      imdb_id:         _lastSearchPayload.imdb_id || null,
-      tmdb_id:         _lastSearchPayload.tmdb_id || null,
-      tvdb_id:         _lastSearchPayload.tvdb_id || null,
-      media_type:      _lastSearchPayload.media_type,
-      year:            _lastSearchPayload.year || null,
-      season:          season,
-      episode:         episode,
-      is_season_pack:  isSeasonPack,
-      quality_profile: _lastSearchPayload.quality_profile,
+      magnet_or_hash:    infoHash,
+      title:             _lastSearchPayload.query,
+      release_title:     releaseTitle,
+      imdb_id:           _lastSearchPayload.imdb_id || null,
+      tmdb_id:           _lastSearchPayload.tmdb_id || null,
+      tvdb_id:           _lastSearchPayload.tvdb_id || null,
+      media_type:        _lastSearchPayload.media_type,
+      year:              _lastSearchPayload.year || null,
+      season:            season,
+      episode:           episode,
+      is_season_pack:    isSeasonPack,
+      quality_profile:   _lastSearchPayload.quality_profile,
+      original_language: window._discoverOriginalLanguage || null,
     };
 
     handleAdd(btn, infoHash, payload);
@@ -1054,6 +1055,9 @@
 
   // ─── Auto-fill from URL params (discover → search flow) ────────────────────
 
+  // Stores original_language passed in from discover page for threading into add payload
+  window._discoverOriginalLanguage = null;
+
   (function() {
     var params = new URLSearchParams(window.location.search);
     var query = params.get('query');
@@ -1074,6 +1078,10 @@
     // Store return destination
     var fromPage = params.get('from');
     if (fromPage) window._searchReturnTo = fromPage;
+
+    // Store original_language for threading into add payload
+    var origLang = params.get('original_language');
+    if (origLang) window._discoverOriginalLanguage = origLang;
 
     // Auto-submit after a short delay (let DOM settle)
     setTimeout(function() {

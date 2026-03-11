@@ -479,6 +479,32 @@
                    class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
             <p class="text-xs text-vd-muted mt-1">Comma-separated, ordered by preference. Results in other languages are rejected. Leave empty to allow all. Available: English, French, German, Spanish, Portuguese, Italian, Dutch, Russian, Japanese, Korean, Chinese.</p>
           </div>
+          <div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="filters-prefer-original-language" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow"></div>
+              </div>
+              <span class="text-sm text-gray-300">Prefer original language for non-English content</span>
+            </label>
+            <p class="text-xs text-vd-muted mt-1">Automatically prefers original-language releases over dubs for anime and foreign content. Uses TMDB metadata — no manual per-show configuration needed.</p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="filters-dub-penalty">Dub Penalty (score points)</label>
+              <input type="number" id="filters-dub-penalty" min="0" max="50"
+                     placeholder="20"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Score penalty for dubbed releases when original language is preferred. 0–50.</p>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="filters-dual-audio-bonus">Dual Audio Bonus (score points)</label>
+              <input type="number" id="filters-dual-audio-bonus" min="0" max="30"
+                     placeholder="10"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Score bonus for dual-audio releases (original + dub). 0–30.</p>
+            </div>
+          </div>
           <div class="pt-2">
             <button type="button" onclick="saveSection('filters')"
                     class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
@@ -962,6 +988,9 @@
     setField('filters-blocked-keywords',    (filters.blocked_keywords        || []).join(', '));
     setField('filters-blocked-groups',      (filters.blocked_release_groups  || []).join(', '));
     setField('filters-preferred-languages', (filters.preferred_languages      || []).join(', '));
+    setToggle('filters-prefer-original-language', filters.prefer_original_language === true);
+    setField('filters-dub-penalty',         filters.dub_penalty         != null ? filters.dub_penalty         : 20);
+    setField('filters-dual-audio-bonus',    filters.dual_audio_bonus    != null ? filters.dual_audio_bonus    : 10);
 
     // Retry
     const retry = s.retry || {};
@@ -1103,11 +1132,16 @@
           .split(',').map(s => s.trim()).filter(Boolean);
         const preferredLangs = document.getElementById('filters-preferred-languages').value
           .split(',').map(s => s.trim()).filter(Boolean);
+        const dubPenalty = parseInt(document.getElementById('filters-dub-penalty').value);
+        const dualAudioBonus = parseInt(document.getElementById('filters-dual-audio-bonus').value);
         return {
           filters: {
-            blocked_keywords:       keywords,
-            blocked_release_groups: groups,
-            preferred_languages:    preferredLangs,
+            blocked_keywords:          keywords,
+            blocked_release_groups:    groups,
+            preferred_languages:       preferredLangs,
+            prefer_original_language:  getToggle('filters-prefer-original-language'),
+            dub_penalty:               isNaN(dubPenalty)      ? 20 : Math.min(50, Math.max(0, dubPenalty)),
+            dual_audio_bonus:          isNaN(dualAudioBonus)  ? 10 : Math.min(30, Math.max(0, dualAudioBonus)),
           }
         };
       }

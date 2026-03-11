@@ -201,6 +201,30 @@ async def sync_watchlist(session: AsyncSession) -> dict[str, int]:
             item_is_season_pack = False
             db_media_type = MediaType.MOVIE
 
+        # --- Resolve original_language from TMDB ---
+        original_language: str | None = None
+        if tmdb_id:
+            try:
+                tmdb_int = int(tmdb_id)
+                if wl_item.media_type == "show":
+                    show_detail = await tmdb_client.get_show_details(tmdb_int)
+                    if show_detail is not None:
+                        original_language = show_detail.original_language
+                else:
+                    movie_detail = await tmdb_client.get_movie_details(tmdb_int)
+                    if movie_detail is not None:
+                        original_language = movie_detail.original_language
+            except (ValueError, TypeError):
+                pass
+            except Exception as exc:
+                logger.warning(
+                    "plex_watchlist.sync: could not fetch original_language for %r "
+                    "tmdb_id=%s (%s)",
+                    wl_item.title,
+                    tmdb_id,
+                    exc,
+                )
+
         item = MediaItem(
             title=wl_item.title,
             year=wl_item.year,
@@ -215,6 +239,7 @@ async def sync_watchlist(session: AsyncSession) -> dict[str, int]:
             season=item_season,
             episode=item_episode,
             is_season_pack=item_is_season_pack,
+            original_language=original_language,
         )
         try:
             async with session.begin_nested():
