@@ -48,6 +48,7 @@ tests/                 → pytest tests, one file per core module
 4. **Host paths only.** All symlinks use absolute host filesystem paths. Never use container-internal paths.
 5. **Scraper fallback chain.** Episode query → Season query → Show query. Never assume 0 results = doesn't exist.
 6. **Exponential backoff.** Retry schedule: 30min, 1hr, 2hr, 6hr, 12hr, 24hr, then daily, then DORMANT.
+7. **Queue processor stages are sequential.** `process_queue()` wakes SLEEPING→SCRAPING, then Stage 1 must process both WANTED and SCRAPING items. Never use `force_transition(WANTED)` for recovery — it resets retry_count and breaks DORMANT escalation.
 
 ## Working Patterns
 

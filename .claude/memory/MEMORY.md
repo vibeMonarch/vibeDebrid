@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1745 tests, all passing (as of 2026-03-12)
+- 1767 tests, all passing (as of 2026-03-12)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -35,14 +35,19 @@
 - [Issue #29 complete](rd-cleanup.md): mount path fallback + deletion safety hardening — 2026-03-12
 - [Manual add for shows + season pack CHECKING fixes](manual-add-shows.md) — 2026-03-12
 - [Symlink Health Check tool](symlink-health.md) — 2026-03-12
+- [Issue #30](reverse-containment.md): bidirectional mount scanner lookup — 2026-03-12
+- Issue #10: DB indexes on foreign keys + BigInteger filesize — 2026-03-12
+- Issue #9: session.rollback() → savepoints in scrape_pipeline + migration — 2026-03-12
 
 ## Remaining / Future Work
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
-- 2 unresolved IMDB IDs: tt1088540 (Bookworm), tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
+- 1 unresolved IMDB ID: tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
+  - tt1088540 was a truncated tt10885406 (Ascendance of a Bookworm) — resolved
 - Docker (Step 3): Dockerfile + docker-compose.yml
 
 ## Remaining Review Findings (not yet fixed)
-- `scrape_pipeline.py:868`: `session.rollback()` mid-pipeline can corrupt ORM state
+- ~~`scrape_pipeline.py:868`: `session.rollback()` mid-pipeline can corrupt ORM state~~ — fixed (issue #9)
+- `migration.py` Steps 2-3 (Remove duplicates, Move): same class of bug — bare `except Exception` without savepoints
 - `settings.py:51`: unvalidated `dict[str,Any]` body allows arbitrary key injection
 - `search.py:430-441`: direct `item.state =` bypasses queue_manager (tech debt)
 - Services: broad `except Exception` on JSON parsing — should be `except ValueError`
@@ -95,9 +100,11 @@
 
 ## Fuzzy Directory Match + Path-Prefix Fallback — 2026-03-07
 - `_is_word_subsequence()` for fuzzy mount directory matching
-- `lookup()`: exact match → SQL LIKE + Python verification (2+ words minimum)
+- `lookup()`: 3-tier strategy: exact → forward word-subsequence → reverse containment (issue #30)
+- Reverse containment (tier 3): `func.instr(literal(normalized), parsed_title) > 0` with 3-word min guard
 - `lookup_by_path_prefix()`: WHERE filepath LIKE '{prefix}/%' with escape
 - `ScanDirectoryResult(files_indexed, matched_dir_path)` for CHECKING fallback chain
+- `symlink_health._find_mount_match()`: same bidirectional lookup (phase 1 LIKE + phase 2 reverse)
 
 ## SSE Feature Notes
 - Event bus: module singleton, `put_nowait()`, maxsize=64 per client
