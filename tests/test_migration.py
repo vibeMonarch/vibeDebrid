@@ -1174,6 +1174,79 @@ class TestExecuteMigration:
         assert result.duplicates_removed == 0
         assert result.errors == []
 
+    async def test_earlier_imports_survive_later_failure(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Items imported before a failure remain in the DB after that failure.
+
+        Before the savepoint fix, session.rollback() in the except-block erased
+        all previously-imported MediaItem rows.  With begin_nested() only the
+        failing item's savepoint is rolled back; earlier items are preserved.
+        """
+        movies_dir = tmp_path / "movies"
+        shows_dir = tmp_path / "shows"
+        movies_dir.mkdir()
+        shows_dir.mkdir()
+
+        def _make_fi(title: str) -> FoundItem:
+            return FoundItem(
+                title=title,
+                year=2024,
+                media_type="movie",
+                season=None,
+                episode=None,
+                imdb_id=None,
+                source_path=None,
+                target_path=str(movies_dir / f"{title} (2024)" / f"{title}.mkv"),
+                is_symlink=False,
+                resolution=None,
+            )
+
+        preview = MigrationPreview(
+            found_items=[_make_fi("Alpha"), _make_fi("Beta"), _make_fi("Gamma")],
+            duplicates=[],
+            to_move=[],
+            errors=[],
+            summary={},
+        )
+
+        # Patch session.flush to raise on the 3rd call (Gamma's MediaItem flush).
+        original_flush = session.flush
+        call_count = 0
+
+        async def _flaky_flush(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                raise OSError("disk full")
+            return await original_flush(*args, **kwargs)
+
+        session.flush = _flaky_flush  # type: ignore[method-assign]
+
+        with patch("src.core.migration.CONFIG_FILE") as mock_cfg:
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(movies_dir), str(shows_dir)
+                )
+
+        assert result.imported == 2, (
+            f"Expected exactly 2 imports (Alpha + Beta), got {result.imported}"
+        )
+        assert len(result.errors) == 1, (
+            f"Expected exactly 1 error (Gamma), got {len(result.errors)}"
+        )
+
+        from sqlalchemy import select as sa_select
+
+        rows = (await session.execute(sa_select(MediaItem))).scalars().all()
+        titles = {row.title for row in rows}
+        assert "Alpha" in titles, f"Alpha was wiped from DB. Present titles: {titles}"
+        assert "Beta" in titles, f"Beta was wiped from DB. Present titles: {titles}"
+        assert "Gamma" not in titles, f"Gamma should not be in DB. Present titles: {titles}"
+
     async def test_permission_error_during_import_does_not_crash(
         self, session: AsyncSession, tmp_path: Path
     ) -> None:

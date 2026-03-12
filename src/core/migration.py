@@ -784,18 +784,19 @@ async def execute_migration(
                 added_at=now,
                 state_changed_at=now,
             )
-            session.add(new_item)
-            await session.flush()  # Obtain new_item.id before creating Symlink.
+            async with session.begin_nested():
+                session.add(new_item)
+                await session.flush()  # Obtain new_item.id before creating Symlink.
 
-            if fi.is_symlink and fi.source_path:
-                symlink = Symlink(
-                    media_item_id=new_item.id,
-                    source_path=fi.source_path,
-                    target_path=fi.target_path,
-                    valid=True,
-                )
-                session.add(symlink)
-                await session.flush()
+                if fi.is_symlink and fi.source_path:
+                    symlink = Symlink(
+                        media_item_id=new_item.id,
+                        source_path=fi.source_path,
+                        target_path=fi.target_path,
+                        valid=True,
+                    )
+                    session.add(symlink)
+                    await session.flush()
 
             result.imported += 1
             logger.debug(
@@ -807,9 +808,8 @@ async def execute_migration(
         except Exception as exc:
             msg = f"Failed to import {fi.target_path!r}: {exc}"
             logger.warning("execute_migration: %s", msg)
-            # Roll back any partial state so the session remains usable for
-            # subsequent iterations.
-            await session.rollback()
+            # Savepoint rolled back automatically; outer transaction and all
+            # previously-imported items are preserved.
             result.errors.append(msg)
 
     # -----------------------------------------------------------------------

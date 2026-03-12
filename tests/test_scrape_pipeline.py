@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.media_item import MediaItem, MediaType, QueueState
@@ -1157,6 +1158,50 @@ class TestErrorHandling:
 
         assert result is not None
         assert isinstance(result, PipelineResult)
+
+
+# ---------------------------------------------------------------------------
+# Savepoint regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestSavepointRegressions:
+    """Savepoint behaviour: partial failures must not wipe earlier DB writes."""
+
+    async def test_scrape_logs_survive_register_torrent_failure(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """ScrapeLog rows written before register_torrent must survive its failure.
+
+        Before the savepoint fix, session.rollback() in the register_torrent
+        except-block erased all ScrapeLog entries written during the same
+        pipeline run.  With begin_nested() only the savepoint is rolled back;
+        the outer transaction (and all ScrapeLog flushes) is preserved.
+        """
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        torrentio_result = _make_torrentio_result()
+        filtered = _make_filtered_result(torrentio_result)
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            m.dedup_register.side_effect = IntegrityError(
+                "UNIQUE constraint failed: rd_torrents.info_hash",
+                params=None,
+                orig=Exception("UNIQUE constraint failed"),
+            )
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+            await session.flush()
+
+        result = await session.execute(
+            select(ScrapeLog).where(ScrapeLog.media_item_id == wanted_item.id)
+        )
+        logs = result.scalars().all()
+        assert len(logs) >= 1, (
+            "ScrapeLog entries were wiped — savepoint did not preserve them. "
+            f"Expected >= 1, got {len(logs)}"
+        )
 
 
 # ---------------------------------------------------------------------------

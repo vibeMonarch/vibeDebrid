@@ -1126,17 +1126,18 @@ class ScrapePipeline:
 
         # --- Register in local dedup registry ---
         try:
-            await dedup_engine.register_torrent(
-                session,
-                rd_id=rd_id,
-                info_hash=info_hash,
-                magnet_uri=magnet_uri,
-                media_item_id=item.id,
-                filename=selected_best.result.title,
-                filesize=selected_best.result.size_bytes,
-                resolution=selected_best.result.resolution,
-                cached=is_cached,
-            )
+            async with session.begin_nested():
+                await dedup_engine.register_torrent(
+                    session,
+                    rd_id=rd_id,
+                    info_hash=info_hash,
+                    magnet_uri=magnet_uri,
+                    media_item_id=item.id,
+                    filename=selected_best.result.title,
+                    filesize=selected_best.result.size_bytes,
+                    resolution=selected_best.result.resolution,
+                    cached=is_cached,
+                )
         except Exception as exc:
             logger.error(
                 "scrape_pipeline: register_torrent failed for item id=%d hash=%s: %s",
@@ -1144,9 +1145,8 @@ class ScrapePipeline:
                 info_hash,
                 exc,
             )
-            # Rollback the failed flush so the session is usable for subsequent ops.
-            # The torrent is already in RD so we still transition to ADDING.
-            await session.rollback()
+            # Savepoint rolled back automatically; outer transaction and all
+            # previously-flushed ScrapeLog entries are preserved.
 
         # --- Transition to ADDING ---
         await queue_manager.transition(session, item.id, QueueState.ADDING)
