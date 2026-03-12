@@ -23,7 +23,7 @@ import os
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, literal, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -187,34 +187,53 @@ async def _find_mount_match(
     Returns:
         The filepath of the first match, or ``None`` when nothing is found.
     """
-    from src.core.mount_scanner import _normalize_title  # noqa: PLC0415
+    from src.core.mount_scanner import _normalize_title, _is_word_subsequence  # noqa: PLC0415
 
     normalized = _normalize_title(title)
     like_pattern = f"%{normalized}%"
 
-    if media_type.upper() == "SHOW":
-        stmt = (
-            select(MountIndex.filepath)
-            .where(MountIndex.parsed_title.ilike(like_pattern))
-            .order_by(MountIndex.last_seen_at.desc())
-        )
-        if season is not None:
-            stmt = stmt.where(MountIndex.parsed_season == season)
-        if episode is not None:
-            stmt = stmt.where(MountIndex.parsed_episode == episode)
-    else:
-        # Movie
-        stmt = (
-            select(MountIndex.filepath)
-            .where(MountIndex.parsed_title.ilike(like_pattern))
-            .order_by(MountIndex.last_seen_at.desc())
-        )
-        if year is not None:
-            stmt = stmt.where(MountIndex.parsed_year == year)
+    def _apply_season_year_filters(stmt):
+        if media_type.upper() == "SHOW":
+            if season is not None:
+                stmt = stmt.where(MountIndex.parsed_season == season)
+            if episode is not None:
+                stmt = stmt.where(MountIndex.parsed_episode == episode)
+        else:
+            if year is not None:
+                stmt = stmt.where(MountIndex.parsed_year == year)
+        return stmt.order_by(MountIndex.last_seen_at.desc())
 
+    # Phase 1: forward LIKE — parsed_title contains the normalized search string.
+    stmt = _apply_season_year_filters(
+        select(MountIndex.filepath).where(MountIndex.parsed_title.ilike(like_pattern))
+    )
     result = await session.execute(stmt.limit(1))
     row = result.scalar_one_or_none()
-    return row
+    if row is not None:
+        return row
+
+    # Phase 2: reverse containment — the search title contains parsed_title as a
+    # substring.  Handles the case where the TMDB title is longer than the torrent's
+    # parsed_title (e.g. TMDB "Attack on Titan The Final Season" vs parsed "attack
+    # on titan").  Uses instr() to stay in pure SQLAlchemy (no raw SQL text).
+    # Require 3+ words in parsed_title to avoid overly broad matches.
+    search_words = normalized.split()
+    stmt = _apply_season_year_filters(
+        select(MountIndex.filepath, MountIndex.parsed_title)
+        .where(MountIndex.parsed_title.is_not(None))
+        .where(func.instr(literal(normalized), MountIndex.parsed_title) > 0)
+        .limit(50)
+    )
+    result = await session.execute(stmt)
+    rows = result.fetchall()
+    for filepath, parsed_title in rows:
+        db_words = (parsed_title or "").split()
+        if len(db_words) < 3:
+            continue
+        if _is_word_subsequence(db_words, search_words):
+            return str(filepath)
+
+    return None
 
 
 async def _remove_symlinks_for_item(

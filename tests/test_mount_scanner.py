@@ -740,6 +740,152 @@ class TestLookup:
         results = await scanner.lookup(session, "lost", episode=1)
         assert len(results) == 1
 
+    # -----------------------------------------------------------------------
+    # Reverse containment (Tier 3) tests — GitHub issue #30
+    # -----------------------------------------------------------------------
+
+    async def test_lookup_reverse_containment_long_search_title(
+        self, session: AsyncSession
+    ) -> None:
+        """Motivating case: short DB parsed_title (3 words) is contained in long TMDB title.
+
+        DB has "honzuki no gekokujou" (3 words); searching for the full TMDB title
+        "Honzuki no Gekokujou Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen"
+        should return the entry via reverse containment.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/honzuki/honzuki.no.gekokujou.s01e01.mkv",
+            filename="honzuki.no.gekokujou.s01e01.mkv",
+            parsed_title="honzuki no gekokujou",
+            parsed_season=1,
+            parsed_episode=1,
+        )
+        scanner = MountScanner()
+        full_tmdb_title = (
+            "Honzuki no Gekokujou Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen"
+        )
+        results = await scanner.lookup(session, full_tmdb_title, season=1, episode=1)
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/honzuki/honzuki.no.gekokujou.s01e01.mkv"
+
+    async def test_lookup_reverse_containment_requires_3_words(
+        self, session: AsyncSession
+    ) -> None:
+        """2-word DB parsed_title must NOT match via reverse containment (3-word minimum guard)."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/dark.knight.mkv",
+            parsed_title="dark knight",  # only 2 words — below the guard threshold
+        )
+        scanner = MountScanner()
+        # "dark knight" is contained in the search title, but 2 words < 3-word minimum.
+        results = await scanner.lookup(session, "The Dark Knight Rises 2012")
+        assert len(results) == 0
+
+    async def test_lookup_reverse_containment_with_season_episode(
+        self, session: AsyncSession
+    ) -> None:
+        """Reverse containment respects season + episode filters.
+
+        Correct episode number → match; wrong episode number → no match.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/anime/episode-06.mkv",
+            parsed_title="honzuki no gekokujou",
+            parsed_season=1,
+            parsed_episode=6,
+        )
+        scanner = MountScanner()
+        long_title = (
+            "Honzuki no Gekokujou Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen"
+        )
+        # Correct season + episode → match
+        match = await scanner.lookup(session, long_title, season=1, episode=6)
+        assert len(match) == 1
+        assert match[0].parsed_episode == 6
+
+        # Wrong episode → no match
+        no_match = await scanner.lookup(session, long_title, season=1, episode=7)
+        assert len(no_match) == 0
+
+    async def test_lookup_reverse_containment_no_false_positive_word_order(
+        self, session: AsyncSession
+    ) -> None:
+        """Word order matters: reverse containment uses word-subsequence verification.
+
+        DB has both "dragon ball super" and "super dragon ball".
+        Searching for "dragon ball super heroes united" should match the first
+        (correct word order) but not the second (words appear in wrong order).
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/dragon.ball.super.mkv",
+            parsed_title="dragon ball super",
+        )
+        await _insert_entry(
+            session,
+            filepath="/mnt/super.dragon.ball.mkv",
+            parsed_title="super dragon ball",
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup(session, "dragon ball super heroes united")
+        filepaths = [r.filepath for r in results]
+        assert "/mnt/dragon.ball.super.mkv" in filepaths
+        assert "/mnt/super.dragon.ball.mkv" not in filepaths
+
+    async def test_lookup_reverse_containment_skipped_when_exact_matches(
+        self, session: AsyncSession
+    ) -> None:
+        """When an exact match exists, it is returned directly without reaching Tier 3."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/exact.mkv",
+            parsed_title="honzuki no gekokujou shisho",
+        )
+        # Also add an entry that would only match via reverse containment.
+        await _insert_entry(
+            session,
+            filepath="/mnt/short.mkv",
+            parsed_title="honzuki no gekokujou",
+        )
+        scanner = MountScanner()
+        # Exact title → should return only the exact match, not the reverse match.
+        results = await scanner.lookup(session, "Honzuki no Gekokujou Shisho")
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/exact.mkv"
+
+    async def test_lookup_reverse_containment_null_parsed_title(
+        self, session: AsyncSession
+    ) -> None:
+        """A NULL parsed_title in the DB should not cause a crash and should not match."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/null.title.mkv",
+            parsed_title=None,  # NULL
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup(
+            session,
+            "Honzuki no Gekokujou Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen",
+        )
+        assert results == []
+
+    async def test_lookup_reverse_containment_three_word_boundary(
+        self, session: AsyncSession
+    ) -> None:
+        """Exactly 3 words meets the minimum threshold and should match via reverse containment."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/abc.def.ghi.mkv",
+            parsed_title="abc def ghi",  # exactly 3 words — boundary case
+        )
+        scanner = MountScanner()
+        results = await scanner.lookup(session, "abc def ghi jkl mno")
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/abc.def.ghi.mkv"
+
 
 # ---------------------------------------------------------------------------
 # Group 5: lookup_by_filepath

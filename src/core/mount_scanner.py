@@ -29,7 +29,7 @@ from typing import Any, NamedTuple
 
 import PTN
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -363,11 +363,20 @@ class MountScanner:
     ) -> list[MountIndex]:
         """Query the mount index for files matching the given title and episode info.
 
-        First tries an exact match on ``parsed_title``.  If no results are found,
-        falls back to a word-subsequence search: all words from the query title
-        must appear in the ``parsed_title`` in order (via SQL LIKE).  This handles
-        cases where the queue title omits tokens present in the torrent filename
-        (e.g. "Terminator Judgement Day" vs "Terminator 2 Judgement Day").
+        Uses a three-tier lookup strategy:
+
+        1. **Exact match** on ``parsed_title`` (fast path).
+        2. **Forward word-subsequence**: all query words must appear in
+           ``parsed_title`` in order (via SQL LIKE + Python verification).
+           Handles cases where the queue title omits tokens in the torrent
+           filename (e.g. "Terminator Judgement Day" vs "Terminator 2 Judgement
+           Day").
+        3. **Reverse containment**: ``parsed_title`` is a substring of the
+           search title, checked via SQLite ``instr()``.  Handles cases where
+           the TMDB title is longer than the torrent's parsed_title (e.g. TMDB
+           "Attack on Titan The Final Season" vs indexed "attack on titan").
+           Only DB titles with 3+ words are accepted to prevent over-broad
+           matches from short titles like "it" or "alien".
 
         Args:
             session: Active async SQLAlchemy session.
@@ -419,6 +428,37 @@ class MountScanner:
                 logger.info(
                     "lookup: exact match failed for %r, word-subsequence found %d result(s)",
                     title, len(verified),
+                )
+            return verified
+
+        # Tier 3: reverse containment — the DB's parsed_title is a substring of the
+        # search title.  This handles cases where the TMDB title is longer than the
+        # torrent's parsed_title (e.g. TMDB "Kimi no Na wa Your Name" vs parsed
+        # "your name").  Uses SQLite instr() so the match is pure SQL without raw text.
+        # Require 3+ words in the DB parsed_title to avoid broad matches from short
+        # tokens like "it" or "alien".
+        stmt = (
+            select(MountIndex)
+            .where(MountIndex.parsed_title.is_not(None))
+            .where(func.instr(literal(normalized), MountIndex.parsed_title) > 0)
+            .limit(50)
+        )
+        result = await session.execute(_apply_filters(stmt))
+        matches = list(result.scalars().all())
+        if matches:
+            verified = []
+            for m in matches:
+                db_words = (m.parsed_title or "").split()
+                if len(db_words) < 3:
+                    continue
+                # Confirm every DB word appears in the search title in order.
+                if _is_word_subsequence(db_words, words):
+                    verified.append(m)
+            if verified:
+                logger.info(
+                    "lookup: exact+subsequence failed for %r, reverse containment found %d result(s)",
+                    title,
+                    len(verified),
                 )
             return verified
 

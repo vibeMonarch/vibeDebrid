@@ -623,6 +623,58 @@ class TestFindMountMatch:
 
         assert result is None
 
+    async def test_find_mount_match_reverse_containment(self, session: AsyncSession):
+        """Long TMDB title matches short DB parsed_title (3+ words) via reverse containment.
+
+        DB has "honzuki no gekokujou" indexed; searching with the full TMDB title should
+        resolve to that filepath through phase 2 (reverse containment) in _find_mount_match.
+        """
+        _make_mount_index(
+            session,
+            filepath="/mnt/zurg/__all__/Honzuki/S01E01.mkv",
+            filename="S01E01.mkv",
+            parsed_title="honzuki no gekokujou",
+            parsed_season=1,
+            parsed_episode=1,
+        )
+        await session.flush()
+
+        long_title = (
+            "Honzuki no Gekokujou Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen"
+        )
+        result = await _find_mount_match(
+            session,
+            title=long_title,
+            media_type="show",
+            season=1,
+            episode=1,
+            year=None,
+        )
+
+        assert result == "/mnt/zurg/__all__/Honzuki/S01E01.mkv"
+
+    async def test_find_mount_match_reverse_containment_guard(self, session: AsyncSession):
+        """2-word DB parsed_title does NOT match via reverse containment (3-word minimum guard)."""
+        _make_mount_index(
+            session,
+            filepath="/mnt/zurg/__all__/Dark.Knight.mkv",
+            filename="Dark.Knight.mkv",
+            parsed_title="dark knight",  # only 2 words — below the guard threshold
+            parsed_year=2008,
+        )
+        await session.flush()
+
+        result = await _find_mount_match(
+            session,
+            title="The Dark Knight Rises",
+            media_type="movie",
+            season=None,
+            episode=None,
+            year=None,  # no year filter so only word-count guard blocks it
+        )
+
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # _remove_symlinks_for_item unit tests
