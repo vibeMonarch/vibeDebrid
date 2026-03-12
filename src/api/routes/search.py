@@ -91,7 +91,7 @@ class AddRequest(BaseModel):
     """Request body for POST /api/add."""
 
     magnet_or_hash: str
-    title: str
+    title: str | None = None
     release_title: str | None = None
     imdb_id: str | None = None
     tmdb_id: int | None = None
@@ -369,7 +369,7 @@ async def add_torrent(
         imdb_id=body.imdb_id,
         tmdb_id=str(body.tmdb_id) if body.tmdb_id is not None else None,
         tvdb_id=body.tvdb_id,
-        title=body.title,
+        title=body.title or "Unknown",
         year=body.year,
         media_type=media_type,
         season=body.season,
@@ -421,7 +421,7 @@ async def add_torrent(
                 info_hash=info_hash,
                 magnet_uri=magnet_uri,
                 media_item_id=item.id,
-                filename=body.release_title or body.title,
+                filename=body.release_title or body.title or "Unknown",
                 filesize=None,
                 resolution=None,
                 cached=None,

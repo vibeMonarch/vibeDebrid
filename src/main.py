@@ -22,7 +22,7 @@ from src.core.queue_manager import queue_manager
 from src.core.scrape_pipeline import scrape_pipeline
 from src.core.mount_scanner import mount_scanner
 from src.core.symlink_manager import symlink_manager
-from src.models.media_item import MediaItem, QueueState
+from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.real_debrid import rd_client, RealDebridError
 
@@ -415,6 +415,8 @@ async def _job_queue_processor() -> None:
                             # Absolute episode fallback: complete collections with flat structure
                             # (no season markers in filenames). Use TMDB episode counts to
                             # calculate which absolute episodes belong to the target season.
+                            # Tried BEFORE the relaxed season=None query so TMDB-guided
+                            # filtering gets first shot for multi-season torrents.
                             if not matches and scan_result.matched_dir_path and item.tmdb_id and item.season is not None:
                                 try:
                                     all_files = await mount_scanner.lookup_by_path_prefix(
@@ -452,6 +454,38 @@ async def _job_queue_processor() -> None:
                                         "CHECKING season pack id=%d: absolute episode fallback failed: %s",
                                         item.id, exc,
                                     )
+                            # Relax season filter: files may lack season markers
+                            # (e.g. "28. Episode Title.mp4" with no S02 prefix).
+                            # The path prefix already constrains to the correct
+                            # torrent directory, so dropping season is safe.
+                            if not matches and scan_result.matched_dir_path:
+                                matches = await mount_scanner.lookup_by_path_prefix(
+                                    session,
+                                    scan_result.matched_dir_path,
+                                    season=None,
+                                    episode=None,
+                                )
+                    # Auto-correct: season packs must be shows
+                    if matches and item.media_type == MediaType.MOVIE:
+                        logger.info(
+                            "CHECKING season pack id=%d: correcting media_type movie → show",
+                            item.id,
+                        )
+                        item.media_type = MediaType.SHOW
+
+                    # Filter out sample files and files with no parsed episode
+                    if matches:
+                        matches = [
+                            m for m in matches
+                            if m.parsed_episode is not None
+                            and not os.path.basename(m.filepath).lower().startswith("sample")
+                        ]
+                        if not matches:
+                            logger.warning(
+                                "CHECKING season pack id=%d: no valid episode files after filtering",
+                                item.id,
+                            )
+
                     if not matches:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
@@ -475,12 +509,12 @@ async def _job_queue_processor() -> None:
 
                     # Deduplicate: pick one file per episode
                     _RES_RANK = {"2160p": 4, "1080p": 3, "720p": 2, "480p": 1}
-                    by_episode: dict[int | None, list] = {}
+                    by_episode: dict[int, list] = {}
                     for m in matches:
                         by_episode.setdefault(m.parsed_episode, []).append(m)
 
                     best_per_episode = []
-                    for ep, ep_matches in sorted(by_episode.items(), key=lambda x: (x[0] is None, x[0])):
+                    for ep, ep_matches in sorted(by_episode.items()):
                         def _sort_key(m):
                             res = m.parsed_resolution
                             if item.requested_resolution and res == item.requested_resolution:
@@ -671,6 +705,71 @@ async def _job_queue_processor() -> None:
                                 item.id, item.title,
                             )
                         continue
+
+                    # Auto-promote: show item found multiple distinct episodes in mount
+                    if (
+                        item.media_type == MediaType.SHOW
+                        and not item.is_season_pack
+                        and len(matches) > 1
+                    ):
+                        # Only count files with a parsed episode number (exclude bonus/extras)
+                        ep_matches = [m for m in matches if m.parsed_episode is not None]
+                        distinct_episodes = {m.parsed_episode for m in ep_matches}
+                        if len(distinct_episodes) > 1:
+                            logger.info(
+                                "CHECKING item id=%d: auto-promoting to season pack (%d files, %d distinct episodes)",
+                                item.id, len(ep_matches), len(distinct_episodes),
+                            )
+
+                            # Deduplicate: pick best file per episode
+                            _RES_RANK = {"2160p": 4, "1080p": 3, "720p": 2, "480p": 1}
+                            by_episode: dict[int, list] = {}
+                            for m in ep_matches:
+                                by_episode.setdefault(m.parsed_episode, []).append(m)
+
+                            best_per_episode = []
+                            for ep, ep_group in sorted(by_episode.items()):
+                                def _sort_key(m):
+                                    res = m.parsed_resolution
+                                    if item.requested_resolution and res == item.requested_resolution:
+                                        preferred = 1
+                                    else:
+                                        preferred = 0
+                                    return (preferred, _RES_RANK.get(res, 0), m.filesize or 0)
+                                best = max(ep_group, key=_sort_key)
+                                best_per_episode.append(best)
+
+                            created = 0
+                            symlink = None
+                            for match in best_per_episode:
+                                try:
+                                    symlink = await symlink_manager.create_symlink(session, item, match.filepath)
+                                    created += 1
+                                except Exception:
+                                    logger.warning(
+                                        "CHECKING item id=%d: failed to symlink %s, skipping",
+                                        item.id, match.filepath,
+                                    )
+                            if created == 0:
+                                logger.warning(
+                                    "CHECKING item id=%d: all %d symlinks failed, will retry next cycle",
+                                    item.id, len(best_per_episode),
+                                )
+                                continue
+
+                            # Persist metadata changes only after symlinks succeed
+                            item.is_season_pack = True
+                            item.episode = None
+                            if item.season is None:
+                                file_seasons = {m.parsed_season for m in ep_matches if m.parsed_season is not None}
+                                if len(file_seasons) == 1:
+                                    item.season = file_seasons.pop()
+
+                            await queue_manager.transition(session, item.id, QueueState.COMPLETE)
+                            if symlink is not None:
+                                scan_dir = os.path.dirname(symlink.target_path)
+                                plex_scan_queue.append((item.media_type, scan_dir))
+                            continue
 
                     source_path = matches[0].filepath
                     logger.info(

@@ -191,6 +191,14 @@
           class="sm:w-48 bg-vd-bg border border-vd-border rounded-lg px-4 py-2.5 text-white placeholder-vd-muted text-sm
                  focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
         >
+        <select
+          id="manual-type"
+          class="sm:w-32 bg-vd-bg border border-vd-border rounded-lg px-3 py-2.5 text-white text-sm
+                 focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition"
+        >
+          <option value="movie">Movie</option>
+          <option value="show">TV Show</option>
+        </select>
         <button
           type="submit"
           id="manual-btn"
@@ -204,6 +212,21 @@
           Add Manually
         </button>
       </div>
+
+      <!-- Show fields — visible when manual-type is 'show' -->
+      <div id="manual-show-fields" class="hidden mt-3 flex flex-row items-end gap-3">
+        <div>
+          <label for="manual-season" class="block text-xs font-medium text-vd-muted mb-1 uppercase tracking-wide">Season</label>
+          <input type="number" id="manual-season" min="1" placeholder="e.g. 2"
+                 class="w-24 px-3 py-2 bg-vd-bg border border-vd-border rounded-lg text-sm text-white placeholder-vd-muted focus:outline-none focus:ring-2 focus:ring-vd-accent focus:border-transparent transition" />
+        </div>
+        <label class="flex items-center gap-2 text-sm text-vd-text cursor-pointer select-none pb-0.5">
+          <input type="checkbox" id="manual-season-pack"
+                 class="rounded border-vd-border bg-vd-bg text-vd-accent focus:ring-vd-accent" />
+          Season Pack
+        </label>
+      </div>
+
       <p id="manual-error" class="mt-2 text-sm text-red-400 hidden"></p>
     </form>
   </div>
@@ -288,6 +311,34 @@
       document.getElementById('episode').value = '';
     }
   }
+
+  // ─── Manual add: show/hide show fields based on manual-type ─────────────────
+
+  document.getElementById('manual-type').addEventListener('change', function() {
+    document.getElementById('manual-show-fields').classList.toggle('hidden', this.value !== 'show');
+  });
+
+  // ─── Manual add: auto-detect "Season N" from title input ────────────────────
+
+  document.getElementById('manual-title').addEventListener('input', function() {
+    const match = this.value.match(/\bseason\s+(\d+)\b/i);
+    if (match) {
+      // Auto-switch to TV Show and show the fields
+      const typeSelect = document.getElementById('manual-type');
+      if (typeSelect.value !== 'show') {
+        typeSelect.value = 'show';
+        document.getElementById('manual-show-fields').classList.remove('hidden');
+      }
+      const seasonInput = document.getElementById('manual-season');
+      const packCheckbox = document.getElementById('manual-season-pack');
+      if (seasonInput && !seasonInput.value) {
+        seasonInput.value = match[1];
+      }
+      if (packCheckbox && !packCheckbox.checked) {
+        packCheckbox.checked = true;
+      }
+    }
+  });
 
   // ─── Search form submission ──────────────────────────────────────────────────
 
@@ -1006,15 +1057,20 @@
     btn.disabled = true;
     spinner.classList.remove('hidden');
 
+    const mediaType    = document.getElementById('manual-type').value;
+    const manualSeason = document.getElementById('manual-season').value.trim();
+    const isSeasonPack = document.getElementById('manual-season-pack').checked;
+
     const payload = {
       magnet_or_hash:  input,
       title:           title || null,
       imdb_id:         null,
-      media_type:      'movie',
+      media_type:      mediaType,
       year:            null,
-      season:          null,
+      season:          manualSeason ? parseInt(manualSeason, 10) : null,
       episode:         null,
-      quality_profile: 'high',
+      is_season_pack:  isSeasonPack,
+      quality_profile: document.getElementById('quality_profile').value,
     };
 
     try {
@@ -1041,6 +1097,10 @@
       // Clear inputs on success
       document.getElementById('manual-input').value = '';
       document.getElementById('manual-title').value = '';
+      document.getElementById('manual-type').value = 'movie';
+      document.getElementById('manual-show-fields').classList.add('hidden');
+      document.getElementById('manual-season').value = '';
+      document.getElementById('manual-season-pack').checked = false;
 
     } catch (err) {
       errorEl.textContent = err.message || 'An unexpected error occurred.';

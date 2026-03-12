@@ -56,6 +56,12 @@ _TV_N_EP_RE = re.compile(r"TV-(\d{1,2})\s*[-–]\s*(\d{1,3})")
 # Captures the episode number after " - " (space-dash-space).
 _ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
 
+# Leading number naming convention for season pack episodes, e.g.:
+#   "28. Prelude to the Impending Fight.mp4"
+#   "01 - Episode Title.mkv"
+# Matches a number at the very start of the filename.
+_LEADING_EP_RE = re.compile(r"^(\d{1,3})(?:\.|(?:\s*[-–]\s))")
+
 
 class WalkEntry(NamedTuple):
     """Lightweight record from the filesystem walk phase (no PTN parsing)."""
@@ -1283,6 +1289,13 @@ def _parse_filename(filename: str) -> dict[str, Any]:
         anime_match = _ANIME_DASH_EP_RE.search(os.path.splitext(filename)[0])
         if anime_match:
             episode = int(anime_match.group(1))
+
+    # Fallback: leading number convention for season pack episodes.
+    # "28. Prelude to the Impending Fight.mp4" → episode 28
+    if episode is None:
+        leading_match = _LEADING_EP_RE.match(os.path.splitext(filename)[0])
+        if leading_match:
+            episode = int(leading_match.group(1))
 
     return {
         "title": _normalize_title(raw_title),
