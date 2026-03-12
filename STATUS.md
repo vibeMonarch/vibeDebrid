@@ -329,6 +329,19 @@
   - 22 new tests in `tests/test_season_pack_split.py`
 - Total: 1316 tests, all passing
 
+### Manual Add for Shows + Season Pack CHECKING Fixes ✅ (2026-03-12)
+- Manual add form: own Movie/TV Show selector inside the form (independent from search dropdown)
+- Season + season pack fields shown only when TV Show selected
+- Auto-detect "Season N" from title: switches to TV Show, fills season, checks season pack
+- AddRequest.title now optional (str | None) with "Unknown" fallback
+- CHECKING auto-promote: show items with multiple distinct episodes auto-promote to season pack
+- Leading-number episode regex: `_LEADING_EP_RE` for "28. Episode Title.mp4" → episode 28
+- Season pack dedup: filters sample files and NULL-episode files before dedup
+- Auto-correct media_type movie→show for season packs
+- Relaxed season filter: path-prefix fallback with season=None when season-filtered query returns nothing
+- Absolute episode fallback reordered before relaxed query (TMDB-guided filtering gets priority)
+- Stuck-in-CHECKING fix: filtered-empty matches fall through to timeout instead of looping forever
+
 ## Remaining / Future Work
 
 ### Trakt Integration (Step 1b)
