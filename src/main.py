@@ -231,24 +231,39 @@ async def _job_queue_processor() -> None:
                 item.id, item.title,
             )
             try:
-                await queue_manager.force_transition(session, item.id, QueueState.WANTED)
+                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
             except Exception:
                 logger.exception("Failed to recover stuck item id=%d", item.id)
 
-        # --- Stage 1: WANTED → SCRAPING → pipeline ---
+        # --- Stage 1: WANTED/SCRAPING → pipeline ---
+        # Include SCRAPING items: process_queue() transitions SLEEPING→SCRAPING,
+        # but Stage 1 previously only queried WANTED, leaving those items stuck
+        # until Stage 0 caught them as "stale" 30 min later.
         result = await session.execute(
-            select(MediaItem).where(MediaItem.state == QueueState.WANTED)
+            select(MediaItem).where(
+                MediaItem.state.in_([QueueState.WANTED, QueueState.SCRAPING])
+            )
         )
-        wanted_items = result.scalars().all()
-        logger.info("WANTED items to scrape: %d", len(wanted_items))
+        scrape_items = result.scalars().all()
+        logger.info("Items to scrape (WANTED+SCRAPING): %d", len(scrape_items))
 
-        for item in wanted_items:
+        for item in scrape_items:
             # Cache attributes before try block so error handlers don't
             # trigger lazy loads on a potentially poisoned session.
             item_id = item.id
             item_title = item.title
+            item_state = item.state
             try:
-                await queue_manager.transition(session, item_id, QueueState.SCRAPING)
+                if item_state == QueueState.WANTED:
+                    # Normal path: transition to SCRAPING before running pipeline.
+                    await queue_manager.transition(session, item_id, QueueState.SCRAPING)
+                else:
+                    # Item already in SCRAPING (set by process_queue from SLEEPING).
+                    # Skip the WANTED→SCRAPING transition and run pipeline directly.
+                    logger.debug(
+                        "Item id=%d title=%s already SCRAPING, running pipeline directly",
+                        item_id, item_title,
+                    )
                 await scrape_pipeline.run(session, item)
             except Exception:
                 logger.exception(
