@@ -610,6 +610,164 @@
   </div><!-- /body-rdcleanup -->
 
 </div><!-- /rdcleanup card -->
+
+<!-- Symlink Health Check card -->
+<div class="bg-vd-card border border-vd-border rounded-lg mb-6">
+
+  <!-- Card header -->
+  <button type="button"
+          onclick="toggleSection('symlinkhealth')"
+          class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+    <div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-vd-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+      </svg>
+      <span class="font-semibold text-white">Symlink Health Check</span>
+    </div>
+    <svg id="chevron-symlinkhealth" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+
+  <!-- Card body (collapsed by default) -->
+  <div id="body-symlinkhealth" class="section-body collapsed">
+    <div>
+      <div class="px-6 pb-6 space-y-6 border-t border-vd-border pt-5">
+
+        <!-- Description -->
+        <p class="text-sm text-vd-muted leading-relaxed">
+          Scan all symlinks to find broken links where the source file is missing.
+          Recoverable items have matching content available in the mount under a different release.
+        </p>
+
+        <!-- Scan button -->
+        <div class="flex items-center gap-3">
+          <button id="sh-scan-btn"
+                  type="button"
+                  onclick="runSymlinkHealthScan()"
+                  class="flex items-center gap-2 px-5 py-2.5 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <svg id="sh-scan-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <svg id="sh-scan-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            <span id="sh-scan-btn-label">Scan Symlinks</span>
+          </button>
+        </div>
+
+        <!-- Results section (hidden until scan completes) -->
+        <div id="sh-results-section" class="hidden space-y-5">
+
+          <!-- Summary stat badges -->
+          <div id="sh-summary-badges" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <!-- Populated by JS -->
+          </div>
+
+          <!-- Filter tabs -->
+          <div class="flex flex-wrap gap-1.5" id="sh-filter-tabs">
+            <button type="button" onclick="shFilterByStatus('all')"         id="sh-tab-all"         class="sh-tab sh-tab-active px-3 py-1 rounded text-xs font-medium transition-colors">All</button>
+            <button type="button" onclick="shFilterByStatus('recoverable')" id="sh-tab-recoverable" class="sh-tab px-3 py-1 rounded text-xs font-medium transition-colors">Recoverable</button>
+            <button type="button" onclick="shFilterByStatus('dead')"        id="sh-tab-dead"        class="sh-tab px-3 py-1 rounded text-xs font-medium transition-colors">Dead</button>
+          </div>
+
+          <!-- Symlink table -->
+          <div class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-xs text-vd-muted uppercase tracking-wider bg-vd-card">
+                    <th class="px-3 py-2 text-left w-8">
+                      <input type="checkbox" id="sh-select-all-cb" onchange="shToggleSelectAll(this.checked)"
+                             class="rounded border-vd-border bg-vd-bg text-vd-accent focus:ring-vd-accent">
+                    </th>
+                    <th class="px-3 py-2 text-left">Title</th>
+                    <th class="px-3 py-2 text-left">State</th>
+                    <th class="px-3 py-2 text-left">Status</th>
+                    <th class="px-3 py-2 text-left">Old Path</th>
+                    <th class="px-3 py-2 text-left">New Path</th>
+                  </tr>
+                </thead>
+                <tbody id="sh-symlink-tbody">
+                </tbody>
+              </table>
+              <p id="sh-table-overflow" class="hidden px-4 py-2 text-xs text-vd-muted italic border-t border-vd-border"></p>
+            </div>
+          </div>
+
+          <!-- Action bar (shown when items are selected) -->
+          <div id="sh-action-bar" class="sticky bottom-0 bg-vd-card border border-vd-border rounded-lg px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            <span id="sh-selection-counter" class="text-sm text-vd-muted whitespace-nowrap">0 selected</span>
+            <div class="flex flex-wrap gap-2 flex-1">
+              <button type="button" onclick="shSelectAllRecoverable()"
+                      class="px-3 py-1 bg-vd-bg border border-vd-border hover:bg-white/5 text-xs text-gray-300 rounded transition-colors">
+                Select All Recoverable
+              </button>
+              <button type="button" onclick="shSelectAllDead()"
+                      class="px-3 py-1 bg-vd-bg border border-vd-border hover:bg-white/5 text-xs text-gray-300 rounded transition-colors">
+                Select All Dead
+              </button>
+              <button type="button" onclick="shDeselectAll()"
+                      class="px-3 py-1 bg-vd-bg border border-vd-border hover:bg-white/5 text-xs text-gray-300 rounded transition-colors">
+                Deselect All
+              </button>
+            </div>
+            <div class="flex gap-2">
+              <button id="sh-requeue-btn"
+                      type="button"
+                      onclick="runShRequeue()"
+                      disabled
+                      class="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
+                <svg id="sh-requeue-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <svg id="sh-requeue-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span id="sh-requeue-btn-label">Re-queue Selected</span>
+              </button>
+              <button id="sh-cleanup-btn"
+                      type="button"
+                      onclick="runShCleanup()"
+                      disabled
+                      class="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
+                <svg id="sh-cleanup-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+                <svg id="sh-cleanup-spinner" class="w-4 h-4 hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span id="sh-cleanup-btn-label">Clean Up Selected</span>
+              </button>
+            </div>
+          </div>
+
+        </div><!-- /sh-results-section -->
+
+        <!-- Execute result (hidden until execute completes) -->
+        <div id="sh-execute-result" class="hidden">
+          <div class="bg-vd-bg border border-green-700 rounded-lg p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <span class="font-semibold text-green-400">Operation complete</span>
+            </div>
+            <div id="sh-execute-stats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+              <!-- Populated by JS -->
+            </div>
+            <div id="sh-execute-errors-wrap" class="hidden">
+              <p class="text-xs text-red-400 font-medium mb-1">Errors during execution:</p>
+              <ul id="sh-execute-errors-list" class="text-xs text-red-300 space-y-0.5 font-mono"></ul>
+            </div>
+          </div>
+        </div><!-- /sh-execute-result -->
+
+      </div>
+    </div>
+  </div><!-- /body-symlinkhealth -->
+
+</div><!-- /symlinkhealth card -->
 {% endblock %}
 
 {% block scripts %}
@@ -1807,6 +1965,491 @@
     // Hide results table, show execute result
     document.getElementById('rd-results-section').classList.add('hidden');
     document.getElementById('rd-execute-result').classList.remove('hidden');
+  }
+
+})();
+
+// ---------------------------------------------------------------------------
+// Symlink Health Check
+// ---------------------------------------------------------------------------
+(function() {
+
+  var _shScanData = null;   // Full scan response
+  var _activeFilter = 'all';
+  var _selectedIds = new Set();  // symlink_id numbers currently checked
+  var _executing = false;
+
+  var TABLE_CAP_SH = 100;
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  function escSh(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function statCardSh(label, value, colorClass) {
+    return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
+      '<p class="text-xs text-vd-muted uppercase tracking-wider mb-1">' + escSh(label) + '</p>' +
+      '<p class="text-xl font-bold ' + colorClass + '">' + escSh(String(value)) + '</p>' +
+      '</div>';
+  }
+
+  // Truncate a filesystem path to the last 2 path segments: dir/filename
+  function shortPath(p) {
+    if (!p) return '';
+    var parts = p.replace(/\\/g, '/').split('/').filter(Boolean);
+    if (parts.length <= 2) return parts.join('/');
+    return parts.slice(-2).join('/');
+  }
+
+  function statusBadge(status) {
+    if (status === 'recoverable') {
+      return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-900/50 text-emerald-300 border border-emerald-700">Recoverable</span>';
+    }
+    if (status === 'requeued') {
+      return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-900/50 text-blue-300 border border-blue-700">Re-queued</span>';
+    }
+    if (status === 'cleaned') {
+      return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800/50 text-gray-400 border border-gray-600">Cleaned</span>';
+    }
+    return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900/50 text-red-300 border border-red-700">Dead</span>';
+  }
+
+  function pad2sh(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tab styling
+  // ---------------------------------------------------------------------------
+  function updateShTabStyles(activeTab) {
+    var tabs = ['all', 'recoverable', 'dead'];
+    tabs.forEach(function(t) {
+      var el = document.getElementById('sh-tab-' + t);
+      if (!el) return;
+      if (t === activeTab) {
+        el.className = 'sh-tab sh-tab-active px-3 py-1 rounded text-xs font-medium transition-colors bg-vd-accent text-white';
+      } else {
+        el.className = 'sh-tab px-3 py-1 rounded text-xs font-medium transition-colors bg-vd-bg border border-vd-border text-vd-muted hover:text-gray-200 hover:bg-white/5';
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scan
+  // ---------------------------------------------------------------------------
+  window.runSymlinkHealthScan = function() {
+    if (_executing) return;
+    setShScanLoading(true);
+    document.getElementById('sh-results-section').classList.add('hidden');
+    document.getElementById('sh-execute-result').classList.add('hidden');
+    _shScanData = null;
+    _selectedIds.clear();
+    _activeFilter = 'all';
+
+    fetch('/api/tools/symlink-health/scan', { method: 'POST' })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      setShScanLoading(false);
+      _shScanData = data;
+      renderShScanResults(data);
+    })
+    .catch(function(err) {
+      setShScanLoading(false);
+      showToast('Symlink scan failed: ' + err.message, 'error');
+    });
+  };
+
+  function setShScanLoading(loading) {
+    var btn = document.getElementById('sh-scan-btn');
+    var icon = document.getElementById('sh-scan-icon');
+    var spinner = document.getElementById('sh-scan-spinner');
+    var label = document.getElementById('sh-scan-btn-label');
+    btn.disabled = loading;
+    icon.classList.toggle('hidden', loading);
+    spinner.classList.toggle('hidden', !loading);
+    label.textContent = loading ? 'Scanning...' : 'Scan Symlinks';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render scan results
+  // ---------------------------------------------------------------------------
+  function renderShScanResults(data) {
+    // Summary badges
+    var badgesEl = document.getElementById('sh-summary-badges');
+    badgesEl.innerHTML =
+      statCardSh('Total Symlinks', data.total_symlinks || 0, 'text-white') +
+      statCardSh('Healthy', data.healthy || 0, (data.healthy || 0) > 0 ? 'text-green-400' : 'text-vd-muted') +
+      statCardSh('Broken', (data.recoverable || 0) + (data.dead || 0), ((data.recoverable || 0) + (data.dead || 0)) > 0 ? 'text-amber-400' : 'text-vd-muted') +
+      statCardSh('Recoverable', data.recoverable || 0, (data.recoverable || 0) > 0 ? 'text-emerald-400' : 'text-vd-muted') +
+      statCardSh('Dead', data.dead || 0, (data.dead || 0) > 0 ? 'text-red-400' : 'text-vd-muted');
+
+    // Filter only broken items for the table
+    _activeFilter = 'all';
+    updateShTabStyles('all');
+    renderShTable();
+
+    document.getElementById('sh-results-section').classList.remove('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Table render (respects _activeFilter; only broken items are shown)
+  // ---------------------------------------------------------------------------
+  function renderShTable() {
+    if (!_shScanData) return;
+
+    var allItems = _shScanData.items || [];
+    var filtered = _activeFilter === 'all'
+      ? allItems
+      : allItems.filter(function(item) { return item.status === _activeFilter; });
+
+    var visible = filtered.slice(0, TABLE_CAP_SH);
+    var overflow = filtered.length - visible.length;
+
+    var tbody = document.getElementById('sh-symlink-tbody');
+    var overflowEl = document.getElementById('sh-table-overflow');
+
+    // Header checkbox state
+    var allCb = document.getElementById('sh-select-all-cb');
+    if (allCb) {
+      var checkedCount = visible.filter(function(item) { return _selectedIds.has(item.symlink_id); }).length;
+      allCb.checked = visible.length > 0 && checkedCount === visible.length;
+      allCb.indeterminate = checkedCount > 0 && checkedCount < visible.length;
+      allCb.disabled = _executing;
+    }
+
+    if (visible.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-sm text-vd-muted">No broken symlinks found.</td></tr>';
+      overflowEl.classList.add('hidden');
+      updateShSelectionCounter();
+      return;
+    }
+
+    var rows = visible.map(function(item, idx) {
+      var checked = _selectedIds.has(item.symlink_id);
+      var processed = item.status === 'requeued' || item.status === 'cleaned';
+      var rowTint = processed ? ' opacity-50' : (idx % 2 === 1 ? ' bg-vd-bg/30' : '');
+
+      var cbCell = processed
+        ? '<td class="px-3 py-1.5 w-8"></td>'
+        : '<td class="px-3 py-1.5 w-8"><input type="checkbox" ' +
+          'data-symlinkid="' + escSh(String(item.symlink_id)) + '" ' +
+          (checked ? 'checked ' : '') +
+          (_executing ? 'disabled ' : '') +
+          'onchange="shToggleItem(this)" ' +
+          'class="rounded border-vd-border bg-vd-bg text-vd-accent focus:ring-vd-accent"></td>';
+
+      var seInfo = item.season != null
+        ? ' S' + pad2sh(item.season) + (item.episode != null ? 'E' + pad2sh(item.episode) : '')
+        : '';
+      var typeColor = item.media_type === 'movie' ? 'text-purple-400' : 'text-teal-400';
+      var titleCell = '<td class="px-3 py-1.5">' +
+        '<span class="text-gray-200">' + escSh(item.title) + seInfo + '</span>' +
+        '<span class="ml-2 text-xs uppercase tracking-wide ' + typeColor + '">' + escSh(item.media_type) + '</span>' +
+        '</td>';
+
+      var stateBadge = '<span class="badge-' + escSh(item.state) + ' text-white text-xs px-2 py-0.5 rounded-full">' + escSh(item.state) + '</span>';
+      var stateCell = '<td class="px-3 py-1.5">' + stateBadge + '</td>';
+
+      var statusCell = '<td class="px-3 py-1.5">' + statusBadge(item.status) + '</td>';
+
+      var oldPathShort = shortPath(item.source_path);
+      var oldPathCell = '<td class="px-3 py-1.5 font-mono text-xs text-vd-muted max-w-xs truncate" title="' + escSh(item.source_path) + '">' + escSh(oldPathShort) + '</td>';
+
+      var newPathVal = item.mount_match_path || null;
+      var newPathShort = newPathVal ? shortPath(newPathVal) : null;
+      var newPathCell = newPathShort
+        ? '<td class="px-3 py-1.5 font-mono text-xs text-emerald-400 max-w-xs truncate" title="' + escSh(newPathVal) + '">' + escSh(newPathShort) + '</td>'
+        : '<td class="px-3 py-1.5 text-xs text-vd-muted/50">&mdash;</td>';
+
+      return '<tr class="border-t border-vd-border/50' + rowTint + '">' +
+        cbCell + titleCell + stateCell + statusCell + oldPathCell + newPathCell + '</tr>';
+    });
+
+    tbody.innerHTML = rows.join('');
+
+    if (overflow > 0) {
+      overflowEl.textContent = '... and ' + overflow + ' more in this filter (not shown)';
+      overflowEl.classList.remove('hidden');
+    } else {
+      overflowEl.classList.add('hidden');
+    }
+
+    updateShSelectionCounter();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filter tab
+  // ---------------------------------------------------------------------------
+  window.shFilterByStatus = function(status) {
+    _activeFilter = status;
+    updateShTabStyles(status);
+    renderShTable();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Checkbox handling
+  // ---------------------------------------------------------------------------
+  window.shToggleItem = function(cb) {
+    var id = parseInt(cb.getAttribute('data-symlinkid'), 10);
+    if (isNaN(id)) return;
+    if (cb.checked) {
+      _selectedIds.add(id);
+    } else {
+      _selectedIds.delete(id);
+    }
+    var allCb = document.getElementById('sh-select-all-cb');
+    if (allCb && _shScanData) {
+      var allItems = _shScanData.items || [];
+      var filtered = _activeFilter === 'all'
+        ? allItems
+        : allItems.filter(function(item) { return item.status === _activeFilter; });
+      var visible = filtered.slice(0, TABLE_CAP_SH);
+      var checked = visible.filter(function(item) { return _selectedIds.has(item.symlink_id); }).length;
+      allCb.checked = visible.length > 0 && checked === visible.length;
+      allCb.indeterminate = checked > 0 && checked < visible.length;
+    }
+    updateShSelectionCounter();
+  };
+
+  window.shToggleSelectAll = function(checked) {
+    if (!_shScanData) return;
+    var allItems = _shScanData.items || [];
+    var filtered = _activeFilter === 'all'
+      ? allItems
+      : allItems.filter(function(item) { return item.status === _activeFilter; });
+    var visible = filtered.slice(0, TABLE_CAP_SH);
+    visible.forEach(function(item) {
+      if (checked) {
+        _selectedIds.add(item.symlink_id);
+      } else {
+        _selectedIds.delete(item.symlink_id);
+      }
+    });
+    renderShTable();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Quick-select helpers
+  // ---------------------------------------------------------------------------
+  window.shSelectAllRecoverable = function() {
+    if (!_shScanData) return;
+    (_shScanData.items || []).forEach(function(item) {
+      if (item.status === 'recoverable') _selectedIds.add(item.symlink_id);
+    });
+    renderShTable();
+  };
+
+  window.shSelectAllDead = function() {
+    if (!_shScanData) return;
+    (_shScanData.items || []).forEach(function(item) {
+      if (item.status === 'dead') _selectedIds.add(item.symlink_id);
+    });
+    renderShTable();
+  };
+
+  window.shDeselectAll = function() {
+    _selectedIds.clear();
+    renderShTable();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Selection counter + button state
+  // ---------------------------------------------------------------------------
+  function updateShSelectionCounter() {
+    var counter = document.getElementById('sh-selection-counter');
+    var requeueBtn = document.getElementById('sh-requeue-btn');
+    var cleanupBtn = document.getElementById('sh-cleanup-btn');
+    if (!counter) return;
+
+    var count = _selectedIds.size;
+    counter.textContent = count + ' selected';
+
+    // Enable requeue only when at least one recoverable item is selected
+    var hasRecoverable = false;
+    var hasDead = false;
+    if (_shScanData) {
+      (_shScanData.items || []).forEach(function(item) {
+        if (_selectedIds.has(item.symlink_id)) {
+          if (item.status === 'recoverable') hasRecoverable = true;
+          else if (item.status === 'dead') hasDead = true;
+        }
+      });
+    }
+
+    if (requeueBtn) requeueBtn.disabled = !hasRecoverable || _executing;
+    if (cleanupBtn) cleanupBtn.disabled = !hasDead || _executing;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Re-queue selected recoverable items
+  // ---------------------------------------------------------------------------
+  window.runShRequeue = function() {
+    if (_executing || !_shScanData) return;
+
+    var requeueIds = [];
+    (_shScanData.items || []).forEach(function(item) {
+      if (_selectedIds.has(item.symlink_id) && item.status === 'recoverable') {
+        requeueIds.push(item.item_id);
+      }
+    });
+
+    if (requeueIds.length === 0) return;
+
+    var msg = 'Re-queue ' + requeueIds.length + ' recoverable item' + (requeueIds.length === 1 ? '' : 's') +
+      ' back to WANTED for re-scraping? Continue?';
+    if (!confirm(msg)) return;
+
+    runShExecute({ requeue_ids: requeueIds, cleanup_ids: [] }, 'Requeueing...');
+  };
+
+  // ---------------------------------------------------------------------------
+  // Clean up selected dead items
+  // ---------------------------------------------------------------------------
+  window.runShCleanup = function() {
+    if (_executing || !_shScanData) return;
+
+    var cleanupIds = [];
+    (_shScanData.items || []).forEach(function(item) {
+      if (_selectedIds.has(item.symlink_id) && item.status === 'dead') {
+        cleanupIds.push(item.item_id);
+      }
+    });
+
+    if (cleanupIds.length === 0) return;
+
+    var msg = 'Permanently remove symlink records for ' + cleanupIds.length + ' dead item' + (cleanupIds.length === 1 ? '' : 's') +
+      '? Queue entries will remain unchanged (items stay DONE). This cannot be undone. Continue?';
+    if (!confirm(msg)) return;
+
+    runShExecute({ requeue_ids: [], cleanup_ids: cleanupIds }, 'Cleaning up...');
+  };
+
+  // ---------------------------------------------------------------------------
+  // Execute (shared by requeue + cleanup)
+  // ---------------------------------------------------------------------------
+  function runShExecute(payload, loadingLabel) {
+    _executing = true;
+    setShActionLoading(true, loadingLabel);
+    document.getElementById('sh-execute-result').classList.add('hidden');
+
+    fetch('/api/tools/symlink-health/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.json().then(function(body) {
+          throw new Error(body.detail || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      _executing = false;
+      setShActionLoading(false, '');
+
+      // Update in-memory scan data: mark processed items
+      if (_shScanData && _shScanData.items) {
+        var requeuedSet = new Set(payload.requeue_ids || []);
+        var cleanedSet = new Set(payload.cleanup_ids || []);
+        _shScanData.items = _shScanData.items.map(function(item) {
+          if (requeuedSet.has(item.item_id)) {
+            return Object.assign({}, item, { status: 'requeued', state: 'wanted' });
+          }
+          if (cleanedSet.has(item.item_id)) {
+            return Object.assign({}, item, { status: 'cleaned', state: item.state });
+          }
+          return item;
+        });
+        // Update summary counts
+        var remaining = _shScanData.items.filter(function(i) { return i.status === 'recoverable' || i.status === 'dead'; });
+        _shScanData.broken = remaining.length;
+        _shScanData.recoverable = remaining.filter(function(i) { return i.status === 'recoverable'; }).length;
+        _shScanData.dead = remaining.filter(function(i) { return i.status === 'dead'; }).length;
+      }
+
+      _selectedIds.clear();
+      renderShExecuteResult(data);
+      // Re-render table to reflect updated statuses
+      renderShTable();
+      updateShSelectionCounter();
+
+      var parts = [];
+      if (data.requeued > 0) parts.push(data.requeued + ' item' + (data.requeued === 1 ? '' : 's') + ' re-queued');
+      if (data.cleaned > 0) parts.push(data.cleaned + ' item' + (data.cleaned === 1 ? '' : 's') + ' cleaned up');
+      if (parts.length > 0) {
+        showToast(parts.join(', '), 'success');
+      }
+    })
+    .catch(function(err) {
+      _executing = false;
+      setShActionLoading(false, '');
+      showToast('Operation failed: ' + err.message, 'error');
+    });
+  }
+
+  function setShActionLoading(loading, label) {
+    var requeueBtn = document.getElementById('sh-requeue-btn');
+    var requeueIcon = document.getElementById('sh-requeue-icon');
+    var requeueSpinner = document.getElementById('sh-requeue-spinner');
+    var requeueLabel = document.getElementById('sh-requeue-btn-label');
+    var cleanupBtn = document.getElementById('sh-cleanup-btn');
+    var cleanupIcon = document.getElementById('sh-cleanup-icon');
+    var cleanupSpinner = document.getElementById('sh-cleanup-spinner');
+    var cleanupLabel = document.getElementById('sh-cleanup-btn-label');
+
+    if (requeueBtn) {
+      requeueBtn.disabled = loading;
+      requeueIcon.classList.toggle('hidden', loading);
+      requeueSpinner.classList.toggle('hidden', !loading);
+      requeueLabel.textContent = loading ? label : 'Re-queue Selected';
+    }
+    if (cleanupBtn) {
+      cleanupBtn.disabled = loading;
+      cleanupIcon.classList.toggle('hidden', loading);
+      cleanupSpinner.classList.toggle('hidden', !loading);
+      cleanupLabel.textContent = loading ? label : 'Clean Up Selected';
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render execute result
+  // ---------------------------------------------------------------------------
+  function renderShExecuteResult(data) {
+    var statsEl = document.getElementById('sh-execute-stats');
+    statsEl.innerHTML =
+      statCardSh('Re-queued', data.requeued || 0, (data.requeued || 0) > 0 ? 'text-green-400' : 'text-vd-muted') +
+      statCardSh('Cleaned Up', data.cleaned || 0, (data.cleaned || 0) > 0 ? 'text-red-400' : 'text-vd-muted') +
+      statCardSh('Symlinks Removed', data.symlinks_removed_from_disk || 0, 'text-vd-muted') +
+      statCardSh('Errors', data.errors ? data.errors.length : 0, (data.errors && data.errors.length > 0) ? 'text-red-400' : 'text-vd-muted');
+
+    var errorsWrap = document.getElementById('sh-execute-errors-wrap');
+    var errorsList = document.getElementById('sh-execute-errors-list');
+    if (data.errors && data.errors.length > 0) {
+      errorsList.innerHTML = data.errors.map(function(e) {
+        return '<li>' + escSh(e) + '</li>';
+      }).join('');
+      errorsWrap.classList.remove('hidden');
+    } else {
+      errorsWrap.classList.add('hidden');
+    }
+
+    document.getElementById('sh-execute-result').classList.remove('hidden');
   }
 
 })();

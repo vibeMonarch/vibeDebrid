@@ -43,6 +43,13 @@ from src.core.rd_cleanup import (
     execute_rd_cleanup,
     scan_rd_account,
 )
+from src.core.symlink_health import (
+    SymlinkHealthExecuteRequest,
+    SymlinkHealthResult,
+    SymlinkHealthScan,
+    execute_symlink_health,
+    scan_symlink_health,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -782,6 +789,108 @@ async def rd_cleanup_execute(
         result.rejected_protected,
         result.rejected_not_found,
         result.rate_limited,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Symlink Health routes
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/tools/symlink-health/scan", tags=["tools"])
+async def symlink_health_scan_endpoint(
+    session: AsyncSession = Depends(get_db),
+) -> SymlinkHealthScan:
+    """Scan symlinks and identify broken ones with recovery classification.
+
+    Checks mount availability first; returns an empty scan with an error
+    message when the mount is down to prevent false positives.  Classifies
+    each broken item as RECOVERABLE (matching file found in mount_index) or
+    DEAD (no match found).  Returns 409 when another cleanup operation is
+    already in progress.
+
+    Args:
+        session: Injected database session.
+
+    Returns:
+        SymlinkHealthScan with counts and per-item detail for broken symlinks.
+    """
+    try:
+        async with _try_acquire(
+            _cleanup_lock, "Another cleanup operation is in progress"
+        ):
+            result = await scan_symlink_health(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("symlink_health_scan_endpoint: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Symlink health scan failed",
+        ) from exc
+
+    logger.info(
+        "symlink_health_scan_endpoint: total=%d healthy=%d broken=%d "
+        "recoverable=%d dead=%d errors=%d",
+        result.total_symlinks,
+        result.healthy,
+        result.broken,
+        result.recoverable,
+        result.dead,
+        len(result.errors),
+    )
+    return result
+
+
+@router.post("/api/tools/symlink-health/execute", tags=["tools"])
+async def symlink_health_execute_endpoint(
+    req: SymlinkHealthExecuteRequest,
+    session: AsyncSession = Depends(get_db),
+) -> SymlinkHealthResult:
+    """Re-queue recoverable items and/or clean up dead symlink records.
+
+    ``requeue_ids`` — removes symlink DB records and disk files, then
+    transitions each item to WANTED so the scrape pipeline picks it up again.
+
+    ``cleanup_ids`` — removes symlink DB records and disk files only; item
+    state is left unchanged (useful for permanently removing dead records).
+
+    Each item is processed inside a savepoint.  Returns 409 when another
+    cleanup operation is already in progress.
+
+    Args:
+        req: Lists of item_ids to re-queue and/or clean up.
+        session: Injected database session.
+
+    Returns:
+        SymlinkHealthResult with counts for all outcomes.
+    """
+    if not req.requeue_ids and not req.cleanup_ids:
+        return SymlinkHealthResult()
+
+    try:
+        async with _try_acquire(
+            _cleanup_lock, "Another cleanup operation is in progress"
+        ):
+            result = await execute_symlink_health(session, req)
+            await session.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("symlink_health_execute_endpoint: unexpected error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Symlink health execute failed",
+        ) from exc
+
+    logger.info(
+        "symlink_health_execute_endpoint: requeued=%d cleaned=%d "
+        "symlinks_removed_from_disk=%d errors=%d",
+        result.requeued,
+        result.cleaned,
+        result.symlinks_removed_from_disk,
+        len(result.errors),
     )
     return result
 
