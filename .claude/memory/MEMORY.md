@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1697 tests, all passing (as of 2026-03-12)
+- 1745 tests, all passing (as of 2026-03-12)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -33,6 +33,8 @@
 - [Original language preference](original-language.md) — 2026-03-11
 - RD 451 infringing_file fallback — 2026-03-11
 - [Issue #29 complete](rd-cleanup.md): mount path fallback + deletion safety hardening — 2026-03-12
+- [Manual add for shows + season pack CHECKING fixes](manual-add-shows.md) — 2026-03-12
+- [Symlink Health Check tool](symlink-health.md) — 2026-03-12
 
 ## Remaining / Future Work
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
