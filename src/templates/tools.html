@@ -2278,39 +2278,39 @@
     var count = _selectedIds.size;
     counter.textContent = count + ' selected';
 
-    // Enable requeue only when at least one recoverable item is selected
-    var hasRecoverable = false;
+    // Enable requeue when any unprocessed item is selected
+    var hasActionable = false;
     var hasDead = false;
     if (_shScanData) {
       (_shScanData.items || []).forEach(function(item) {
         if (_selectedIds.has(item.symlink_id)) {
-          if (item.status === 'recoverable') hasRecoverable = true;
-          else if (item.status === 'dead') hasDead = true;
+          if (item.status === 'recoverable' || item.status === 'dead') hasActionable = true;
+          if (item.status === 'dead') hasDead = true;
         }
       });
     }
 
-    if (requeueBtn) requeueBtn.disabled = !hasRecoverable || _executing;
+    if (requeueBtn) requeueBtn.disabled = !hasActionable || _executing;
     if (cleanupBtn) cleanupBtn.disabled = !hasDead || _executing;
   }
 
   // ---------------------------------------------------------------------------
-  // Re-queue selected recoverable items
+  // Re-queue selected items (recoverable or dead)
   // ---------------------------------------------------------------------------
   window.runShRequeue = function() {
     if (_executing || !_shScanData) return;
 
     var requeueIds = [];
     (_shScanData.items || []).forEach(function(item) {
-      if (_selectedIds.has(item.symlink_id) && item.status === 'recoverable') {
+      if (_selectedIds.has(item.symlink_id) && (item.status === 'recoverable' || item.status === 'dead')) {
         requeueIds.push(item.item_id);
       }
     });
 
     if (requeueIds.length === 0) return;
 
-    var msg = 'Re-queue ' + requeueIds.length + ' recoverable item' + (requeueIds.length === 1 ? '' : 's') +
-      ' back to WANTED for re-scraping? Continue?';
+    var msg = 'Re-queue ' + requeueIds.length + ' item' + (requeueIds.length === 1 ? '' : 's') +
+      ' back to WANTED? Recoverable items will find existing files in mount. Dead items will be re-scraped. Continue?';
     if (!confirm(msg)) return;
 
     runShExecute({ requeue_ids: requeueIds, cleanup_ids: [] }, 'Requeueing...');
