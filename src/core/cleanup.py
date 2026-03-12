@@ -37,7 +37,6 @@ import enum
 import logging
 import os
 import re
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -459,26 +458,30 @@ async def assess_migration_items(session: AsyncSession) -> list[AssessedItem]:
 
         # Indirect detection: source_path directory matches an RD torrent filename
         if not has_rd and source_path:
+            from src.core.rd_bridge import (
+                _extract_mount_name_any_base,
+                _extract_mount_relative_name,
+            )
+
             zurg_mount = settings.paths.zurg_mount.rstrip("/")
-            try:
-                rel = Path(source_path).relative_to(zurg_mount)
-                if rel.parts:
-                    dir_name = rel.parts[0]
-                    rd_match = rd_by_filename_lower.get(dir_name.lower())
-                    if rd_match is None:
-                        # Try normalised match
-                        norm_key = _norm.sub(" ", dir_name).lower().strip()
-                        for fn_lower, val in rd_by_filename_lower.items():
-                            if _norm.sub(" ", fn_lower).lower().strip() == norm_key:
-                                rd_match = val
-                                break
-                    if rd_match:
-                        has_rd = True
-                        rd_id = rd_match[0]
-                        info_hash = rd_match[1]
-                        rd_filename = rd_match[2]
-            except ValueError:
-                pass
+            dir_name = _extract_mount_relative_name(source_path, zurg_mount)
+            if dir_name is None:
+                dir_name = _extract_mount_name_any_base(source_path)
+
+            if dir_name is not None:
+                rd_match = rd_by_filename_lower.get(dir_name.lower())
+                if rd_match is None:
+                    # Try normalised match
+                    norm_key = _norm.sub(" ", dir_name).lower().strip()
+                    for fn_lower, val in rd_by_filename_lower.items():
+                        if _norm.sub(" ", fn_lower).lower().strip() == norm_key:
+                            rd_match = val
+                            break
+                if rd_match:
+                    has_rd = True
+                    rd_id = rd_match[0]
+                    info_hash = rd_match[1]
+                    rd_filename = rd_match[2]
 
         liveness = _classify_liveness(source_exists, link_valid, has_rd)
 

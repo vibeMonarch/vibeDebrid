@@ -41,10 +41,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.rd_bridge import _extract_mount_relative_name, _normalize_name
-
-# Matches the Zurg /__all__/ virtual directory in any mount path.
-_ALL_DIR_MARKER = "/__all__/"
+from src.core.rd_bridge import (
+    _ALL_DIR_MARKER,
+    _extract_mount_name_any_base,
+    _extract_mount_relative_name,
+    _normalize_name,
+)
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
 
@@ -67,32 +69,6 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
-
-
-def _extract_mount_name_any_base(source_path: str) -> str | None:
-    """Extract the torrent directory/file name from a Zurg mount path.
-
-    Unlike ``_extract_mount_relative_name`` (which requires the exact mount
-    prefix), this finds ``/__all__/`` anywhere in the path and returns the
-    first component after it.  Handles symlinks that reference alternative
-    mount points (e.g. ``rclone_RD/__all__/`` vs ``__all__/``).
-
-    Args:
-        source_path: Absolute symlink source path.
-
-    Returns:
-        The torrent directory name (first component after ``/__all__/``),
-        or None when the marker is not found.
-    """
-    idx = source_path.find(_ALL_DIR_MARKER)
-    if idx == -1:
-        return None
-    rest = source_path[idx + len(_ALL_DIR_MARKER):]
-    if not rest:
-        return None
-    # First path component after /__all__/
-    slash = rest.find("/")
-    return rest[:slash] if slash != -1 else rest
 
 
 class RdTorrentCategory(str, enum.Enum):
@@ -687,17 +663,13 @@ async def scan_rd_account(session: AsyncSession) -> RdCleanupScan:
 
     logger.info("rd_cleanup.scan_rd_account: fetched %d torrents", len(rd_torrents))
 
-    # Build protection sets from local DB
-    try:
-        active_hashes, active_rd_ids, symlink_mount_names = (
-            await _build_protection_sets(session)
-        )
-    except Exception as exc:
-        logger.error(
-            "rd_cleanup.scan_rd_account: failed to build protection sets: %s", exc
-        )
-        warnings.append(f"Could not load all protection data — results may miss some protected items: {exc}")
-        active_hashes, active_rd_ids, symlink_mount_names = set(), set(), set()
+    # Build protection sets from local DB.  An incomplete protection set risks
+    # classifying protected torrents as deletable — let the exception propagate
+    # so the caller can return an appropriate HTTP error rather than silently
+    # presenting unsafe categorization results.
+    active_hashes, active_rd_ids, symlink_mount_names = (
+        await _build_protection_sets(session)
+    )
 
     categorized, category_map, hash_map = _categorize_all(
         rd_torrents, active_hashes, active_rd_ids, symlink_mount_names
@@ -760,9 +732,8 @@ async def execute_rd_cleanup(
     otherwise re-fetches from RD.  Protected torrents in the request list are
     silently rejected (counted in ``rejected_protected``).
 
-    Deletions are issued concurrently with a ``Semaphore(5)`` and a
-    ``stop_flag`` that halts further attempts on the first ``RealDebridRateLimitError``
-    (matching the pattern used elsewhere in the tools routes).
+    Deletions are issued sequentially; the first ``RealDebridRateLimitError``
+    halts all further attempts so that no additional API budget is wasted.
 
     After each successful deletion, ``mark_torrent_removed`` is called to keep
     the local dedup registry in sync.
@@ -806,6 +777,46 @@ async def execute_rd_cleanup(
         )
         category_map: dict[str, RdTorrentCategory] = _last_scan_cache["category_map"]  # type: ignore[assignment]
         hash_map: dict[str, str] = _last_scan_cache["hash_map"]  # type: ignore[assignment]
+
+        # Re-validate protection sets from fresh DB state (cheap: 3 SQL queries).
+        # One-way upgrade only: items can become Protected, never downgraded.
+        fresh_hashes, fresh_rd_ids, fresh_mount_names = (
+            await _build_protection_sets(session)
+        )
+        upgraded = 0
+        # Build an O(1) lookup from rd_id → (filename_lower, filename_norm)
+        # once before the loop to avoid an O(N*M) scan on every iteration.
+        rd_torrents_cache: list[dict] | None = _last_scan_cache.get("rd_torrents")
+        rd_id_to_filename: dict[str, tuple[str, str]] = {}
+        if rd_torrents_cache:
+            for rd in rd_torrents_cache:
+                rid_key = str(rd.get("id") or "")
+                if rid_key:
+                    fn = rd.get("filename") or ""
+                    rd_id_to_filename[rid_key] = (fn.lower(), _normalize_name(fn).lower())
+
+        for rid, cat in list(category_map.items()):
+            if cat == RdTorrentCategory.PROTECTED:
+                continue
+            # Check if this entry now qualifies as protected
+            cached_hash = hash_map.get(rid, "")
+            rd_filename_lower, rd_filename_norm = rd_id_to_filename.get(rid, ("", ""))
+            newly_protected = (
+                (cached_hash and cached_hash in fresh_hashes)
+                or (rid and rid in fresh_rd_ids)
+                or (rd_filename_lower and rd_filename_lower in fresh_mount_names)
+                or (rd_filename_norm and rd_filename_norm in fresh_mount_names)
+            )
+            if newly_protected:
+                category_map[rid] = RdTorrentCategory.PROTECTED
+                upgraded += 1
+
+        if upgraded:
+            logger.info(
+                "rd_cleanup.execute_rd_cleanup: re-validation upgraded %d "
+                "cached item(s) to PROTECTED based on fresh DB state",
+                upgraded,
+            )
     else:
         logger.info(
             "rd_cleanup.execute_rd_cleanup: cache expired or missing — "

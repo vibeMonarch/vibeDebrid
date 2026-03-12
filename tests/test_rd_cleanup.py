@@ -26,7 +26,7 @@ scan_rd_account (mock RD client + DB):
   Empty account → total=0, all summaries zero
   Mixed categories with DB fixtures → correct counts
   Cache populated after scan
-  Protection set failure → warning emitted, scan still completes
+  Protection set failure → exception propagated (hard-fail)
   RD API failure → exception propagated
 
 execute_rd_cleanup (mock RD client + DB):
@@ -58,6 +58,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import src.core.rd_cleanup as rd_cleanup_module
+from src.core.rd_bridge import _extract_mount_name_any_base
 from src.core.rd_cleanup import (
     CategorizedTorrent,
     RdCleanupExecuteRequest,
@@ -66,7 +67,6 @@ from src.core.rd_cleanup import (
     _build_summaries,
     _categorize_all,
     _categorize_torrent,
-    _extract_mount_name_any_base,
     _last_scan_cache,
     _normalize_title,
     _parse_added,
@@ -692,7 +692,13 @@ class TestScanRdAccount:
         assert _last_scan_cache["category_map"] is not None
         assert _last_scan_cache["hash_map"] is not None
 
-    async def test_protection_set_failure_emits_warning(self, session: AsyncSession):
+    async def test_protection_set_failure_propagates_exception(self, session: AsyncSession):
+        """_build_protection_sets failure hard-fails scan_rd_account.
+
+        An incomplete protection set risks classifying protected torrents as
+        deletable, so the exception must propagate rather than being swallowed
+        with a warning.
+        """
         rd_data = [_rd("ID1", info_hash="e" * 40)]
 
         with patch("src.services.real_debrid.RealDebridClient") as MockRd:
@@ -703,10 +709,8 @@ class TestScanRdAccount:
                 "src.core.rd_cleanup._build_protection_sets",
                 side_effect=RuntimeError("DB locked"),
             ):
-                result = await scan_rd_account(session)
-
-        assert len(result.warnings) > 0
-        assert any("protection" in w.lower() for w in result.warnings)
+                with pytest.raises(RuntimeError, match="DB locked"):
+                    await scan_rd_account(session)
 
     async def test_rd_api_failure_propagates_exception(self, session: AsyncSession):
         with patch("src.services.real_debrid.RealDebridClient") as MockRd:

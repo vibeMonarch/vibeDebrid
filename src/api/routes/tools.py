@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import os
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -53,6 +54,33 @@ _migration_lock = asyncio.Lock()
 
 # Prevents two concurrent backfill/dedup runs from racing each other.
 _cleanup_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _try_acquire(lock: asyncio.Lock, detail: str) -> AsyncGenerator[None, None]:
+    """Attempt to acquire *lock* without blocking; raise HTTP 409 if already held.
+
+    Best-effort non-blocking check.  Under asyncio cooperative scheduling,
+    the check-then-acquire is effectively atomic for uncontested locks.  If
+    two requests arrive simultaneously, the second may block until the first
+    completes rather than receiving 409.
+
+    Args:
+        lock: The asyncio.Lock to acquire.
+        detail: Human-readable message for the 409 response body.
+
+    Raises:
+        HTTPException: HTTP 409 when the lock is already held.
+        HTTPException: HTTP 409 when the lock is acquired but the body raises
+            an HTTPException (re-raised transparently).
+    """
+    if lock.locked():
+        raise HTTPException(status_code=409, detail=detail)
+    await lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +242,7 @@ async def migration_execute(
         req.shows_path,
     )
 
-    if _migration_lock.locked():
-        raise HTTPException(status_code=409, detail="Migration already in progress")
-
-    try:
-        await _migration_lock.acquire()
-
+    async with _try_acquire(_migration_lock, "Migration already in progress"):
         # Build preview first so execute_migration has the full picture.
         preview = await preview_migration(session, req.movies_path, req.shows_path)
 
@@ -235,9 +258,6 @@ async def migration_execute(
                 status_code=500,
                 detail=f"Migration completed but database commit failed: {exc}",
             ) from exc
-
-    finally:
-        _migration_lock.release()
 
     return {
         "imported": migration_result.imported,
@@ -280,24 +300,20 @@ async def bridge_rd_torrents_endpoint(
     Returns:
         BridgeResult with counts for all outcomes.
     """
-    if _cleanup_lock.locked():
-        raise HTTPException(
-            status_code=409,
-            detail="A data cleanup operation is already in progress",
-        )
-
     try:
-        await _cleanup_lock.acquire()
-        result = await bridge_rd_torrents(session)
-        await session.commit()
+        async with _try_acquire(
+            _cleanup_lock, "A data cleanup operation is already in progress"
+        ):
+            result = await bridge_rd_torrents(session)
+            await session.commit()
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("bridge_rd_torrents_endpoint: unexpected error: %s", exc)
         raise HTTPException(
             status_code=500,
             detail=f"Bridge operation failed: {exc}",
         ) from exc
-    finally:
-        _cleanup_lock.release()
 
     logger.info(
         "bridge_rd_torrents_endpoint: total_rd=%d migration_items=%d "
@@ -330,25 +346,29 @@ async def run_backfill(
         BackfillResult with total/resolved/failed/updated_rows counts.
     """
     # Check the shared lock (also held by the background task in main.py).
-    if _backfill_lock.locked() or _cleanup_lock.locked():
+    # _backfill_lock is checked explicitly because it may be held by the
+    # startup background task even when _cleanup_lock is free.
+    if _backfill_lock.locked():
         raise HTTPException(
             status_code=409,
             detail="A data cleanup operation is already in progress",
         )
 
     try:
-        await _cleanup_lock.acquire()
-        # backfill_tmdb_ids acquires _backfill_lock internally.
-        result = await backfill_tmdb_ids(session)
-        await session.commit()
+        async with _try_acquire(
+            _cleanup_lock, "A data cleanup operation is already in progress"
+        ):
+            # backfill_tmdb_ids acquires _backfill_lock internally.
+            result = await backfill_tmdb_ids(session)
+            await session.commit()
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("run_backfill: unexpected error: %s", exc)
         raise HTTPException(
             status_code=500,
             detail=f"Backfill failed: {exc}",
         ) from exc
-    finally:
-        _cleanup_lock.release()
 
     logger.info(
         "run_backfill: total=%d resolved=%d failed=%d rows_updated=%d",
@@ -403,27 +423,23 @@ async def deduplicate(
     Returns:
         DeduplicateResult with counts of removed/kept/groups.
     """
-    if _cleanup_lock.locked():
-        raise HTTPException(
-            status_code=409,
-            detail="A data cleanup operation is already in progress",
-        )
-
     if not req.groups:
         return DeduplicateResult()
 
     try:
-        await _cleanup_lock.acquire()
-        result = await remove_duplicates(session, req.groups)
-        await session.commit()
+        async with _try_acquire(
+            _cleanup_lock, "A data cleanup operation is already in progress"
+        ):
+            result = await remove_duplicates(session, req.groups)
+            await session.commit()
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("deduplicate: unexpected error: %s", exc)
         raise HTTPException(
             status_code=500,
             detail=f"Deduplication failed: {exc}",
         ) from exc
-    finally:
-        _cleanup_lock.release()
 
     logger.info(
         "deduplicate: removed=%d kept=%d groups=%d rd_to_delete=%d",
@@ -435,40 +451,40 @@ async def deduplicate(
 
     # ------------------------------------------------------------------
     # Delete RD torrents from the account after the DB commit.
-    # Rate-limit errors stop further deletions (stop_flag) but do not
-    # fail the overall response — the DB cleanup already succeeded.
+    # Sequential iteration stops immediately on the first rate-limit
+    # response so no further API budget is wasted.  The DB cleanup has
+    # already succeeded at this point, so failures here are non-fatal.
     # ------------------------------------------------------------------
     if result.rd_ids_to_delete:
         from src.services.real_debrid import RealDebridClient, RealDebridRateLimitError
 
         rd_client = RealDebridClient()
-        sem = asyncio.Semaphore(5)
+        rd_deleted = 0
         rd_failed: list[str] = []
-        stop_flag = False
+        rate_limited = False
 
-        async def _delete_rd(rd_id: str) -> None:
-            nonlocal stop_flag
-            async with sem:
-                if stop_flag:
-                    rd_failed.append(rd_id)
-                    return
-                try:
-                    await rd_client.delete_torrent(rd_id)
-                except RealDebridRateLimitError:
-                    stop_flag = True
-                    rd_failed.append(rd_id)
-                    logger.warning(
-                        "deduplicate: RD rate limit hit during account cleanup, "
-                        "stopping further deletions"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "deduplicate: RD delete failed rd_id=%s: %s", rd_id, exc
-                    )
-                    rd_failed.append(rd_id)
+        for rd_id in result.rd_ids_to_delete:
+            if rate_limited:
+                rd_failed.append(rd_id)
+                continue
+            try:
+                await rd_client.delete_torrent(rd_id)
+                rd_deleted += 1
+            except RealDebridRateLimitError:
+                rate_limited = True
+                rd_failed.append(rd_id)
+                logger.warning(
+                    "deduplicate: RD rate limit hit, stopping deletions "
+                    "(%d remaining)",
+                    len(result.rd_ids_to_delete) - rd_deleted - len(rd_failed),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "deduplicate: RD delete failed rd_id=%s: %s", rd_id, exc
+                )
+                rd_failed.append(rd_id)
 
-        await asyncio.gather(*[_delete_rd(rid) for rid in result.rd_ids_to_delete])
-        result.rd_torrents_deleted = len(result.rd_ids_to_delete) - len(rd_failed)
+        result.rd_torrents_deleted = rd_deleted
         result.rd_torrents_failed = len(rd_failed)
 
         logger.info(
@@ -554,7 +570,7 @@ async def cleanup_execute_endpoint(
     Deletes DB records in FK-safe order (scrape_log → rd_torrents → symlinks →
     media_items) inside a savepoint for atomicity, removes broken symlinks from
     disk, then calls the RD API to delete orphaned account torrents
-    (Semaphore(5) + stop_flag pattern).
+    sequentially (stops on first rate-limit response).
 
     Returns 409 when another cleanup operation is already in progress.
 
@@ -565,29 +581,24 @@ async def cleanup_execute_endpoint(
     Returns:
         CleanupResult with counts for all outcomes.
     """
-    if _cleanup_lock.locked():
-        raise HTTPException(
-            status_code=409,
-            detail="A data cleanup operation is already in progress",
-        )
-
     if not req.confirm:
         raise HTTPException(status_code=400, detail="confirm must be true to proceed")
 
     try:
-        await _cleanup_lock.acquire()
+        async with _try_acquire(
+            _cleanup_lock, "A data cleanup operation is already in progress"
+        ):
+            # Re-run the full server-side assessment so we never trust client-
+            # supplied item IDs.  A stale preview or crafted request body cannot
+            # cause non-duplicate items to be deleted.
+            assessed = await assess_migration_items(session)
+            current_preview = await build_cleanup_preview(session, assessed)
 
-        # Re-run the full server-side assessment so we never trust client-
-        # supplied item IDs.  A stale preview or crafted request body cannot
-        # cause non-duplicate items to be deleted.
-        assessed = await assess_migration_items(session)
-        current_preview = await build_cleanup_preview(session, assessed)
+            if not current_preview.groups:
+                return CleanupResult()
 
-        if not current_preview.groups:
-            return CleanupResult()
-
-        result = await execute_cleanup(session, current_preview)
-        await session.commit()
+            result = await execute_cleanup(session, current_preview)
+            await session.commit()
 
     except HTTPException:
         raise
@@ -598,8 +609,6 @@ async def cleanup_execute_endpoint(
             status_code=500,
             detail=f"Cleanup execution failed: {exc}",
         ) from exc
-    finally:
-        _cleanup_lock.release()
 
     rd_ids_to_delete = current_preview.rd_ids_to_delete
 
@@ -613,40 +622,41 @@ async def cleanup_execute_endpoint(
 
     # ------------------------------------------------------------------
     # Delete RD torrents from the account after the DB commit.
-    # Semaphore(5) + stop_flag mirrors the pattern in deduplicate().
+    # Sequential iteration stops immediately on the first rate-limit
+    # response so no further API budget is wasted.
     # ------------------------------------------------------------------
     if rd_ids_to_delete:
         from src.services.real_debrid import RealDebridClient, RealDebridRateLimitError
 
         rd_client = RealDebridClient()
-        sem = asyncio.Semaphore(5)
+        rd_deleted = 0
         rd_failed: list[str] = []
-        stop_flag = False
+        rate_limited = False
 
-        async def _delete_rd(rd_id: str) -> None:
-            nonlocal stop_flag
-            async with sem:
-                if stop_flag:
-                    rd_failed.append(rd_id)
-                    return
-                try:
-                    await rd_client.delete_torrent(rd_id)
-                except RealDebridRateLimitError:
-                    stop_flag = True
-                    rd_failed.append(rd_id)
-                    logger.warning(
-                        "cleanup_execute_endpoint: RD rate limit hit, stopping deletions"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "cleanup_execute_endpoint: RD delete failed rd_id=%s: %s",
-                        rd_id,
-                        exc,
-                    )
-                    rd_failed.append(rd_id)
+        for rd_id in rd_ids_to_delete:
+            if rate_limited:
+                rd_failed.append(rd_id)
+                continue
+            try:
+                await rd_client.delete_torrent(rd_id)
+                rd_deleted += 1
+            except RealDebridRateLimitError:
+                rate_limited = True
+                rd_failed.append(rd_id)
+                logger.warning(
+                    "cleanup_execute_endpoint: RD rate limit hit, stopping deletions "
+                    "(%d remaining)",
+                    len(rd_ids_to_delete) - rd_deleted - len(rd_failed),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "cleanup_execute_endpoint: RD delete failed rd_id=%s: %s",
+                    rd_id,
+                    exc,
+                )
+                rd_failed.append(rd_id)
 
-        await asyncio.gather(*[_delete_rd(rid) for rid in rd_ids_to_delete])
-        result.rd_torrents_deleted = len(rd_ids_to_delete) - len(rd_failed)
+        result.rd_torrents_deleted = rd_deleted
         result.rd_torrents_failed = len(rd_failed)
 
         logger.info(
@@ -682,12 +692,11 @@ async def rd_cleanup_scan(
     Returns:
         RdCleanupScan with per-category summaries and per-torrent detail.
     """
-    if _cleanup_lock.locked():
-        raise HTTPException(status_code=409, detail="Another cleanup operation is in progress")
-
     try:
-        await _cleanup_lock.acquire()
-        result = await scan_rd_account(session)
+        async with _try_acquire(
+            _cleanup_lock, "Another cleanup operation is in progress"
+        ):
+            result = await scan_rd_account(session)
     except HTTPException:
         raise
     except Exception as exc:
@@ -704,8 +713,6 @@ async def rd_cleanup_scan(
             status_code=500,
             detail="RD cleanup scan failed — check server logs",
         )
-    finally:
-        _cleanup_lock.release()
 
     logger.info(
         "rd_cleanup_scan: total=%d warnings=%d",
@@ -724,8 +731,8 @@ async def rd_cleanup_execute(
 
     Rejects any rd_id that resolves to a PROTECTED torrent (linked to a local
     MediaItem or Symlink).  Unknown IDs are counted as ``rejected_not_found``
-    and skipped.  Deletions run concurrently (Semaphore(5)) with a stop_flag
-    that halts further attempts on the first rate-limit response.
+    and skipped.  Deletions are issued sequentially and stop immediately on the
+    first rate-limit response.
 
     After each successful deletion, the local dedup registry is updated via
     ``mark_torrent_removed`` so future scrape decisions stay consistent.
@@ -743,13 +750,12 @@ async def rd_cleanup_execute(
     if not req.rd_ids:
         raise HTTPException(status_code=400, detail="rd_ids must not be empty")
 
-    if _cleanup_lock.locked():
-        raise HTTPException(status_code=409, detail="Another cleanup operation is in progress")
-
     try:
-        await _cleanup_lock.acquire()
-        result = await execute_rd_cleanup(session, req.rd_ids)
-        await session.commit()
+        async with _try_acquire(
+            _cleanup_lock, "Another cleanup operation is in progress"
+        ):
+            result = await execute_rd_cleanup(session, req.rd_ids)
+            await session.commit()
     except HTTPException:
         raise
     except Exception as exc:
@@ -766,8 +772,6 @@ async def rd_cleanup_execute(
             status_code=500,
             detail="RD cleanup execute failed — check server logs",
         )
-    finally:
-        _cleanup_lock.release()
 
     logger.info(
         "rd_cleanup_execute: requested=%d deleted=%d failed=%d "

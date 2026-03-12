@@ -118,6 +118,36 @@ def _extract_mount_relative_name(source_path: str, zurg_mount: str) -> str | Non
     return parts[0]
 
 
+# Matches the Zurg /__all__/ virtual directory in any mount path.
+_ALL_DIR_MARKER = "/__all__/"
+
+
+def _extract_mount_name_any_base(source_path: str) -> str | None:
+    """Extract the torrent directory/file name from a Zurg mount path.
+
+    Unlike ``_extract_mount_relative_name`` (which requires the exact mount
+    prefix), this finds ``/__all__/`` anywhere in the path and returns the
+    first component after it.  Handles symlinks that reference alternative
+    mount points (e.g. ``rclone_RD/__all__/`` vs ``__all__/``).
+
+    Args:
+        source_path: Absolute symlink source path.
+
+    Returns:
+        The torrent directory name (first component after ``/__all__/``),
+        or None when the marker is not found.
+    """
+    idx = source_path.find(_ALL_DIR_MARKER)
+    if idx == -1:
+        return None
+    rest = source_path[idx + len(_ALL_DIR_MARKER):]
+    if not rest:
+        return None
+    # First path component after /__all__/
+    slash = rest.find("/")
+    return rest[:slash] if slash != -1 else rest
+
+
 # ---------------------------------------------------------------------------
 # Core function
 # ---------------------------------------------------------------------------
@@ -285,10 +315,13 @@ async def _bridge_single_item(
 
     source_path: str = symlink.source_path
     mount_name = _extract_mount_relative_name(source_path, zurg_mount)
+    if mount_name is None:
+        mount_name = _extract_mount_name_any_base(source_path)
 
     if mount_name is None:
         logger.warning(
-            "bridge_rd_torrents: item_id=%d source_path=%r is not under zurg_mount=%r",
+            "bridge_rd_torrents: item_id=%d source_path=%r is not under "
+            "zurg_mount=%r and has no /__all__/ marker",
             item_id,
             source_path,
             zurg_mount,
