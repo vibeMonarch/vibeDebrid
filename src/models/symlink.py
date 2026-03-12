@@ -19,7 +19,7 @@ class Symlink(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     media_item_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("media_items.id"), nullable=True
+        Integer, ForeignKey("media_items.id"), nullable=True, index=True
     )
     source_path: Mapped[str] = mapped_column(String, nullable=False)
     target_path: Mapped[str] = mapped_column(String, nullable=False)

@@ -39,7 +39,7 @@ class MediaItem(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     imdb_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    tmdb_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tmdb_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tvdb_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)

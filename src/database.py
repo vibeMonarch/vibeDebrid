@@ -96,6 +96,19 @@ async def _migrate_add_columns() -> None:
             if "duplicate column" not in str(exc).lower():
                 logger.warning("Migration original_language: %s", exc)
 
+        # --- Index migrations (issue #10) ---
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS ix_rd_torrents_media_item_id ON rd_torrents (media_item_id)",
+            "CREATE INDEX IF NOT EXISTS ix_scrape_log_media_item_id ON scrape_log (media_item_id)",
+            "CREATE INDEX IF NOT EXISTS ix_symlinks_media_item_id ON symlinks (media_item_id)",
+            "CREATE INDEX IF NOT EXISTS ix_mount_index_parsed_title ON mount_index (parsed_title)",
+        ]
+        for stmt in index_statements:
+            try:
+                await conn.execute(text(stmt))
+            except Exception as exc:
+                logger.warning("Migration index: %s — %s", stmt.split("ON")[0].strip(), exc)
+
 
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""

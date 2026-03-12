@@ -6,7 +6,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
@@ -29,10 +29,10 @@ class RdTorrent(Base):
     info_hash: Mapped[str | None] = mapped_column(String, unique=True, nullable=True, index=True)
     magnet_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_item_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("media_items.id"), nullable=True
+        Integer, ForeignKey("media_items.id"), nullable=True, index=True
     )
     filename: Mapped[str | None] = mapped_column(String, nullable=True)
-    filesize: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filesize: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     resolution: Mapped[str | None] = mapped_column(String, nullable=True)
     cached: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     added_at: Mapped[datetime] = mapped_column(

@@ -19,7 +19,7 @@ class ScrapeLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     media_item_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("media_items.id"), nullable=True
+        Integer, ForeignKey("media_items.id"), nullable=True, index=True
     )
     scraper: Mapped[str] = mapped_column(String, nullable=False)
     query_params: Mapped[str | None] = mapped_column("query_params", Text, nullable=True)
