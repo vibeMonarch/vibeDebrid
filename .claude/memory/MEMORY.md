@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1580 tests, all passing (as of 2026-03-09)
+- 1697 tests, all passing (as of 2026-03-12)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -30,9 +30,11 @@
 - TMDB ID backfill + migration dedup — 2026-03-09
 - [RD Bridge + Smart Cleanup + Account Cleanup](rd-cleanup.md) — 2026-03-09
 - Search add fixes: silent failure UX, check_cached race condition, missing year/tmdb_id — 2026-03-09
+- [Original language preference](original-language.md) — 2026-03-11
+- RD 451 infringing_file fallback — 2026-03-11
+- [Issue #29 complete](rd-cleanup.md): mount path fallback + deletion safety hardening — 2026-03-12
 
 ## Remaining / Future Work
-- Issue #28: Anime prefer original language (Japanese) over dubs
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
 - 2 unresolved IMDB IDs: tt1088540 (Bookworm), tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
 - Docker (Step 3): Dockerfile + docker-compose.yml
@@ -44,6 +46,11 @@
 - Services: broad `except Exception` on JSON parsing — should be `except ValueError`
 - `filter_engine.py:287`: regex compiled inside hot loop
 - Frontend: no CSRF protection, duplicated `escapeHtml`/`formatBytes`
+- `queue.py` rescrape endpoint: no server-side state validation (frontend guards only)
+- `filter_engine.py`: `_score_original_language` double-penalty stacking (-30 for dubbed + no tags)
+- `filter_engine.py`: `original_language` param accepts ISO or name but only name matches torrent tags
+- `tmdb.py`: `ISO_639_1_TO_LANGUAGE` only covers 11 languages (Hindi, Arabic, Thai etc. missing)
+- `scrape_pipeline.py`: `force_original_language` flag cleared before pipeline success
 
 ## XEM Negative Cache — 2026-03-08
 - In-memory `_empty_response_cache: dict[int, float]` on XemMapper instance (not class-level — breaks tests)
