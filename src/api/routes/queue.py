@@ -242,20 +242,23 @@ async def bulk_remove(
         except Exception as exc:
             errors.append(f"Item {item_id}: {exc}")
 
-    # Delete RD torrents concurrently (deduped, max 5 at a time)
-    rd_failed: list[str] = []
+    # Delete RD torrents concurrently (deduped, max 5 at a time).
+    # Results are collected from gather() return values to avoid concurrent
+    # list mutation — _delete_rd raises on failure so exceptions are the signal.
     sem = asyncio.Semaphore(5)
+    rd_ids_list = list(rd_ids_to_delete)
 
     async def _delete_rd(rd_id: str) -> None:
         async with sem:
-            try:
-                await rd_client.delete_torrent(rd_id)
-            except Exception as exc:
-                logger.warning("bulk_remove: failed to delete rd torrent rd_id=%s: %s", rd_id, exc)
-                rd_failed.append(rd_id)
+            await rd_client.delete_torrent(rd_id)
 
-    if rd_ids_to_delete:
-        await asyncio.gather(*[_delete_rd(rid) for rid in rd_ids_to_delete])
+    rd_failed: list[str] = []
+    if rd_ids_list:
+        results = await asyncio.gather(*[_delete_rd(rid) for rid in rd_ids_list], return_exceptions=True)
+        for rd_id, result in zip(rd_ids_list, results):
+            if isinstance(result, Exception):
+                logger.warning("bulk_remove: failed to delete rd torrent rd_id=%s: %s", rd_id, result)
+                rd_failed.append(rd_id)
 
     if rd_failed:
         errors.append(f"Failed to delete {len(rd_failed)} RD torrent(s) from account")

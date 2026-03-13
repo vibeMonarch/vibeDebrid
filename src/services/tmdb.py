@@ -22,6 +22,7 @@ import httpx
 from pydantic import BaseModel
 
 from src.config import settings
+from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +159,12 @@ class TmdbClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient pointed at the TMDB API."""
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the pooled httpx.AsyncClient for TMDB."""
         cfg = settings.tmdb
-        return httpx.AsyncClient(
-            base_url=cfg.base_url.rstrip("/"),
+        return await get_client(
+            "tmdb",
+            cfg.base_url.rstrip("/"),
             timeout=cfg.timeout_seconds,
             headers={
                 "Authorization": f"Bearer {cfg.api_key}",
@@ -317,10 +319,18 @@ class TmdbClient:
         if not self._check_configured("get_trending"):
             return []
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(f"/trending/{media_type}/{time_window}")
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.get_trending: circuit open, skipping media_type=%s", media_type)
+            return []
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/trending/{media_type}/{time_window}")
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_trending: connection error media_type=%s (%s)",
                 media_type,
@@ -328,6 +338,7 @@ class TmdbClient:
             )
             return []
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_trending: request timed out media_type=%s (%s)",
                 media_type,
@@ -335,6 +346,7 @@ class TmdbClient:
             )
             return []
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_trending: network error media_type=%s (%s)",
                 media_type,
@@ -343,7 +355,10 @@ class TmdbClient:
             return []
 
         if self._handle_error_status(response, "get_trending"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return []
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -412,27 +427,40 @@ class TmdbClient:
 
         params = {"query": query, "page": page}
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(endpoint, params=params)
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.search: circuit open, skipping query=%r", query)
+            return TmdbSearchResult(items=[])
+
+        try:
+            client = await self._get_client()
+            response = await client.get(endpoint, params=params)
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.search: connection error query=%r (%s)", query, exc
             )
             return TmdbSearchResult(items=[])
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.search: request timed out query=%r (%s)", query, exc
             )
             return TmdbSearchResult(items=[])
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.search: network error query=%r (%s)", query, exc
             )
             return TmdbSearchResult(items=[])
 
         if self._handle_error_status(response, "search"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return TmdbSearchResult(items=[])
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -482,10 +510,18 @@ class TmdbClient:
         if not self._check_configured("get_external_ids"):
             return None
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(f"/{media_type}/{tmdb_id}/external_ids")
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.get_external_ids: circuit open, skipping tmdb_id=%d", tmdb_id)
+            return None
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/{media_type}/{tmdb_id}/external_ids")
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_external_ids: connection error tmdb_id=%d (%s)",
                 tmdb_id,
@@ -493,6 +529,7 @@ class TmdbClient:
             )
             return None
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_external_ids: request timed out tmdb_id=%d (%s)",
                 tmdb_id,
@@ -500,6 +537,7 @@ class TmdbClient:
             )
             return None
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_external_ids: network error tmdb_id=%d (%s)",
                 tmdb_id,
@@ -508,7 +546,10 @@ class TmdbClient:
             return None
 
         if self._handle_error_status(response, "get_external_ids"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return None
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -545,12 +586,20 @@ class TmdbClient:
         if not self._check_configured("get_top_rated"):
             return []
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(
-                    f"/{media_type}/top_rated", params={"page": page}
-                )
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.get_top_rated: circuit open, skipping media_type=%s", media_type)
+            return []
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/{media_type}/top_rated", params={"page": page}
+            )
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_top_rated: connection error media_type=%s (%s)",
                 media_type,
@@ -558,6 +607,7 @@ class TmdbClient:
             )
             return []
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_top_rated: request timed out media_type=%s (%s)",
                 media_type,
@@ -565,6 +615,7 @@ class TmdbClient:
             )
             return []
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_top_rated: network error media_type=%s (%s)",
                 media_type,
@@ -573,7 +624,10 @@ class TmdbClient:
             return []
 
         if self._handle_error_status(response, "get_top_rated"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return []
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -610,10 +664,18 @@ class TmdbClient:
         if not self._check_configured("get_genres"):
             return []
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(f"/genre/{media_type}/list")
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.get_genres: circuit open, skipping media_type=%s", media_type)
+            return []
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/genre/{media_type}/list")
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_genres: connection error media_type=%s (%s)",
                 media_type,
@@ -621,6 +683,7 @@ class TmdbClient:
             )
             return []
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_genres: request timed out media_type=%s (%s)",
                 media_type,
@@ -628,6 +691,7 @@ class TmdbClient:
             )
             return []
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_genres: network error media_type=%s (%s)",
                 media_type,
@@ -636,7 +700,10 @@ class TmdbClient:
             return []
 
         if self._handle_error_status(response, "get_genres"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return []
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -683,10 +750,18 @@ class TmdbClient:
         if vote_count_gte is not None:
             params["vote_count.gte"] = vote_count_gte
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(f"/discover/{media_type}", params=params)
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.discover: circuit open, skipping media_type=%s", media_type)
+            return TmdbSearchResult(items=[])
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/discover/{media_type}", params=params)
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.discover: connection error media_type=%s (%s)",
                 media_type,
@@ -694,6 +769,7 @@ class TmdbClient:
             )
             return TmdbSearchResult(items=[])
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.discover: request timed out media_type=%s (%s)",
                 media_type,
@@ -701,6 +777,7 @@ class TmdbClient:
             )
             return TmdbSearchResult(items=[])
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.discover: network error media_type=%s (%s)",
                 media_type,
@@ -709,7 +786,10 @@ class TmdbClient:
             return TmdbSearchResult(items=[])
 
         if self._handle_error_status(response, "discover"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return TmdbSearchResult(items=[])
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -755,8 +835,18 @@ class TmdbClient:
             logger.warning("tmdb.test_connection: API key not configured")
             return False
 
+        # test_connection is a one-off settings check — bypass the circuit breaker
+        # and use a fresh client to avoid stale connection pools.
         try:
-            async with self._build_client() as client:
+            async with httpx.AsyncClient(
+                base_url=settings.tmdb.base_url.rstrip("/"),
+                timeout=settings.tmdb.timeout_seconds,
+                headers={
+                    "Authorization": f"Bearer {settings.tmdb.api_key}",
+                    "User-Agent": "vibeDebrid/0.1",
+                },
+                follow_redirects=True,
+            ) as client:
                 response = await client.get("/configuration")
         except httpx.RequestError as exc:
             logger.warning("tmdb.test_connection: network error (%s)", exc)
@@ -786,24 +876,37 @@ class TmdbClient:
         if not self._check_configured("get_show_details"):
             return None
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(
-                    f"/tv/{tmdb_id}",
-                    params={"append_to_response": "external_ids"},
-                )
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.get_show_details: circuit open, skipping tmdb_id=%d", tmdb_id)
+            return None
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/tv/{tmdb_id}",
+                params={"append_to_response": "external_ids"},
+            )
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning("tmdb.get_show_details: connection error tmdb_id=%d (%s)", tmdb_id, exc)
             return None
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning("tmdb.get_show_details: request timed out tmdb_id=%d (%s)", tmdb_id, exc)
             return None
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning("tmdb.get_show_details: network error tmdb_id=%d (%s)", tmdb_id, exc)
             return None
 
         if self._handle_error_status(response, "get_show_details"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return None
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -903,38 +1006,43 @@ class TmdbClient:
         if not self._check_configured("find_by_imdb_id"):
             return None
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with httpx.AsyncClient(
-                base_url=settings.tmdb.base_url.rstrip("/"),
-                timeout=10.0,
-                headers={
-                    "Authorization": f"Bearer {settings.tmdb.api_key}",
-                    "User-Agent": "vibeDebrid/0.1",
-                },
-                follow_redirects=True,
-            ) as client:
-                response = await client.get(
-                    f"/find/{imdb_id}",
-                    params={"external_source": "imdb_id"},
-                )
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.find_by_imdb_id: circuit open, skipping imdb_id=%s", imdb_id)
+            return None
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/find/{imdb_id}",
+                params={"external_source": "imdb_id"},
+            )
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.find_by_imdb_id: connection error imdb_id=%s (%s)", imdb_id, exc
             )
             return None
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.find_by_imdb_id: request timed out imdb_id=%s (%s)", imdb_id, exc
             )
             return None
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.find_by_imdb_id: network error imdb_id=%s (%s)", imdb_id, exc
             )
             return None
 
         if self._handle_error_status(response, "find_by_imdb_id"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return None
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -993,21 +1101,34 @@ class TmdbClient:
         if not self._check_configured("get_movie_details"):
             return None
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(f"/movie/{tmdb_id}")
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("tmdb.get_movie_details: circuit open, skipping tmdb_id=%d", tmdb_id)
+            return None
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/movie/{tmdb_id}")
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning("tmdb.get_movie_details: connection error tmdb_id=%d (%s)", tmdb_id, exc)
             return None
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning("tmdb.get_movie_details: request timed out tmdb_id=%d (%s)", tmdb_id, exc)
             return None
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning("tmdb.get_movie_details: network error tmdb_id=%d (%s)", tmdb_id, exc)
             return None
 
         if self._handle_error_status(response, "get_movie_details"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return None
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -1030,22 +1151,35 @@ class TmdbClient:
         if not self._check_configured("get_season_details"):
             return None
 
+        breaker = get_circuit_breaker("tmdb")
         try:
-            async with self._build_client() as client:
-                response = await client.get(f"/tv/{tmdb_id}/season/{season_number}")
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning(
+                "tmdb.get_season_details: circuit open, skipping tmdb_id=%d s=%d",
+                tmdb_id, season_number,
+            )
+            return None
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/tv/{tmdb_id}/season/{season_number}")
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_season_details: connection error tmdb_id=%d s=%d (%s)",
                 tmdb_id, season_number, exc,
             )
             return None
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_season_details: request timed out tmdb_id=%d s=%d (%s)",
                 tmdb_id, season_number, exc,
             )
             return None
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "tmdb.get_season_details: network error tmdb_id=%d s=%d (%s)",
                 tmdb_id, season_number, exc,
@@ -1053,7 +1187,10 @@ class TmdbClient:
             return None
 
         if self._handle_error_status(response, "get_season_details"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return None
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()

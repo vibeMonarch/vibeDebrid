@@ -32,6 +32,7 @@ import PTN
 from pydantic import BaseModel
 
 from src.config import settings
+from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -214,15 +215,20 @@ class TorrentioClient:
             return f"{base}/{opts}"
         return base
 
-    def _build_client(self, *, include_debrid_key: bool = True) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient pointed at the Torrentio addon.
+    async def _get_client(self, *, include_debrid_key: bool = True) -> httpx.AsyncClient:
+        """Return the pooled httpx.AsyncClient for Torrentio.
 
         Args:
             include_debrid_key: Forwarded to :meth:`_build_base_url`.
         """
         cfg = settings.scrapers.torrentio
-        return httpx.AsyncClient(
-            base_url=self._build_base_url(include_debrid_key=include_debrid_key),
+        base_url = self._build_base_url(include_debrid_key=include_debrid_key)
+        # Use include_debrid_key as part of the logical key so pipeline calls
+        # (no debrid key) and settings-test calls (with key) get separate clients.
+        service_key = "torrentio" if include_debrid_key else "torrentio_pipeline"
+        return await get_client(
+            service_key,
+            base_url,
             timeout=cfg.timeout_seconds,
             headers={"User-Agent": "vibeDebrid/0.1"},
             follow_redirects=True,
@@ -350,22 +356,38 @@ class TorrentioClient:
             List of parsed TorrentioResult objects, capped at ``max_results``.
             Returns an empty list on any network or API error.
         """
+        # Use the pipeline circuit breaker (keyed without debrid key) for pipeline
+        # calls; use the with-key breaker for settings tests.
+        breaker_name = "torrentio" if include_debrid_key else "torrentio_pipeline"
+        breaker = get_circuit_breaker(breaker_name)
+        try:
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning(
+                "torrentio._query: circuit open for %s, skipping path=%s",
+                breaker_name, path,
+            )
+            return []
+
         max_results = settings.scrapers.torrentio.max_results
         t0 = time.monotonic()
         try:
-            async with self._build_client(include_debrid_key=include_debrid_key) as client:
-                response = await client.get(path)
+            client = await self._get_client(include_debrid_key=include_debrid_key)
+            response = await client.get(path)
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "torrentio._query: connection refused for path=%s (%s)", path, exc
             )
             return []
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "torrentio._query: request timed out for path=%s (%s)", path, exc
             )
             return []
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "torrentio._query: network error for path=%s (%s)", path, exc
             )
@@ -374,12 +396,14 @@ class TorrentioClient:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         if response.status_code == 429:
+            # Rate limiting — do not penalise the circuit breaker.
             logger.warning(
                 "torrentio._query: rate limited (429) for path=%s", path
             )
             return []
 
         if response.status_code >= 500:
+            await breaker.record_failure()
             logger.error(
                 "torrentio._query: server error %d for path=%s body=%s",
                 response.status_code,
@@ -389,12 +413,15 @@ class TorrentioClient:
             return []
 
         if not response.is_success:
+            await breaker.record_failure()
             logger.error(
                 "torrentio._query: unexpected status %d for path=%s",
                 response.status_code,
                 path,
             )
             return []
+
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()

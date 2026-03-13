@@ -3,26 +3,30 @@
 All external HTTP calls are intercepted by a custom _MockTransport so no real
 network traffic is generated. Each test exercises a single behaviour.
 
-The mocking pattern mirrors test_tmdb.py exactly:
+Mocking strategy:
   - monkeypatch patches src.services.plex.settings so the mock config stays
     alive during await calls.
   - _MockTransport records every request in .requests_made for URL assertions.
-  - _patch_client() replaces client._build_client (and optionally
-    client._build_plex_tv_client) to inject the mock transport.
+  - _patch_client() replaces client._get_client (async) to inject the mock
+    transport for get_libraries / scan_section.
+  - test_connection, create_pin, check_pin use inline httpx.AsyncClient — those
+    tests patch src.services.plex.httpx.AsyncClient directly.
   - _make_response() builds fake httpx.Response objects.
   - _make_mock_cfg() creates a mock PlexConfig-like MagicMock.
+  - _make_noop_breaker() produces a CircuitBreaker that never trips.
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from src.services.plex import PlexClient, PlexLibrarySection, PlexPinResponse
+from src.services.http_client import CircuitBreaker
 
 
 # ---------------------------------------------------------------------------
@@ -123,28 +127,29 @@ def _make_mock_cfg(
     return cfg
 
 
+def _make_noop_breaker() -> CircuitBreaker:
+    """Return a CircuitBreaker that never opens (infinite threshold)."""
+    return CircuitBreaker("plex_test", failure_threshold=10_000)
+
+
 def _patch_client(
     client: PlexClient,
     responses: list[httpx.Response],
-    *,
-    plex_tv_responses: list[httpx.Response] | None = None,
-) -> tuple[_MockTransport, _MockTransport | None]:
-    """Monkey-patch *client._build_client* (and optionally *_build_plex_tv_client*)
-    to inject a _MockTransport.
+) -> _MockTransport:
+    """Monkey-patch *client._get_client* (async) to inject a _MockTransport.
+
+    Used for get_libraries and scan_section which use the pooled client.
 
     Args:
-        client:             The PlexClient instance under test.
-        responses:          Ordered responses for the local Plex server client.
-        plex_tv_responses:  Ordered responses for the plex.tv client.  When
-                            None, _build_plex_tv_client is not patched.
+        client:    The PlexClient instance under test.
+        responses: Ordered responses for the local Plex server client.
 
     Returns:
-        A tuple of (local_transport, plex_tv_transport).  plex_tv_transport is
-        None when plex_tv_responses was not provided.
+        The local _MockTransport so callers can inspect ``requests_made``.
     """
     local_transport = _MockTransport(responses)
 
-    def _fake_build_client(
+    async def _fake_get_client(
         base_url: str | None = None, timeout: int = 10
     ) -> httpx.AsyncClient:
         resolved = (base_url or "http://plex.local:32400").rstrip("/")
@@ -153,21 +158,8 @@ def _patch_client(
             transport=local_transport,
         )
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
-
-    plex_tv_transport: _MockTransport | None = None
-    if plex_tv_responses is not None:
-        plex_tv_transport = _MockTransport(plex_tv_responses)
-
-        def _fake_build_plex_tv_client(timeout: int = 10) -> httpx.AsyncClient:
-            return httpx.AsyncClient(
-                base_url="https://plex.tv",
-                transport=plex_tv_transport,
-            )
-
-        client._build_plex_tv_client = _fake_build_plex_tv_client  # type: ignore[method-assign]
-
-    return local_transport, plex_tv_transport
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
+    return local_transport
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +169,15 @@ def _patch_client(
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> PlexClient:
-    """A PlexClient with a patched settings singleton."""
+    """A PlexClient with a patched settings singleton and noop circuit breaker."""
     cfg = _make_mock_cfg()
     mock_settings = MagicMock()
     mock_settings.plex = cfg
     monkeypatch.setattr("src.services.plex.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.plex.get_circuit_breaker",
+        lambda *a, **kw: _make_noop_breaker(),
+    )
     return PlexClient()
 
 
@@ -192,6 +188,10 @@ def no_token_client(monkeypatch: pytest.MonkeyPatch) -> PlexClient:
     mock_settings = MagicMock()
     mock_settings.plex = cfg
     monkeypatch.setattr("src.services.plex.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.plex.get_circuit_breaker",
+        lambda *a, **kw: _make_noop_breaker(),
+    )
     return PlexClient()
 
 
@@ -201,9 +201,28 @@ def no_token_client(monkeypatch: pytest.MonkeyPatch) -> PlexClient:
 
 
 @pytest.mark.asyncio
-async def test_test_connection_success(client: PlexClient) -> None:
+async def test_test_connection_success(
+    client: PlexClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """test_connection returns True when the server responds with HTTP 200."""
-    _patch_client(client, [_make_response(200, {"MediaContainer": {}})])
+    mock_response = _make_response(200, {"MediaContainer": {}})
+    mock_transport = _MockTransport([mock_response])
+    fake_client = httpx.AsyncClient(
+        base_url="http://plex.local:32400",
+        transport=mock_transport,
+    )
+
+    class _FakeAsyncClientCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "src.services.plex.httpx.AsyncClient",
+        lambda **kwargs: _FakeAsyncClientCM(),
+    )
 
     result = await client.test_connection()
 
@@ -211,9 +230,28 @@ async def test_test_connection_success(client: PlexClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_test_connection_failure(client: PlexClient) -> None:
+async def test_test_connection_failure(
+    client: PlexClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """test_connection returns False when the server responds with HTTP 401."""
-    _patch_client(client, [_make_response(401)])
+    mock_response = _make_response(401)
+    mock_transport = _MockTransport([mock_response])
+    fake_client = httpx.AsyncClient(
+        base_url="http://plex.local:32400",
+        transport=mock_transport,
+    )
+
+    class _FakeAsyncClientCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "src.services.plex.httpx.AsyncClient",
+        lambda **kwargs: _FakeAsyncClientCM(),
+    )
 
     result = await client.test_connection()
 
@@ -221,22 +259,31 @@ async def test_test_connection_failure(client: PlexClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_test_connection_network_error(client: PlexClient) -> None:
+async def test_test_connection_network_error(
+    client: PlexClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """test_connection returns False when a ConnectError is raised."""
 
     class _ErrorTransport(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("Connection refused")
 
-    def _fake_build_client(
-        base_url: str | None = None, timeout: int = 10
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url="http://plex.local:32400",
-            transport=_ErrorTransport(),
-        )
+    error_client = httpx.AsyncClient(
+        base_url="http://plex.local:32400",
+        transport=_ErrorTransport(),
+    )
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    class _FakeAsyncClientCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return error_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "src.services.plex.httpx.AsyncClient",
+        lambda **kwargs: _FakeAsyncClientCM(),
+    )
 
     result = await client.test_connection()
 
@@ -292,6 +339,7 @@ async def test_get_libraries_not_configured(no_token_client: PlexClient) -> None
     assert sections == []
 
 
+
 # ---------------------------------------------------------------------------
 # scan_section
 # ---------------------------------------------------------------------------
@@ -320,7 +368,7 @@ async def test_scan_section_failure(client: PlexClient) -> None:
 @pytest.mark.asyncio
 async def test_scan_section_with_path(client: PlexClient) -> None:
     """scan_section passes the path as a query parameter when provided."""
-    local_transport, _ = _patch_client(client, [_make_response(200)])
+    local_transport = _patch_client(client, [_make_response(200)])
 
     await client.scan_section(section_id=3, path="/media/movies/Dune")
 
@@ -337,10 +385,29 @@ async def test_scan_section_with_path(client: PlexClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_pin_success(client: PlexClient) -> None:
+async def test_create_pin_success(
+    client: PlexClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """create_pin returns a PlexPinResponse with correct pin_id, code, and auth_url."""
     body = _make_pin_response(pin_id=12345, code="abcd1234")
-    _, _ = _patch_client(client, [], plex_tv_responses=[_make_response(201, body)])
+    mock_response = _make_response(201, body)
+    mock_transport = _MockTransport([mock_response])
+    fake_client = httpx.AsyncClient(
+        base_url="https://plex.tv",
+        transport=mock_transport,
+    )
+
+    class _FakeAsyncClientCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "src.services.plex.httpx.AsyncClient",
+        lambda **kwargs: _FakeAsyncClientCM(),
+    )
 
     result = await client.create_pin()
 
@@ -360,10 +427,29 @@ async def test_create_pin_success(client: PlexClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_pin_pending(client: PlexClient) -> None:
+async def test_check_pin_pending(
+    client: PlexClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """check_pin returns None when authToken is an empty string (user not yet authed)."""
     body = _make_check_pin_response(pin_id=12345, auth_token="")
-    _, _ = _patch_client(client, [], plex_tv_responses=[_make_response(200, body)])
+    mock_response = _make_response(200, body)
+    mock_transport = _MockTransport([mock_response])
+    fake_client = httpx.AsyncClient(
+        base_url="https://plex.tv",
+        transport=mock_transport,
+    )
+
+    class _FakeAsyncClientCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "src.services.plex.httpx.AsyncClient",
+        lambda **kwargs: _FakeAsyncClientCM(),
+    )
 
     result = await client.check_pin(pin_id=12345)
 
@@ -371,10 +457,29 @@ async def test_check_pin_pending(client: PlexClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_pin_complete(client: PlexClient) -> None:
+async def test_check_pin_complete(
+    client: PlexClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """check_pin returns the token string when authToken is populated."""
     body = _make_check_pin_response(pin_id=12345, auth_token="my-plex-token-123")
-    _, _ = _patch_client(client, [], plex_tv_responses=[_make_response(200, body)])
+    mock_response = _make_response(200, body)
+    mock_transport = _MockTransport([mock_response])
+    fake_client = httpx.AsyncClient(
+        base_url="https://plex.tv",
+        transport=mock_transport,
+    )
+
+    class _FakeAsyncClientCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "src.services.plex.httpx.AsyncClient",
+        lambda **kwargs: _FakeAsyncClientCM(),
+    )
 
     result = await client.check_pin(pin_id=12345)
 

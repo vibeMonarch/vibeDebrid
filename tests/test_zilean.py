@@ -19,11 +19,17 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+from src.services.http_client import CircuitBreaker
 from src.services.zilean import (
     ZileanClient,
     ZileanError,
     ZileanResult,
 )
+
+
+def _make_noop_breaker() -> CircuitBreaker:
+    """Return a CircuitBreaker that is always CLOSED (never rejects requests)."""
+    return CircuitBreaker("test", failure_threshold=999, recovery_timeout=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -190,13 +196,13 @@ def _patch_client(
         default_response=default_response,
     )
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url="http://localhost:8182",
             transport=transport,
         )
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
     return transport
 
 
@@ -213,6 +219,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> ZileanClient:
     mock_settings = MagicMock()
     mock_settings.scrapers.zilean = cfg
     monkeypatch.setattr("src.services.zilean.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.zilean.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     c = ZileanClient()
     c._test_cfg = cfg  # type: ignore[attr-defined]
@@ -227,6 +237,10 @@ def disabled_client(monkeypatch: pytest.MonkeyPatch) -> ZileanClient:
     mock_settings = MagicMock()
     mock_settings.scrapers.zilean = cfg
     monkeypatch.setattr("src.services.zilean.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.zilean.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     return ZileanClient()
 
@@ -544,10 +558,10 @@ async def test_timeout_returns_empty_list(client: ZileanClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.TimeoutException("timed out", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_TimeoutTransport())
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     results = await client.search("Movie")
 
@@ -562,10 +576,10 @@ async def test_connection_error_returns_empty_list(client: ZileanClient) -> None
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_ConnErrorTransport())
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     results = await client.search("Movie")
 
@@ -904,10 +918,10 @@ async def test_http_request_error_returns_empty_list(client: ZileanClient) -> No
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.RequestError("generic request error", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_RequestErrorTransport())
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     results = await client.search("Movie")
 

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from src.services.http_client import CircuitBreaker
 from src.services.real_debrid import (
     CacheCheckResult,
     RealDebridAuthError,
@@ -19,6 +20,11 @@ from src.services.real_debrid import (
     RealDebridError,
     RealDebridRateLimitError,
 )
+
+
+def _make_noop_breaker() -> CircuitBreaker:
+    """Return a CircuitBreaker that is always CLOSED (never rejects requests)."""
+    return CircuitBreaker("test", failure_threshold=999, recovery_timeout=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -64,16 +70,63 @@ class _MockTransport(httpx.AsyncBaseTransport):
 
 
 def _patch_client(client: RealDebridClient, responses: list[httpx.Response]):
-    """Patch RealDebridClient._build_client to inject a mock transport."""
-    original_build = client._build_client
+    """Patch RealDebridClient._get_client and the inline httpx.AsyncClient.
 
-    def _patched_build(timeout=15.0):
-        real_client = original_build(timeout)
-        real_client._transport = _MockTransport(responses)
-        real_client._async_transport = _MockTransport(responses)
-        return real_client
+    Covers two cases:
+    - Pooled methods (add_magnet, list_torrents, etc.): patch _get_client.
+    - get_user which uses inline ``async with httpx.AsyncClient(...) as client``:
+      patched via ``patch("src.services.real_debrid.httpx.AsyncClient")``.
 
-    return patch.object(client, "_build_client", side_effect=_patched_build)
+    Both use the same _MockTransport so that the response queue is shared.
+    Also patches the circuit breaker to a no-op so tests are not affected by
+    circuit state.
+    """
+    transport = _MockTransport(responses)
+    mock_http_client = httpx.AsyncClient(
+        base_url="https://api.real-debrid.com/rest/1.0",
+        transport=transport,
+    )
+
+    async def _fake_get_client(timeout=15.0):
+        return mock_http_client
+
+    # Build a mock class for httpx.AsyncClient that behaves as an async context
+    # manager and delegates requests to our mock transport.
+    import contextlib
+
+    class _FakeAsyncClientCM:
+        """Async context manager that wraps the mock transport client."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return mock_http_client
+
+        async def __aexit__(self, *args):
+            pass
+
+    class _MultiPatch:
+        """Context manager that stacks all required patches."""
+
+        def __enter__(self):
+            self._p1 = patch.object(client, "_get_client", side_effect=_fake_get_client)
+            self._p2 = patch("src.services.real_debrid.httpx.AsyncClient", new=_FakeAsyncClientCM)
+            self._p3 = patch(
+                "src.services.real_debrid.get_circuit_breaker",
+                side_effect=lambda *a, **k: _make_noop_breaker(),
+            )
+            self._p1.__enter__()
+            self._p2.__enter__()
+            self._p3.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            self._p3.__exit__(*args)
+            self._p2.__exit__(*args)
+            self._p1.__exit__(*args)
+
+    return _MultiPatch()
 
 
 # ---------------------------------------------------------------------------
@@ -209,15 +262,18 @@ async def test_list_torrents_pagination_params(client: RealDebridClient) -> None
             resp.request = request  # type: ignore[attr-defined]
             return resp
 
-    original_build = client._build_client
+    capturing_client = httpx.AsyncClient(
+        base_url="https://api.real-debrid.com/rest/1.0",
+        transport=_CapturingTransport(),
+    )
 
-    def _patched_build(timeout=15.0):
-        c = original_build(timeout)
-        c._transport = _CapturingTransport()
-        c._async_transport = _CapturingTransport()
-        return c
+    async def _fake_get_client(timeout: float = 15.0) -> httpx.AsyncClient:
+        return capturing_client
 
-    with patch.object(client, "_build_client", side_effect=_patched_build):
+    with (
+        patch.object(client, "_get_client", side_effect=_fake_get_client),
+        patch("src.services.real_debrid.get_circuit_breaker", side_effect=lambda *a, **k: _make_noop_breaker()),
+    ):
         await client.list_torrents(limit=25, page=3)
 
     assert len(captured_requests) == 1
@@ -307,15 +363,18 @@ async def test_select_files_specific_ids(client: RealDebridClient) -> None:
             resp.request = request  # type: ignore[attr-defined]
             return resp
 
-    original_build = client._build_client
+    capturing_client = httpx.AsyncClient(
+        base_url="https://api.real-debrid.com/rest/1.0",
+        transport=_CapturingTransport(),
+    )
 
-    def _patched_build(timeout=15.0):
-        c = original_build(timeout)
-        c._transport = _CapturingTransport()
-        c._async_transport = _CapturingTransport()
-        return c
+    async def _fake_get_client(timeout: float = 15.0) -> httpx.AsyncClient:
+        return capturing_client
 
-    with patch.object(client, "_build_client", side_effect=_patched_build):
+    with (
+        patch.object(client, "_get_client", side_effect=_fake_get_client),
+        patch("src.services.real_debrid.get_circuit_breaker", side_effect=lambda *a, **k: _make_noop_breaker()),
+    ):
         await client.select_files("TORRENT1", file_ids=[1, 3, 7])
 
     assert len(captured_requests) == 1
@@ -420,16 +479,36 @@ class _SharedTransport(httpx.AsyncBaseTransport):
 
 
 def _patch_client_shared(client: RealDebridClient, transport: _SharedTransport):
-    """Patch so every _build_client call shares the same transport."""
-    original_build = client._build_client
+    """Patch so every _get_client call shares the same transport.
 
-    def _patched(timeout=15.0):
-        c = original_build(timeout)
-        c._transport = transport
-        c._async_transport = transport
-        return c
+    Returns a context manager that applies two patches:
+    - client._get_client → async function returning a shared-transport client
+    - src.services.real_debrid.get_circuit_breaker → noop breaker factory
+    """
+    shared_http_client = httpx.AsyncClient(
+        base_url="https://api.real-debrid.com/rest/1.0",
+        transport=transport,
+    )
 
-    return patch.object(client, "_build_client", side_effect=_patched)
+    async def _fake_get_client(timeout: float = 15.0) -> httpx.AsyncClient:
+        return shared_http_client
+
+    class _MultiPatch:
+        def __enter__(self):
+            self._p1 = patch.object(client, "_get_client", side_effect=_fake_get_client)
+            self._p2 = patch(
+                "src.services.real_debrid.get_circuit_breaker",
+                side_effect=lambda *a, **k: _make_noop_breaker(),
+            )
+            self._p1.__enter__()
+            self._p2.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            self._p2.__exit__(*args)
+            self._p1.__exit__(*args)
+
+    return _MultiPatch()
 
 
 # ---------------------------------------------------------------------------

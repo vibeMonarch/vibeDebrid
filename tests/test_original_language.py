@@ -480,17 +480,21 @@ class TestTmdbOriginalLanguageParsing:
                 mock_response.request = request
                 return mock_response
 
+        async def _fake_get_client() -> httpx.AsyncClient:
+            return httpx.AsyncClient(
+                base_url="https://api.themoviedb.org/3",
+                transport=_FakeTransport(),
+            )
+
         with (
             patch("src.services.tmdb.settings.tmdb", mock_cfg),
-            patch.object(
-                self.client,
-                "_build_client",
-                return_value=httpx.AsyncClient(
-                    base_url="https://api.themoviedb.org/3",
-                    transport=_FakeTransport(),
-                ),
-            ),
+            patch("src.services.tmdb.get_circuit_breaker", return_value=MagicMock(
+                before_request=AsyncMock(),
+                record_success=AsyncMock(),
+                record_failure=AsyncMock(),
+            )),
         ):
+            self.client._get_client = _fake_get_client  # type: ignore[method-assign]
             detail = await self.client.get_show_details(12345)
 
         assert detail is not None
@@ -527,17 +531,21 @@ class TestTmdbOriginalLanguageParsing:
                 mock_response.request = request
                 return mock_response
 
+        async def _fake_get_client() -> httpx.AsyncClient:
+            return httpx.AsyncClient(
+                base_url="https://api.themoviedb.org/3",
+                transport=_FakeTransport(),
+            )
+
         with (
             patch("src.services.tmdb.settings.tmdb", mock_cfg),
-            patch.object(
-                self.client,
-                "_build_client",
-                return_value=httpx.AsyncClient(
-                    base_url="https://api.themoviedb.org/3",
-                    transport=_FakeTransport(),
-                ),
-            ),
+            patch("src.services.tmdb.get_circuit_breaker", return_value=MagicMock(
+                before_request=AsyncMock(),
+                record_success=AsyncMock(),
+                record_failure=AsyncMock(),
+            )),
         ):
+            self.client._get_client = _fake_get_client  # type: ignore[method-assign]
             detail = await self.client.get_show_details(99998)
 
         assert detail is not None

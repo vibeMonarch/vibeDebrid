@@ -54,8 +54,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.xem_cache import XemCacheEntry
+from src.services.http_client import CircuitBreaker
 from src.services.xem import XemClient, XemMapping, XemShowMappings
 from src.services.tmdb import TmdbExternalIds
+
+
+def _make_noop_breaker() -> CircuitBreaker:
+    """Return a CircuitBreaker that is always CLOSED (never rejects requests)."""
+    return CircuitBreaker("test", failure_threshold=999, recovery_timeout=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -117,16 +123,16 @@ def _patch_xem_client(
     *,
     raise_on_send: Exception | None = None,
 ) -> _MockTransport:
-    """Monkey-patch client._build_client to inject a _MockTransport."""
+    """Monkey-patch client._get_client to inject a _MockTransport."""
     transport = _MockTransport(responses, raise_on_send=raise_on_send)
 
-    def _fake_build() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url="https://thexem.info",
             transport=transport,
         )
 
-    client._build_client = _fake_build  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
     return transport
 
 
@@ -166,6 +172,14 @@ TVDB_ID = 76290
 
 class TestXemClient:
     """Tests for XemClient HTTP layer — all calls are intercepted."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_circuit_breaker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Auto-patch the circuit breaker to a no-op for all XemClient tests."""
+        monkeypatch.setattr(
+            "src.services.xem.get_circuit_breaker",
+            lambda *args, **kwargs: _make_noop_breaker(),
+        )
 
     # ------------------------------------------------------------------
     # get_show_mappings — happy path
