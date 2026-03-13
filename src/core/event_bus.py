@@ -20,6 +20,7 @@ class QueueEvent:
         new_state: The state the item transitioned to.
         retry_count: Current retry count on the item after the transition.
         media_type: The media type of the item ("movie", "show", or empty string).
+        tmdb_id: TMDB identifier string for the media item, or None if unknown.
     """
 
     item_id: int
@@ -28,6 +29,7 @@ class QueueEvent:
     new_state: str
     retry_count: int
     media_type: str
+    tmdb_id: str | None = None
 
     def to_sse_data(self) -> str:
         """Serialise the event as a JSON string suitable for the SSE data field.
