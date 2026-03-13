@@ -34,6 +34,7 @@ def _make_event(
     new_state: str = "scraping",
     retry_count: int = 0,
     media_type: str = "movie",
+    tmdb_id: str | None = None,
 ) -> QueueEvent:
     """Build a QueueEvent with sensible defaults for testing."""
     return QueueEvent(
@@ -43,6 +44,7 @@ def _make_event(
         new_state=new_state,
         retry_count=retry_count,
         media_type=media_type,
+        tmdb_id=tmdb_id,
     )
 
 
@@ -188,6 +190,7 @@ def test_event_to_sse_data_contains_all_fields() -> None:
         new_state="scraping",
         retry_count=3,
         media_type="show",
+        tmdb_id="12345",
     )
     parsed = json.loads(event.to_sse_data())
 
@@ -197,6 +200,35 @@ def test_event_to_sse_data_contains_all_fields() -> None:
     assert parsed["new_state"] == "scraping"
     assert parsed["retry_count"] == 3
     assert parsed["media_type"] == "show"
+    assert parsed["tmdb_id"] == "12345"
+
+
+def test_event_to_sse_data_tmdb_id_none_by_default() -> None:
+    """to_sse_data() serialises tmdb_id as null when not supplied."""
+    event = _make_event()
+    parsed = json.loads(event.to_sse_data())
+    assert "tmdb_id" in parsed
+    assert parsed["tmdb_id"] is None
+
+
+def test_event_to_sse_data_tmdb_id_present_when_set() -> None:
+    """to_sse_data() includes tmdb_id string when explicitly provided."""
+    event = _make_event(tmdb_id="98765")
+    parsed = json.loads(event.to_sse_data())
+    assert parsed["tmdb_id"] == "98765"
+
+
+def test_queue_event_tmdb_id_defaults_to_none() -> None:
+    """QueueEvent.tmdb_id defaults to None when not supplied."""
+    event = QueueEvent(
+        item_id=1,
+        title="Test",
+        old_state="wanted",
+        new_state="scraping",
+        retry_count=0,
+        media_type="movie",
+    )
+    assert event.tmdb_id is None
 
 
 def test_event_to_sse_data_unicode_title() -> None:

@@ -923,7 +923,7 @@
       }
     } else {
       addBtn = '<button class="add-btn add-btn-available add-btn-action" ' +
-        'data-tmdb-id="' + item.tmdb_id + '" ' +
+        'data-tmdb-id="' + escAttr(String(item.tmdb_id)) + '" ' +
         'data-media-type="' + escAttr(item.media_type) + '" ' +
         'data-title="' + escAttr(item.title) + '" ' +
         'data-year="' + escAttr(String(item.year || '')) + '" ' +
@@ -1093,17 +1093,27 @@
       'data-year="' + escAttr(String(year || '')) + '">Add to Library</button>';
   }
 
-  // Update every rendered card whose title matches and patch the mediaCache
+  // Update every rendered card whose tmdb_id matches and patch the mediaCache
   function handleSSEStateChange(data) {
     var title = data.title;
+    var tmdbId = data.tmdb_id != null ? String(data.tmdb_id) : null;
     var newState = data.new_state || '';
     var newQueueStatus = queueStatusFromState(newState);
 
     // 1. Update all visible cards in the DOM
-    var cards = document.querySelectorAll('.poster-card[data-title]');
+    // Prefer tmdb_id matching (reliable); fall back to title matching for
+    // events from older server versions that omit tmdb_id.
+    var cards;
+    if (tmdbId) {
+      cards = Array.prototype.slice.call(
+        document.querySelectorAll('.poster-card[data-tmdb-id="' + CSS.escape(tmdbId) + '"]')
+      );
+    } else {
+      cards = Array.prototype.slice.call(document.querySelectorAll('.poster-card[data-title]'));
+    }
     for (var i = 0; i < cards.length; i++) {
       var card = cards[i];
-      if (card.dataset.title !== title) continue;
+      if (!tmdbId && card.dataset.title !== title) continue;
 
       var imgWrap = card.querySelector('.poster-img-wrap');
       var infoDiv = card.querySelector('.poster-info');
@@ -1128,17 +1138,19 @@
       // Replace the add-button in the info div
       var existingBtn = infoDiv.querySelector('.add-btn');
       if (existingBtn) {
-        var tmdbId = card.dataset.tmdbId;
+        var cardTmdbId = card.dataset.tmdbId;
         var mediaType = card.dataset.mediaType || existingBtn.dataset.mediaType || '';
         var cardTitle = card.dataset.title || title;
         var year = card.dataset.year || existingBtn.dataset.year || '';
         var tmp2 = document.createElement('div');
-        tmp2.innerHTML = addBtnHtml(newQueueStatus, tmdbId, mediaType, cardTitle, year);
+        tmp2.innerHTML = addBtnHtml(newQueueStatus, cardTmdbId, mediaType, cardTitle, year);
         existingBtn.replaceWith(tmp2.firstChild);
       }
     }
 
     // 2. Patch mediaCache so restored state has correct badges
+    // Match by tmdb_id (converted to string for comparison) when available,
+    // otherwise fall back to title matching for backwards compatibility.
     var cacheKeys = ['movie', 'tv'];
     for (var k = 0; k < cacheKeys.length; k++) {
       var cache = mediaCache[cacheKeys[k]];
@@ -1148,7 +1160,10 @@
         var arr = cache[arrays[a]];
         if (!arr) continue;
         for (var j = 0; j < arr.length; j++) {
-          if (arr[j].title === title) {
+          var matches = tmdbId
+            ? (arr[j].tmdb_id != null && String(arr[j].tmdb_id) === tmdbId)
+            : (arr[j].title === title);
+          if (matches) {
             arr[j].queue_status = newQueueStatus;
           }
         }
@@ -1171,7 +1186,10 @@
               var arr2 = c[arrays2[a2]];
               if (!arr2) continue;
               for (var j2 = 0; j2 < arr2.length; j2++) {
-                if (arr2[j2].title === title) {
+                var matches2 = tmdbId
+                  ? (arr2[j2].tmdb_id != null && String(arr2[j2].tmdb_id) === tmdbId)
+                  : (arr2[j2].title === title);
+                if (matches2) {
                   arr2[j2].queue_status = newQueueStatus;
                 }
               }

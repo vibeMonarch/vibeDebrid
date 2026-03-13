@@ -48,6 +48,7 @@ async def _make_item(
     air_date: date | None = None,
     imdb_id: str = "tt0000001",
     title: str = "Test Item",
+    tmdb_id: str | None = None,
 ) -> MediaItem:
     """Helper: persist a MediaItem with the given state to the test session."""
     item = MediaItem(
@@ -60,6 +61,7 @@ async def _make_item(
         retry_count=retry_count,
         next_retry_at=next_retry_at,
         air_date=air_date,
+        tmdb_id=tmdb_id,
     )
     session.add(item)
     await session.flush()
@@ -1206,7 +1208,7 @@ async def test_transition_publishes_event(session: AsyncSession) -> None:
     bus = EventBus()
     client_id, queue = bus.subscribe()
 
-    item = await _make_item(session, state=QueueState.WANTED)
+    item = await _make_item(session, state=QueueState.WANTED, tmdb_id="11111")
     qm = QueueManager()
 
     with patch("src.core.event_bus.event_bus", bus):
@@ -1216,6 +1218,26 @@ async def test_transition_publishes_event(session: AsyncSession) -> None:
     assert event.item_id == item.id
     assert event.old_state == "wanted"
     assert event.new_state == "scraping"
+    assert event.tmdb_id == "11111"
+    bus.unsubscribe(client_id)
+
+
+@pytest.mark.asyncio
+async def test_transition_publishes_event_tmdb_id_none(session: AsyncSession) -> None:
+    """transition() publishes tmdb_id=None when the item has no TMDB ID."""
+    from src.core.event_bus import EventBus
+
+    bus = EventBus()
+    client_id, queue = bus.subscribe()
+
+    item = await _make_item(session, state=QueueState.WANTED, tmdb_id=None)
+    qm = QueueManager()
+
+    with patch("src.core.event_bus.event_bus", bus):
+        await qm.transition(session, item.id, QueueState.SCRAPING)
+
+    event = queue.get_nowait()
+    assert event.tmdb_id is None
     bus.unsubscribe(client_id)
 
 
@@ -1227,7 +1249,7 @@ async def test_force_transition_publishes_event(session: AsyncSession) -> None:
     bus = EventBus()
     client_id, queue = bus.subscribe()
 
-    item = await _make_item(session, state=QueueState.SLEEPING)
+    item = await _make_item(session, state=QueueState.SLEEPING, tmdb_id="22222")
     qm = QueueManager()
 
     with patch("src.core.event_bus.event_bus", bus):
@@ -1237,4 +1259,24 @@ async def test_force_transition_publishes_event(session: AsyncSession) -> None:
     assert event.item_id == item.id
     assert event.old_state == "sleeping"
     assert event.new_state == "wanted"
+    assert event.tmdb_id == "22222"
+    bus.unsubscribe(client_id)
+
+
+@pytest.mark.asyncio
+async def test_force_transition_publishes_event_tmdb_id_none(session: AsyncSession) -> None:
+    """force_transition() publishes tmdb_id=None when the item has no TMDB ID."""
+    from src.core.event_bus import EventBus
+
+    bus = EventBus()
+    client_id, queue = bus.subscribe()
+
+    item = await _make_item(session, state=QueueState.SLEEPING, tmdb_id=None)
+    qm = QueueManager()
+
+    with patch("src.core.event_bus.event_bus", bus):
+        await qm.force_transition(session, item.id, QueueState.WANTED)
+
+    event = queue.get_nowait()
+    assert event.tmdb_id is None
     bus.unsubscribe(client_id)

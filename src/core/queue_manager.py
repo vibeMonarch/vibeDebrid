@@ -256,6 +256,7 @@ class QueueManager:
                 new_state=effective_state.value,
                 retry_count=item.retry_count,
                 media_type=item.media_type.value if item.media_type else "",
+                tmdb_id=item.tmdb_id,
             ))
         except Exception:
             logger.warning("Failed to publish state change event for item id=%d", item_id, exc_info=True)
@@ -356,6 +357,7 @@ class QueueManager:
                 new_state=new_state.value,
                 retry_count=item.retry_count,
                 media_type=item.media_type.value if item.media_type else "",
+                tmdb_id=item.tmdb_id,
             ))
         except Exception:
             logger.warning("Failed to publish force transition event for item id=%d", item_id, exc_info=True)
