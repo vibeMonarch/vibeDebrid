@@ -6,7 +6,9 @@ import logging
 import re
 from datetime import UTC, datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from typing import Literal
 
 from pydantic import BaseModel
@@ -17,10 +19,11 @@ from sqlalchemy import select
 from src.api.deps import get_db
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import filter_engine
+from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
-from src.services.real_debrid import RealDebridError, rd_client
+from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
 
@@ -84,7 +87,8 @@ class CheckCachedResponse(BaseModel):
     """Response body for POST /api/check-cached."""
 
     info_hash: str
-    cached: bool
+    cached: bool | None = None
+    error: str | None = None
 
 
 class AddRequest(BaseModel):
@@ -300,9 +304,22 @@ async def check_cached(
         )
         return CheckCachedResponse(info_hash=normalized_hash, cached=True)
 
-    result = await rd_client.check_cached(normalized_hash, keep_if_cached=False)
-    cached = result.cached is True  # coerce None→False for frontend
-    return CheckCachedResponse(info_hash=normalized_hash, cached=cached)
+    try:
+        result = await rd_client.check_cached(normalized_hash, keep_if_cached=False)
+        cached = result.cached is True  # coerce None→False for frontend
+        return CheckCachedResponse(info_hash=normalized_hash, cached=cached)
+    except RealDebridRateLimitError:
+        logger.warning("check_cached: rate limited by RD for hash=%s", normalized_hash[:16])
+        return JSONResponse(
+            status_code=429,
+            content={"info_hash": normalized_hash, "cached": None, "error": "rate_limited"},
+        )
+    except (RealDebridError, httpx.RequestError) as exc:
+        logger.warning("check_cached: RD unavailable for hash=%s: %s", normalized_hash[:16], exc)
+        return JSONResponse(
+            status_code=502,
+            content={"info_hash": normalized_hash, "cached": None, "error": "rd_unavailable"},
+        )
 
 
 @router.post("/add")
@@ -461,18 +478,18 @@ async def add_torrent(
                 item.id,
             )
 
-            item.state = QueueState.CHECKING
+            await queue_manager.transition(session, item.id, QueueState.CHECKING)
         else:
             logger.warning(
                 "add_torrent: add_magnet returned empty id for item_id=%d", item.id
             )
-            item.state = QueueState.WANTED
+            await queue_manager.force_transition(session, item.id, QueueState.WANTED)
 
     except RealDebridError as exc:
         logger.error(
             "add_torrent: RD add_magnet failed for item_id=%d: %s", item.id, exc
         )
-        item.state = QueueState.WANTED
+        await queue_manager.force_transition(session, item.id, QueueState.WANTED)
 
     await session.commit()
 
