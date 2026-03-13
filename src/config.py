@@ -54,9 +54,9 @@ class ScrapersConfig(BaseModel):
 
 
 class PathsConfig(BaseModel):
-    zurg_mount: str = "/home/hakan/Projects/homeserver/Zurg/mnt/__all__"
-    library_movies: str = "/home/hakan/Projects/homeserver/vibeDebrid/library/movies"
-    library_shows: str = "/home/hakan/Projects/homeserver/vibeDebrid/library/shows"
+    zurg_mount: str = ""
+    library_movies: str = ""
+    library_shows: str = ""
 
 
 class QualityProfile(BaseModel):

@@ -411,6 +411,18 @@ class SymlinkManager:
             )
             raise SourceNotFoundError(source_path)
 
+        # --- Step 1b: validate library paths are configured ---
+        if media_item.media_type == MediaType.MOVIE and not settings.paths.library_movies:
+            raise SymlinkCreationError(
+                "", source_path,
+                "paths.library_movies is not configured — update config.json"
+            )
+        if media_item.media_type == MediaType.SHOW and not settings.paths.library_shows:
+            raise SymlinkCreationError(
+                "", source_path,
+                "paths.library_shows is not configured — update config.json"
+            )
+
         # --- Step 2: determine target directory ---
         tmdb_id = str(media_item.tmdb_id) if media_item.tmdb_id else None
         if media_item.media_type == MediaType.MOVIE:

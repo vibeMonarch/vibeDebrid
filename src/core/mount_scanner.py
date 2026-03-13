@@ -226,6 +226,11 @@ class MountScanner:
             True when the mount is confirmed reachable, False otherwise.
         """
         mount_path = settings.paths.zurg_mount
+        if not mount_path:
+            logger.warning(
+                "is_mount_available: paths.zurg_mount is not configured — skipping mount check"
+            )
+            return False
 
         try:
             is_dir = await asyncio.wait_for(
@@ -572,6 +577,11 @@ class MountScanner:
         """
         _empty = ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
 
+        mount_root = settings.paths.zurg_mount
+        if not mount_root:
+            logger.warning("scan_directory: zurg_mount is not configured, skipping")
+            return _empty
+
         # ------------------------------------------------------------------
         # Single-file torrent handling
         # If directory_name has a video extension it refers to a file that
@@ -593,7 +603,7 @@ class MountScanner:
                 directory_name,
             )
 
-        dir_path = os.path.join(settings.paths.zurg_mount, directory_name, "")
+        dir_path = os.path.join(mount_root, directory_name, "")
 
         try:
             exists = await asyncio.wait_for(
@@ -613,7 +623,6 @@ class MountScanner:
                 dir_path,
             )
             normalized_input = _normalize_title(directory_name)
-            mount_root = settings.paths.zurg_mount
 
             def _find_fuzzy_match() -> str | None:
                 try:
@@ -802,6 +811,9 @@ class MountScanner:
         """
         _empty = ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
         mount_root = settings.paths.zurg_mount
+        if not mount_root:
+            logger.warning("_scan_single_file: zurg_mount is not configured, skipping")
+            return _empty
         file_path = os.path.join(mount_root, filename)
 
         # --- Exact path check ---

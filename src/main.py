@@ -1007,11 +1007,39 @@ def _register_scheduled_jobs() -> None:
     )
 
 
+def _validate_configured_paths() -> None:
+    """Log warnings for any paths that are empty or do not exist on disk.
+
+    Called once at startup.  Missing paths do not abort startup — the system
+    degrades gracefully (mount scanner skips, symlink creation raises errors).
+    """
+    path_labels = {
+        "paths.zurg_mount": settings.paths.zurg_mount,
+        "paths.library_movies": settings.paths.library_movies,
+        "paths.library_shows": settings.paths.library_shows,
+    }
+    for label, path in path_labels.items():
+        if not path:
+            logger.warning(
+                "Configuration warning: %s is not set. "
+                "Update config.json to enable full functionality.",
+                label,
+            )
+        elif not Path(path).exists():
+            logger.warning(
+                "Configuration warning: %s = %r does not exist on disk. "
+                "Ensure the path is mounted and accessible.",
+                label,
+                path,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     setup_logging()
     logger.info("vibeDebrid starting up")
+    _validate_configured_paths()
 
     # Initialize database (create tables if needed)
     # Import models so Base.metadata knows about all tables
