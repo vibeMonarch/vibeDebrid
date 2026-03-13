@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-08
+## Last Updated: 2026-03-13
 
 ## Completed
 
@@ -341,6 +341,19 @@
 - Relaxed season filter: path-prefix fallback with season=None when season-filtered query returns nothing
 - Absolute episode fallback reordered before relaxed query (TMDB-guided filtering gets priority)
 - Stuck-in-CHECKING fix: filtered-empty matches fall through to timeout instead of looping forever
+
+### Episode Mismatch Filter + Retry Cleanup ✅ (2026-03-13)
+- Episode mismatch Tier 1 hard filter: rejects results whose parsed S/E doesn't match requested S/E
+  - `requested_season` + `requested_episode` params on `filter_and_rank()` and `_apply_hard_filters()`
+  - Skips for season packs, movies, search endpoint, and unparsed results (benefit of doubt)
+  - 13 new tests in `tests/test_filter_engine.py`
+- Retry cleanup in `force_transition()`: marks linked RdTorrent as REMOVED + removes symlinks when DONE/COMPLETE → WANTED
+  - Prevents dedup short-circuit loop (old wrong hash caused instant CHECKING with wrong file)
+- Anime parsing fallbacks in torrentio.py + zilean.py:
+  - `_ORDINAL_SEASON_EP_RE`: parses "2nd Season - 01" → S2E01
+  - `_ANIME_BARE_DASH_EP_RE`: parses "Title - 29" → E29
+  - Both feed into the episode mismatch filter so anime-named results are correctly rejected
+- Total: 1789 tests, all passing
 
 ## Remaining / Future Work
 
