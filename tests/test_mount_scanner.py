@@ -42,6 +42,7 @@ from src.core.mount_scanner import (
     ScanResult,
     UpsertResult,
     WalkEntry,
+    _has_meaningful_title,
     _parse_filename,
     mount_scanner,
 )
@@ -1372,10 +1373,10 @@ class TestBatchUpsert:
             "src.core.mount_scanner", fromlist=["_parse_filename"]
         )._parse_filename
 
-        def _flaky_parse(filename: str) -> dict:
+        def _flaky_parse(filename: str, parent_dir: str | None = None) -> dict:
             if filename == os.path.basename(bad_fp):
                 raise RuntimeError("PTN exploded")
-            return original_parse(filename)
+            return original_parse(filename, parent_dir=parent_dir)
 
         with patch("src.core.mount_scanner._parse_filename", side_effect=_flaky_parse):
             result = await scanner._upsert_records(session, records, ts)
@@ -2285,6 +2286,209 @@ class TestScanDirectorySingleFile:
 
         stats = await scanner.get_index_stats(session)
         assert stats["total_files"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Group 17: _has_meaningful_title
+# ---------------------------------------------------------------------------
+
+
+class TestHasMeaningfulTitle:
+    """Unit tests for the _has_meaningful_title helper (issue #33)."""
+
+    def test_normal_show_title_is_meaningful(self) -> None:
+        """A regular show title returns True."""
+        assert _has_meaningful_title("attack on titan") is True
+
+    def test_short_title_two_words_is_meaningful(self) -> None:
+        """Two-word title of reasonable length is meaningful."""
+        assert _has_meaningful_title("breaking bad") is True
+
+    def test_single_word_title_long_enough_is_meaningful(self) -> None:
+        """A single word of 3+ chars is still considered meaningful."""
+        assert _has_meaningful_title("alien") is True
+
+    def test_empty_string_not_meaningful(self) -> None:
+        """Empty string is not meaningful."""
+        assert _has_meaningful_title("") is False
+
+    def test_one_char_not_meaningful(self) -> None:
+        """Single character is below the 3-char minimum."""
+        assert _has_meaningful_title("a") is False
+
+    def test_two_chars_not_meaningful(self) -> None:
+        """Two characters is below the 3-char minimum."""
+        assert _has_meaningful_title("ab") is False
+
+    def test_three_chars_is_meaningful(self) -> None:
+        """Three characters meets the minimum threshold."""
+        assert _has_meaningful_title("abc") is True
+
+    def test_episode_marker_s02e01_not_meaningful(self) -> None:
+        """Title starting with SxxExx pattern is not meaningful."""
+        assert _has_meaningful_title("s02e01 beast titan") is False
+
+    def test_episode_marker_s01e01_alone_not_meaningful(self) -> None:
+        """Bare 'sXXeXX' string is not meaningful."""
+        assert _has_meaningful_title("s01e01") is False
+
+    def test_episode_marker_e01_not_meaningful(self) -> None:
+        """Title starting with 'eXX' episode marker is not meaningful."""
+        assert _has_meaningful_title("e01 prologue") is False
+
+    def test_episode_marker_uppercase_treated_as_lowercase(self) -> None:
+        """Since we pass normalised (lowercase) titles, uppercase is not expected,
+        but verify the marker check correctly rejects lowercase forms."""
+        # _has_meaningful_title always receives normalised (lowercase) input.
+        assert _has_meaningful_title("s02e01") is False
+
+    def test_title_with_numbers_not_starting_with_marker(self) -> None:
+        """A title with numbers that does NOT start with SxxExx is meaningful."""
+        assert _has_meaningful_title("zone 414") is True
+
+    def test_season_4_title_not_confused_with_marker(self) -> None:
+        """'season 4' does not match the SxxExx pattern and is meaningful."""
+        assert _has_meaningful_title("season 4") is True
+
+
+# ---------------------------------------------------------------------------
+# Group 18: _parse_filename directory-name fallback (issue #33)
+# ---------------------------------------------------------------------------
+
+
+class TestParseFilenameDirectoryFallback:
+    """Tests for the parent directory title fallback in _parse_filename (issue #33).
+
+    Season pack episode files (e.g. "S02E01 - Beast Titan.mkv") produce
+    titles like "s02e01 beast titan" from PTN — not a searchable show title.
+    When parent_dir is provided the directory basename should be used instead.
+    """
+
+    def test_episode_titled_file_uses_parent_dir_title(self) -> None:
+        """Season pack episode file gets its title from the parent directory.
+
+        Input:  filename="S02E01 - Beast Titan.mkv"
+                parent_dir="/mnt/__all__/Attack on Titan S02"
+        Expect: parsed_title="attack on titan" (from directory PTN parse)
+        """
+        result = _parse_filename(
+            "S02E01 - Beast Titan.mkv",
+            parent_dir="/mnt/__all__/Attack on Titan S02",
+        )
+        assert result["title"] == "attack on titan"
+        # Season and episode should still come from the filename.
+        assert result["season"] == 2
+        assert result["episode"] == 1
+
+    def test_episode_titled_file_preserves_episode_number_from_filename(self) -> None:
+        """Episode number is extracted from the filename, not overridden by directory."""
+        result = _parse_filename(
+            "S01E05 - The White Walkers.mkv",
+            parent_dir="/mnt/__all__/Game of Thrones S01",
+        )
+        assert result["episode"] == 5
+        assert result["season"] == 1
+
+    def test_normal_filename_ignores_parent_dir(self) -> None:
+        """A well-formed filename title is not replaced by the directory title."""
+        result = _parse_filename(
+            "Attack.on.Titan.S02E01.1080p.mkv",
+            parent_dir="/mnt/__all__/SomethingElse",
+        )
+        assert result["title"] == "attack on titan"
+        assert result["season"] == 2
+        assert result["episode"] == 1
+
+    def test_no_parent_dir_uses_filename_title(self) -> None:
+        """Without parent_dir the fallback is not attempted; filename title is used."""
+        result = _parse_filename("S02E01 - Beast Titan.mkv")
+        # Title comes from filename alone — it will include episode marker tokens.
+        # We just verify parent_dir=None doesn't crash and does not return the
+        # directory-based title.
+        assert result["title"] is not None
+        assert result["season"] == 2
+        assert result["episode"] == 1
+
+    def test_parent_dir_is_root_basename_empty_no_crash(self) -> None:
+        """parent_dir of '/' (empty basename) does not crash and falls back gracefully."""
+        result = _parse_filename("S01E01 - Prologue.mkv", parent_dir="/")
+        # basename of "/" is "" — fallback skipped, episode title retained.
+        assert result["title"] is not None
+        assert result["episode"] == 1
+
+    def test_movie_file_unaffected_by_parent_dir(self) -> None:
+        """Normal movie files are unaffected — their title is meaningful."""
+        result = _parse_filename(
+            "The.Dark.Knight.2008.1080p.BluRay.x264.mkv",
+            parent_dir="/mnt/__all__/Some Random Dir",
+        )
+        assert result["title"] == "the dark knight"
+        assert result["year"] == 2008
+
+    def test_leading_number_episode_no_dir_fallback(self) -> None:
+        """Episode file with leading number (e.g. '28. Title.mp4') does not trigger fallback.
+
+        PTN parses "28. Prelude to the Impending Fight.mp4" as a title containing
+        the full episode title.  This title is > 3 chars and does not start with
+        the SxxExx pattern, so _has_meaningful_title returns True and the directory
+        fallback is NOT triggered.  This test documents the current expected behaviour.
+        """
+        result = _parse_filename(
+            "28. Prelude to the Impending Fight.mp4",
+            parent_dir="/mnt/__all__/Attack on Titan S02",
+        )
+        # The leading-number title is considered meaningful (>3 chars, no SxxExx marker).
+        # So parent_dir fallback is NOT triggered for these files.
+        assert result["episode"] == 28  # from _LEADING_EP_RE
+
+    async def test_directory_fallback_integration_with_scan_and_lookup(
+        self, session: AsyncSession
+    ) -> None:
+        """Integration test: scan a season pack directory and verify lookup by show title works.
+
+        Creates a directory structure mimicking a Zurg season pack mount:
+          <tmpdir>/
+            Attack on Titan S02/
+              S02E01 - Beast Titan.mkv
+              S02E02 - I Can Hear His Heartbeat.mkv
+
+        After scanning, lookup("Attack on Titan", season=2) should find both
+        episodes because their parsed_title is taken from the directory basename.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Attack on Titan S02")
+            os.makedirs(show_dir)
+            open(
+                os.path.join(show_dir, "S02E01 - Beast Titan.mkv"), "wb"
+            ).write(b"v")
+            open(
+                os.path.join(show_dir, "S02E02 - I Can Hear His Heartbeat.mkv"), "wb"
+            ).write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                await scanner.scan_directory(session, "Attack on Titan S02")
+
+            results = await scanner.lookup(session, "Attack on Titan", season=2)
+
+        assert len(results) == 2
+        for r in results:
+            assert r.parsed_title == "attack on titan"
+            assert r.parsed_season == 2
+        episodes = {r.parsed_episode for r in results}
+        assert episodes == {1, 2}
+
+    def test_directory_fallback_used_when_parent_dir_is_show_dir(self) -> None:
+        """_parse_filename with parent_dir pointing to show dir extracts correct title."""
+        # This is a pure unit test of _parse_filename — no DB needed.
+        result = _parse_filename(
+            "S03E07 - The Raven.mkv",
+            parent_dir="/media/zurg/__all__/Game of Thrones Season 3",
+        )
+        assert result["title"] == "game of thrones"
+        assert result["season"] == 3
+        assert result["episode"] == 7
 
     # ------------------------------------------------------------------
     # 8. Timeout during existence check returns empty result gracefully
