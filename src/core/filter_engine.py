@@ -205,11 +205,37 @@ class FilterEngine:
 
         resolved_cached: set[str] = cached_hashes or set()
 
+        # Pre-compile blocked keyword patterns once before the result loop.
+        # Compiling inside the loop costs O(results × keywords) compilations.
+        blocked_patterns: list[tuple[str, re.Pattern[str]]] = [
+            (kw, re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE))
+            for kw in settings.filters.blocked_keywords
+        ]
+
+        # Pre-compile audio token patterns once before the result loop.
+        # _score_audio is called once per result, so compiling inside the
+        # helper would cost O(results × audio_tokens) compilations.
+        preferred_audio_lower = [a.lower() for a in profile.preferred_audio]
+        audio_patterns: list[tuple[str, re.Pattern[str]]] = [
+            (tok, re.compile(rf"\b{re.escape(tok)}\b", re.IGNORECASE))
+            for tok in preferred_audio_lower
+        ]
+
+        # Pre-compute lowercased preferred languages once before the result loop.
+        # _score_language and _apply_hard_filters both lower-case the list per call.
+        preferred_lower: list[str] = [
+            lang.lower() for lang in settings.filters.preferred_languages
+        ]
+
         ranked: list[FilteredResult] = []
         rejected_count = 0
 
         for result in results:
-            passed, reason = self._apply_hard_filters(result, profile, prefer_season_packs, requested_season, requested_episode)
+            passed, reason = self._apply_hard_filters(
+                result, profile, prefer_season_packs, requested_season, requested_episode,
+                blocked_patterns=blocked_patterns,
+                preferred_lower=preferred_lower,
+            )
             if not passed:
                 logger.debug(
                     "filter_engine: REJECTED title=%r reason=%r",
@@ -220,7 +246,9 @@ class FilterEngine:
                 continue
 
             score, breakdown = self._calculate_score(
-                result, profile, resolved_cached, prefer_season_packs, original_language
+                result, profile, resolved_cached, prefer_season_packs, original_language,
+                audio_patterns=audio_patterns,
+                preferred_lower=preferred_lower,
             )
             ranked.append(
                 FilteredResult(
@@ -308,6 +336,9 @@ class FilterEngine:
         prefer_season_packs: bool = False,
         requested_season: int | None = None,
         requested_episode: int | None = None,
+        *,
+        blocked_patterns: list[tuple[str, re.Pattern[str]]] | None = None,
+        preferred_lower: list[str] | None = None,
     ) -> tuple[bool, str | None]:
         """Evaluate Tier 1 hard-reject rules against a single result.
 
@@ -329,6 +360,12 @@ class FilterEngine:
                 when either value is None.
             requested_episode: The episode number that was requested (after XEM
                 scene mapping).  Behaviour mirrors ``requested_season``.
+            blocked_patterns: Pre-compiled ``(keyword, pattern)`` pairs for
+                blocked keyword matching.  When None the patterns are compiled
+                on the fly (fallback for direct callers).
+            preferred_lower: Pre-lowercased copy of
+                ``settings.filters.preferred_languages``.  When None it is
+                computed inline (fallback for direct callers).
 
         Returns:
             A 2-tuple ``(passed, reason)`` where ``passed`` is True when the
@@ -371,10 +408,14 @@ class FilterEngine:
                 )
 
         # 5. Blocked keywords (whole-word, case-insensitive match against title)
-        for keyword in settings.filters.blocked_keywords:
-            pattern = re.compile(
-                rf"\b{re.escape(keyword)}\b", re.IGNORECASE
-            )
+        # Use pre-compiled patterns when provided (hot path); fall back to
+        # compiling inline when called directly (e.g. tests or other callers).
+        if blocked_patterns is None:
+            blocked_patterns = [
+                (kw, re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE))
+                for kw in settings.filters.blocked_keywords
+            ]
+        for keyword, pattern in blocked_patterns:
             if pattern.search(result.title):
                 return False, f"blocked keyword: {keyword!r}"
 
@@ -388,8 +429,11 @@ class FilterEngine:
         # 7. Language filter
         preferred_langs = settings.filters.preferred_languages
         if preferred_langs:
-            # New-style: reject anything not in the preferred list
-            preferred_lower = [lang.lower() for lang in preferred_langs]
+            # New-style: reject anything not in the preferred list.
+            # Use the pre-computed list when provided to avoid re-lowercasing
+            # on every result; fall back to computing inline for direct callers.
+            if preferred_lower is None:
+                preferred_lower = [lang.lower() for lang in preferred_langs]
             if result.languages:
                 languages_lower = [lang.lower() for lang in result.languages]
                 has_preferred = any(lang in preferred_lower for lang in languages_lower)
@@ -468,6 +512,9 @@ class FilterEngine:
         cached_hashes: set[str],
         prefer_season_packs: bool = False,
         original_language: str | None = None,
+        *,
+        audio_patterns: list[tuple[str, re.Pattern[str]]] | None = None,
+        preferred_lower: list[str] | None = None,
     ) -> tuple[float, dict[str, float]]:
         """Compute the composite quality score for a result.
 
@@ -484,6 +531,13 @@ class FilterEngine:
                 single-episode requests to avoid inflating season pack ranks.
             original_language: ISO 639-1 code or language name of the
                 content's original language.  Used to score dub preference.
+            audio_patterns: Pre-compiled ``(token, pattern)`` pairs for audio
+                token matching.  When None, patterns are compiled inline
+                (fallback for direct callers).
+            preferred_lower: Pre-lowercased copy of
+                ``settings.filters.preferred_languages``.  When None it is
+                computed inline inside ``_score_language`` (fallback for direct
+                callers).
 
         Returns:
             A 2-tuple ``(total_score, breakdown)`` where ``breakdown`` maps
@@ -513,7 +567,8 @@ class FilterEngine:
         # itself for audio keywords, since PTN doesn't always expose audio as a
         # separate field.  We score against whichever audio token we find first.
         breakdown["audio"] = self._score_audio(
-            result.title, result.quality, profile.preferred_audio
+            result.title, result.quality, profile.preferred_audio,
+            audio_patterns=audio_patterns,
         )
 
         # --- Source (max 15 pts) ---
@@ -542,7 +597,9 @@ class FilterEngine:
         breakdown["season_pack"] = _SEASON_PACK_BONUS if (prefer_season_packs and result.is_season_pack) else 0.0
 
         # --- Language preference (max 15 pts, 0 when preferred_languages unset) ---
-        breakdown["language"] = self._score_language(result.languages)
+        breakdown["language"] = self._score_language(
+            result.languages, preferred_lower=preferred_lower
+        )
 
         # --- Original language preference (variable pts, 0 when disabled) ---
         breakdown["original_language"] = self._score_original_language(
@@ -631,7 +688,12 @@ class FilterEngine:
         # a value that is technically present but far down the list).
         return max(awarded, not_in_list)
 
-    def _score_language(self, languages: list[str]) -> float:
+    def _score_language(
+        self,
+        languages: list[str],
+        *,
+        preferred_lower: list[str] | None = None,
+    ) -> float:
         """Award points for language match against the preferred_languages list.
 
         When ``preferred_languages`` is empty, returns 0.0 (no effect on
@@ -646,6 +708,9 @@ class FilterEngine:
         Args:
             languages: List of language strings detected from the torrent
                        title (e.g. ``["Russian"]`` or ``[]`` for untagged).
+            preferred_lower: Pre-lowercased copy of
+                ``settings.filters.preferred_languages``.  When None it is
+                computed inline (fallback for direct callers and tests).
 
         Returns:
             Points awarded: ``_LANGUAGE_MAX`` (15) for 1st preference,
@@ -657,7 +722,9 @@ class FilterEngine:
         if not preferred_langs:
             return 0.0
 
-        preferred_lower = [lang.lower() for lang in preferred_langs]
+        # Use pre-computed list when provided to avoid re-lowercasing per call.
+        if preferred_lower is None:
+            preferred_lower = [lang.lower() for lang in preferred_langs]
 
         # Determine effective language list (untagged releases = English)
         effective_langs = [lang.lower() for lang in languages] if languages else ["english"]
@@ -730,6 +797,8 @@ class FilterEngine:
         title: str,
         quality_field: str | None,
         preferred_audio: list[str],
+        *,
+        audio_patterns: list[tuple[str, re.Pattern[str]]] | None = None,
     ) -> float:
         """Award points for audio quality by scanning the title and quality field.
 
@@ -743,6 +812,13 @@ class FilterEngine:
             quality_field: The ``quality`` field from the scrape result (may
                            contain source or audio info, e.g. ``"Atmos"``).
             preferred_audio: Ordered list of preferred audio codecs/formats.
+                             Still required so the method signature is stable
+                             for direct callers; the list is only used to build
+                             ``audio_patterns`` when they are not pre-supplied.
+            audio_patterns: Pre-compiled ``(token, pattern)`` pairs ordered to
+                            match ``preferred_audio``.  When None the patterns
+                            are compiled inline (fallback for direct callers and
+                            tests).
 
         Returns:
             Points awarded: ``_AUDIO_MAX`` decremented by ``_AUDIO_STEP`` per
@@ -753,14 +829,19 @@ class FilterEngine:
         if quality_field:
             search_text = search_text + " " + quality_field.lower()
 
-        list_lower = [a.lower() for a in preferred_audio]
+        # Use pre-compiled patterns when provided; fall back to compiling inline
+        # so that direct callers (e.g. tests) still work without modification.
+        if audio_patterns is None:
+            list_lower = [a.lower() for a in preferred_audio]
+            audio_patterns = [
+                (tok, re.compile(rf"\b{re.escape(tok)}\b", re.IGNORECASE))
+                for tok in list_lower
+            ]
 
         # Check each preferred audio token in preference order; return as soon
         # as we find the first match (keeps the first/best hit).
-        for pos, audio_token in enumerate(list_lower):
-            # Use word-boundary matching so "dts" doesn't match "dts-hd"
-            # inadvertently, and so we don't match substrings.
-            pattern = re.compile(rf"\b{re.escape(audio_token)}\b", re.IGNORECASE)
+        for pos, (_, pattern) in enumerate(audio_patterns):
+            # Word-boundary matching prevents "dts" matching "dts-hd" etc.
             if pattern.search(search_text):
                 awarded = _AUDIO_MAX - pos * _AUDIO_STEP
                 return max(awarded, _AUDIO_NOT_IN_LIST)
