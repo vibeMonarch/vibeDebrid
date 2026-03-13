@@ -8,16 +8,23 @@ and are therefore the most thoroughly exercised.
 
 import json
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from src.services.http_client import CircuitBreaker
 from src.services.torrentio import (
     TorrentioClient,
     TorrentioError,
     TorrentioResult,
 )
+
+
+def _make_noop_breaker() -> CircuitBreaker:
+    """Return a CircuitBreaker that is always CLOSED (never rejects requests)."""
+    breaker = CircuitBreaker("test", failure_threshold=999, recovery_timeout=0.0)
+    return breaker
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +194,7 @@ def _patch_client(
     # Delegate to client._build_base_url() so that the opts path segment and
     # other config read from the already-patched module-level settings are used.
     # Forward include_debrid_key so integration tests exercise URL stripping.
-    def _fake_build_client(**kwargs: object) -> httpx.AsyncClient:
+    async def _fake_get_client(**kwargs: object) -> httpx.AsyncClient:
         include_debrid_key = kwargs.get("include_debrid_key", True)
         base_url = client._build_base_url(include_debrid_key=include_debrid_key)
         return httpx.AsyncClient(
@@ -195,7 +202,7 @@ def _patch_client(
             transport=transport,
         )
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     return transport
 
@@ -213,6 +220,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TorrentioClient:
     mock_settings = MagicMock()
     mock_settings.scrapers.torrentio = cfg
     monkeypatch.setattr("src.services.torrentio.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.torrentio.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     c = TorrentioClient()
     # Expose cfg for per-test mutation
@@ -228,6 +239,10 @@ def client_with_opts(monkeypatch: pytest.MonkeyPatch) -> TorrentioClient:
     mock_settings = MagicMock()
     mock_settings.scrapers.torrentio = cfg
     monkeypatch.setattr("src.services.torrentio.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.torrentio.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     return TorrentioClient()
 

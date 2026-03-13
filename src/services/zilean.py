@@ -31,6 +31,7 @@ import PTN
 from pydantic import BaseModel
 
 from src.config import settings
+from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -171,11 +172,12 @@ class ZileanClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient pointed at the Zilean API."""
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the pooled httpx.AsyncClient for Zilean."""
         cfg = settings.scrapers.zilean
-        return httpx.AsyncClient(
-            base_url=cfg.base_url.rstrip("/"),
+        return await get_client(
+            "zilean",
+            cfg.base_url.rstrip("/"),
             timeout=cfg.timeout_seconds,
             headers={"User-Agent": "vibeDebrid/0.1"},
             follow_redirects=True,
@@ -235,11 +237,19 @@ class ZileanClient:
             imdb_id,
         )
 
+        breaker = get_circuit_breaker("zilean")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("zilean.search: circuit open, skipping query=%r", query)
+            return []
+
         t0 = time.monotonic()
         try:
-            async with self._build_client() as client:
-                response = await client.get("/dmm/filtered", params=params)
+            client = await self._get_client()
+            response = await client.get("/dmm/filtered", params=params)
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "zilean.search: connection refused — Zilean may be down. "
                 "query=%r (%s)",
@@ -248,11 +258,13 @@ class ZileanClient:
             )
             return []
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "zilean.search: request timed out. query=%r (%s)", query, exc
             )
             return []
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "zilean.search: network error. query=%r (%s)", query, exc
             )
@@ -261,6 +273,7 @@ class ZileanClient:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         if response.status_code == 401 or response.status_code == 403:
+            await breaker.record_failure()
             logger.error(
                 "zilean.search: auth failure %d — check Zilean configuration. "
                 "query=%r",
@@ -270,12 +283,14 @@ class ZileanClient:
             return []
 
         if response.status_code == 429:
+            # Rate limiting is expected — do not penalise the circuit breaker.
             logger.warning(
                 "zilean.search: rate limited (429). query=%r", query
             )
             return []
 
         if response.status_code >= 500:
+            await breaker.record_failure()
             logger.error(
                 "zilean.search: server error %d. query=%r body=%s",
                 response.status_code,
@@ -285,12 +300,15 @@ class ZileanClient:
             return []
 
         if not response.is_success:
+            await breaker.record_failure()
             logger.error(
                 "zilean.search: unexpected status %d. query=%r",
                 response.status_code,
                 query,
             )
             return []
+
+        await breaker.record_success()
 
         try:
             raw_list: list[dict[str, Any]] = response.json()

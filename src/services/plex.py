@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel
 
 from src.config import settings
+from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -97,47 +98,26 @@ class PlexClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(
+    async def _get_client(
         self, base_url: str | None = None, timeout: int = 10
     ) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient for the Plex server.
+        """Return the pooled httpx.AsyncClient for the Plex server.
 
         Args:
             base_url: Override the target base URL.  When None, uses
                       ``settings.plex.url``.
-            timeout: Request timeout in seconds.
+            timeout: Request timeout in seconds (used only on first creation).
 
         Returns:
-            A configured httpx.AsyncClient with Plex auth headers.
+            A pooled httpx.AsyncClient with Plex auth headers.
         """
         resolved_url = (base_url or settings.plex.url).rstrip("/")
-        return httpx.AsyncClient(
-            base_url=resolved_url,
-            timeout=timeout,
+        return await get_client(
+            "plex",
+            resolved_url,
+            timeout=float(timeout),
             headers={
                 "X-Plex-Token": settings.plex.token,
-                "Accept": "application/json",
-                "X-Plex-Client-Identifier": _PLEX_CLIENT_ID,
-                "X-Plex-Product": _PLEX_PRODUCT,
-            },
-            follow_redirects=True,
-        )
-
-    def _build_plex_tv_client(self, timeout: int = 10) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient targeting plex.tv (no token header).
-
-        This is used for the OAuth PIN flow where the token is not yet known.
-
-        Args:
-            timeout: Request timeout in seconds.
-
-        Returns:
-            A configured httpx.AsyncClient without X-Plex-Token.
-        """
-        return httpx.AsyncClient(
-            base_url="https://plex.tv",
-            timeout=timeout,
-            headers={
                 "Accept": "application/json",
                 "X-Plex-Client-Identifier": _PLEX_CLIENT_ID,
                 "X-Plex-Product": _PLEX_PRODUCT,
@@ -174,8 +154,20 @@ class PlexClient:
             True if the server is reachable and the token is valid, False
             otherwise.
         """
+        # test_connection is a one-off settings check — bypass the circuit breaker
+        # and use a fresh client to avoid stale connection pools.
         try:
-            async with self._build_client() as client:
+            async with httpx.AsyncClient(
+                base_url=settings.plex.url.rstrip("/"),
+                timeout=10.0,
+                headers={
+                    "X-Plex-Token": settings.plex.token,
+                    "Accept": "application/json",
+                    "X-Plex-Client-Identifier": _PLEX_CLIENT_ID,
+                    "X-Plex-Product": _PLEX_PRODUCT,
+                },
+                follow_redirects=True,
+            ) as client:
                 response = await client.get("/")
         except httpx.ConnectError as exc:
             logger.warning("plex.test_connection: connection error (%s)", exc)
@@ -206,34 +198,48 @@ class PlexClient:
             A list of PlexLibrarySection objects, or an empty list on any
             failure.
         """
+        breaker = get_circuit_breaker("plex")
         try:
-            async with self._build_client() as client:
-                response = await client.get("/library/sections")
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("plex.get_libraries: circuit open, skipping")
+            return []
+
+        try:
+            client = await self._get_client()
+            response = await client.get("/library/sections")
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning("plex.get_libraries: connection error (%s)", exc)
             return []
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning("plex.get_libraries: request timed out (%s)", exc)
             return []
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning("plex.get_libraries: network error (%s)", exc)
             return []
 
         try:
             self._handle_auth_error(response.status_code, "get_libraries")
         except PlexAuthError:
+            await breaker.record_failure()
             logger.error(
                 "plex.get_libraries: authentication failure — check Plex token"
             )
             return []
 
         if not response.is_success:
+            await breaker.record_failure()
             logger.error(
                 "plex.get_libraries: unexpected status %d body=%s",
                 response.status_code,
                 response.text[:200],
             )
             return []
+
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -282,13 +288,21 @@ class PlexClient:
         if path is not None:
             params["path"] = path
 
+        breaker = get_circuit_breaker("plex")
         try:
-            async with self._build_client() as client:
-                response = await client.get(
-                    f"/library/sections/{section_id}/refresh",
-                    params=params,
-                )
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("plex.scan_section: circuit open, skipping section_id=%d", section_id)
+            return False
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/library/sections/{section_id}/refresh",
+                params=params,
+            )
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "plex.scan_section: connection error section_id=%d (%s)",
                 section_id,
@@ -296,6 +310,7 @@ class PlexClient:
             )
             return False
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "plex.scan_section: request timed out section_id=%d (%s)",
                 section_id,
@@ -303,6 +318,7 @@ class PlexClient:
             )
             return False
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "plex.scan_section: network error section_id=%d (%s)",
                 section_id,
@@ -311,6 +327,7 @@ class PlexClient:
             return False
 
         if response.status_code == 200:
+            await breaker.record_success()
             logger.debug(
                 "plex.scan_section: accepted section_id=%d path=%s",
                 section_id,
@@ -318,6 +335,7 @@ class PlexClient:
             )
             return True
 
+        await breaker.record_failure()
         logger.warning(
             "plex.scan_section: unexpected status %d for section_id=%d",
             response.status_code,
@@ -335,8 +353,19 @@ class PlexClient:
             A PlexPinResponse with the PIN id, code, and browser auth URL, or
             None on any failure.
         """
+        # OAuth PIN creation is a one-off user action — bypass the circuit breaker
+        # to ensure the OAuth flow always works regardless of prior failures.
         try:
-            async with self._build_plex_tv_client() as client:
+            async with httpx.AsyncClient(
+                base_url="https://plex.tv",
+                timeout=10.0,
+                headers={
+                    "Accept": "application/json",
+                    "X-Plex-Client-Identifier": _PLEX_CLIENT_ID,
+                    "X-Plex-Product": _PLEX_PRODUCT,
+                },
+                follow_redirects=True,
+            ) as client:
                 response = await client.post(
                     "/api/v2/pins",
                     data={"strong": "true"},
@@ -407,8 +436,18 @@ class PlexClient:
             The Plex auth token string if authentication is complete, or None
             if still pending or on any failure.
         """
+        # OAuth PIN polling is a one-off user action — bypass the circuit breaker.
         try:
-            async with self._build_plex_tv_client() as client:
+            async with httpx.AsyncClient(
+                base_url="https://plex.tv",
+                timeout=10.0,
+                headers={
+                    "Accept": "application/json",
+                    "X-Plex-Client-Identifier": _PLEX_CLIENT_ID,
+                    "X-Plex-Product": _PLEX_PRODUCT,
+                },
+                follow_redirects=True,
+            ) as client:
                 response = await client.get(f"/api/v2/pins/{pin_id}")
         except httpx.ConnectError as exc:
             logger.warning(
@@ -469,8 +508,16 @@ class PlexClient:
         page_start = 0
         page_size = 100
 
-        async with httpx.AsyncClient(
-            base_url="https://discover.provider.plex.tv",
+        breaker = get_circuit_breaker("plex_discover")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("plex.get_watchlist: circuit open, skipping")
+            return items
+
+        client = await get_client(
+            "plex_discover",
+            "https://discover.provider.plex.tv",
             timeout=15.0,
             headers={
                 "X-Plex-Token": settings.plex.token,
@@ -479,110 +526,118 @@ class PlexClient:
                 "X-Plex-Product": _PLEX_PRODUCT,
             },
             follow_redirects=True,
-        ) as client:
-            while True:
-                params: dict[str, Any] = {
-                    "X-Plex-Container-Start": page_start,
-                    "X-Plex-Container-Size": page_size,
-                    "includeGuids": 1,
-                }
-                try:
-                    response = await client.get(
-                        "/library/sections/watchlist/all",
-                        params=params,
-                    )
-                except httpx.ConnectError as exc:
-                    logger.warning("plex.get_watchlist: connection error (%s)", exc)
-                    return items
-                except httpx.TimeoutException as exc:
-                    logger.warning("plex.get_watchlist: request timed out (%s)", exc)
-                    return items
-                except httpx.RequestError as exc:
-                    logger.warning("plex.get_watchlist: network error (%s)", exc)
-                    return items
+        )
 
-                if response.status_code == 401:
-                    logger.error(
-                        "plex.get_watchlist: authentication failure (HTTP 401) "
-                        "— Plex token is invalid or expired; re-authentication needed"
-                    )
-                    return items
-
-                if not response.is_success:
-                    logger.error(
-                        "plex.get_watchlist: unexpected status %d body=%s",
-                        response.status_code,
-                        response.text[:200],
-                    )
-                    return items
-
-                try:
-                    data: dict[str, Any] = response.json()
-                except ValueError as exc:
-                    logger.error("plex.get_watchlist: malformed JSON (%s)", exc)
-                    return items
-
-                container: dict[str, Any] = data.get("MediaContainer") or {}
-                metadata: list[dict[str, Any]] = container.get("Metadata") or []
-                total_size = int(container.get("totalSize") or 0)
-
-                for entry in metadata:
-                    try:
-                        raw_type = str(entry.get("type") or "")
-                        if raw_type == "movie":
-                            media_type = "movie"
-                        elif raw_type in ("show", "tv"):
-                            media_type = "show"
-                        else:
-                            # Skip non-movie/show types (e.g. music, photos)
-                            logger.debug(
-                                "plex.get_watchlist: skipping unsupported type %r for %r",
-                                raw_type,
-                                entry.get("title"),
-                            )
-                            continue
-
-                        title = str(entry.get("title") or "")
-                        year_raw = entry.get("year")
-                        year: int | None = int(year_raw) if year_raw is not None else None
-
-                        tmdb_id: str | None = None
-                        imdb_id: str | None = None
-                        for guid in entry.get("Guid") or []:
-                            guid_id = str(guid.get("id") or "")
-                            if guid_id.startswith("tmdb://"):
-                                tmdb_id = guid_id[len("tmdb://"):]
-                            elif guid_id.startswith("imdb://"):
-                                imdb_id = guid_id[len("imdb://"):]
-
-                        items.append(
-                            WatchlistItem(
-                                title=title,
-                                year=year,
-                                media_type=media_type,
-                                tmdb_id=tmdb_id,
-                                imdb_id=imdb_id,
-                            )
-                        )
-                    except (KeyError, ValueError, TypeError) as exc:
-                        logger.warning(
-                            "plex.get_watchlist: could not parse entry %r (%s)",
-                            entry.get("title"),
-                            exc,
-                        )
-
-                fetched_so_far = page_start + len(metadata)
-                logger.debug(
-                    "plex.get_watchlist: page start=%d fetched=%d total=%d",
-                    page_start,
-                    fetched_so_far,
-                    total_size,
+        while True:
+            params: dict[str, Any] = {
+                "X-Plex-Container-Start": page_start,
+                "X-Plex-Container-Size": page_size,
+                "includeGuids": 1,
+            }
+            try:
+                response = await client.get(
+                    "/library/sections/watchlist/all",
+                    params=params,
                 )
+            except httpx.ConnectError as exc:
+                await breaker.record_failure()
+                logger.warning("plex.get_watchlist: connection error (%s)", exc)
+                return items
+            except httpx.TimeoutException as exc:
+                await breaker.record_failure()
+                logger.warning("plex.get_watchlist: request timed out (%s)", exc)
+                return items
+            except httpx.RequestError as exc:
+                await breaker.record_failure()
+                logger.warning("plex.get_watchlist: network error (%s)", exc)
+                return items
 
-                if fetched_so_far >= total_size or not metadata:
-                    break
+            if response.status_code == 401:
+                await breaker.record_failure()
+                logger.error(
+                    "plex.get_watchlist: authentication failure (HTTP 401) "
+                    "— Plex token is invalid or expired; re-authentication needed"
+                )
+                return items
 
-                page_start += page_size
+            if not response.is_success:
+                await breaker.record_failure()
+                logger.error(
+                    "plex.get_watchlist: unexpected status %d body=%s",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return items
+
+            await breaker.record_success()
+
+            try:
+                data: dict[str, Any] = response.json()
+            except ValueError as exc:
+                logger.error("plex.get_watchlist: malformed JSON (%s)", exc)
+                return items
+
+            container: dict[str, Any] = data.get("MediaContainer") or {}
+            metadata: list[dict[str, Any]] = container.get("Metadata") or []
+            total_size = int(container.get("totalSize") or 0)
+
+            for entry in metadata:
+                try:
+                    raw_type = str(entry.get("type") or "")
+                    if raw_type == "movie":
+                        media_type = "movie"
+                    elif raw_type in ("show", "tv"):
+                        media_type = "show"
+                    else:
+                        # Skip non-movie/show types (e.g. music, photos)
+                        logger.debug(
+                            "plex.get_watchlist: skipping unsupported type %r for %r",
+                            raw_type,
+                            entry.get("title"),
+                        )
+                        continue
+
+                    title = str(entry.get("title") or "")
+                    year_raw = entry.get("year")
+                    year: int | None = int(year_raw) if year_raw is not None else None
+
+                    tmdb_id: str | None = None
+                    imdb_id: str | None = None
+                    for guid in entry.get("Guid") or []:
+                        guid_id = str(guid.get("id") or "")
+                        if guid_id.startswith("tmdb://"):
+                            tmdb_id = guid_id[len("tmdb://"):]
+                        elif guid_id.startswith("imdb://"):
+                            imdb_id = guid_id[len("imdb://"):]
+
+                    items.append(
+                        WatchlistItem(
+                            title=title,
+                            year=year,
+                            media_type=media_type,
+                            tmdb_id=tmdb_id,
+                            imdb_id=imdb_id,
+                        )
+                    )
+                except (KeyError, ValueError, TypeError) as exc:
+                    logger.warning(
+                        "plex.get_watchlist: could not parse entry %r (%s)",
+                        entry.get("title"),
+                        exc,
+                    )
+
+            fetched_so_far = page_start + len(metadata)
+            logger.debug(
+                "plex.get_watchlist: page start=%d fetched=%d total=%d",
+                page_start,
+                fetched_so_far,
+                total_size,
+            )
+
+            if fetched_so_far >= total_size or not metadata:
+                break
+
+            page_start += page_size
 
         logger.info("plex.get_watchlist: fetched %d watchlist items", len(items))
         return items

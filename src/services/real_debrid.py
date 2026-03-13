@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.core.mount_scanner import VIDEO_EXTENSIONS
+from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -141,15 +142,22 @@ class RealDebridClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self, timeout: float = _DEFAULT_TIMEOUT) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient with auth headers and timeout."""
-        return httpx.AsyncClient(
-            base_url=settings.real_debrid.api_url.rstrip("/"),
+    async def _get_client(self, timeout: float = _DEFAULT_TIMEOUT) -> httpx.AsyncClient:
+        """Return the pooled httpx.AsyncClient for Real-Debrid.
+
+        Args:
+            timeout: Request timeout (used only on first client creation for
+                     this base URL).  The pooled client retains the timeout
+                     set at creation time.
+        """
+        return await get_client(
+            "real_debrid",
+            settings.real_debrid.api_url.rstrip("/"),
+            timeout=timeout,
             headers={
                 "Authorization": f"Bearer {settings.real_debrid.api_key}",
                 "User-Agent": "vibeDebrid/0.1",
             },
-            timeout=timeout,
         )
 
     def _raise_for_status(self, response: httpx.Response) -> None:
@@ -270,6 +278,7 @@ class RealDebridClient:
         """Return current account info from GET /user.
 
         Useful for validating the API key and checking premium status.
+        This is a settings test endpoint — bypasses the circuit breaker.
 
         Returns:
             Parsed JSON dict conforming to RdUser schema.
@@ -278,7 +287,16 @@ class RealDebridClient:
             RealDebridAuthError: If the API key is invalid.
             RealDebridError: On other API failures.
         """
-        async with self._build_client() as client:
+        # get_user is called only from the settings test endpoint — use a fresh
+        # client to test the current config, bypass the circuit breaker.
+        async with httpx.AsyncClient(
+            base_url=settings.real_debrid.api_url.rstrip("/"),
+            headers={
+                "Authorization": f"Bearer {settings.real_debrid.api_key}",
+                "User-Agent": "vibeDebrid/0.1",
+            },
+            timeout=_DEFAULT_TIMEOUT,
+        ) as client:
             response = await client.get("/user")
             self._raise_for_status(response)
             data: dict[str, Any] = response.json()
@@ -301,10 +319,30 @@ class RealDebridClient:
             RealDebridAuthError: If the API key is invalid.
             RealDebridError: On other API failures.
         """
-        async with self._build_client() as client:
+        breaker = get_circuit_breaker("real_debrid")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError as exc:
+            logger.warning("add_magnet: %s", exc)
+            raise
+
+        try:
+            client = await self._get_client()
             response = await client.post("/torrents/addMagnet", data={"magnet": magnet_uri})
+        except (httpx.RequestError, TimeoutError) as exc:
+            await breaker.record_failure()
+            logger.warning("add_magnet: network error (%s)", exc)
+            raise
+        try:
             self._raise_for_status(response)
-            data: dict[str, Any] = response.json()
+        except RealDebridRateLimitError:
+            # 429 is expected — do not penalise the circuit breaker.
+            raise
+        except RealDebridError:
+            await breaker.record_failure()
+            raise
+        data: dict[str, Any] = response.json()
+        await breaker.record_success()
         logger.info("add_magnet: added torrent id=%s", data.get("id"))
         return data
 
@@ -345,12 +383,32 @@ class RealDebridClient:
             RealDebridAuthError: If the API key is invalid.
             RealDebridError: On other API failures.
         """
-        async with self._build_client() as client:
+        breaker = get_circuit_breaker("real_debrid")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError as exc:
+            logger.warning("list_torrents: %s", exc)
+            raise
+
+        try:
+            client = await self._get_client()
             response = await client.get("/torrents", params={"limit": limit, "page": page})
+        except (httpx.RequestError, TimeoutError) as exc:
+            await breaker.record_failure()
+            logger.warning("list_torrents: network error (%s)", exc)
+            raise
+        try:
             self._raise_for_status(response)
-            if response.status_code == 204 or not response.text:
-                return []
-            data: list[dict[str, Any]] = response.json()
+        except RealDebridRateLimitError:
+            raise
+        except RealDebridError:
+            await breaker.record_failure()
+            raise
+        if response.status_code == 204 or not response.text:
+            await breaker.record_success()
+            return []
+        data: list[dict[str, Any]] = response.json()
+        await breaker.record_success()
         logger.debug("list_torrents: returned %d items (page=%d)", len(data), page)
         return data
 
@@ -406,10 +464,29 @@ class RealDebridClient:
             RealDebridAuthError: If the API key is invalid.
             RealDebridError: On other API failures, including unknown ID.
         """
-        async with self._build_client() as client:
+        breaker = get_circuit_breaker("real_debrid")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError as exc:
+            logger.warning("get_torrent_info: %s", exc)
+            raise
+
+        try:
+            client = await self._get_client()
             response = await client.get(f"/torrents/info/{torrent_id}")
+        except (httpx.RequestError, TimeoutError) as exc:
+            await breaker.record_failure()
+            logger.warning("get_torrent_info: network error torrent_id=%s (%s)", torrent_id, exc)
+            raise
+        try:
             self._raise_for_status(response)
-            data: dict[str, Any] = response.json()
+        except RealDebridRateLimitError:
+            raise
+        except RealDebridError:
+            await breaker.record_failure()
+            raise
+        data: dict[str, Any] = response.json()
+        await breaker.record_success()
         logger.debug(
             "get_torrent_info: id=%s status=%s progress=%s%%",
             torrent_id,
@@ -445,22 +522,41 @@ class RealDebridClient:
         else:
             files_value = "all"
 
-        async with self._build_client() as client:
+        breaker = get_circuit_breaker("real_debrid")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError as exc:
+            logger.warning("select_files: %s", exc)
+            raise
+
+        try:
+            client = await self._get_client()
             response = await client.post(
                 f"/torrents/selectFiles/{torrent_id}",
                 data={"files": files_value},
             )
+        except (httpx.RequestError, TimeoutError) as exc:
+            await breaker.record_failure()
+            logger.warning("select_files: network error torrent_id=%s (%s)", torrent_id, exc)
+            raise
 
-            # RD returns 204 No Content on success; treat any 2xx as success.
-            if response.status_code == 204 or response.is_success:
-                logger.info(
-                    "select_files: torrent_id=%s files=%s",
-                    torrent_id,
-                    files_value if len(files_value) < 80 else files_value[:77] + "...",
-                )
-                return
+        # RD returns 204 No Content on success; treat any 2xx as success.
+        if response.status_code == 204 or response.is_success:
+            await breaker.record_success()
+            logger.info(
+                "select_files: torrent_id=%s files=%s",
+                torrent_id,
+                files_value if len(files_value) < 80 else files_value[:77] + "...",
+            )
+            return
 
+        try:
             self._raise_for_status(response)
+        except RealDebridRateLimitError:
+            raise
+        except RealDebridError:
+            await breaker.record_failure()
+            raise
 
     async def check_cached(
         self, info_hash: str, *, keep_if_cached: bool = False
@@ -548,6 +644,9 @@ class RealDebridClient:
                 return CacheCheckResult(info_hash=info_hash, cached=False, blocked=True)
             logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
             return CacheCheckResult(info_hash=info_hash, cached=None)
+        except CircuitOpenError as exc:
+            logger.warning("check_cached: circuit open for hash=%s: %s", info_hash, exc)
+            return CacheCheckResult(info_hash=info_hash, cached=None)
         except (httpx.RequestError, TimeoutError) as exc:
             logger.warning("check_cached: network error for hash=%s: %s", info_hash, exc)
             return CacheCheckResult(info_hash=info_hash, cached=None)
@@ -555,7 +654,7 @@ class RealDebridClient:
             if rd_id and not should_keep:
                 try:
                     await self.delete_torrent(rd_id)
-                except (RealDebridError, httpx.RequestError, TimeoutError) as exc:
+                except (RealDebridError, CircuitOpenError, httpx.RequestError, TimeoutError) as exc:
                     logger.warning(
                         "check_cached: cleanup delete failed for rd_id=%s: %s",
                         rd_id, exc,
@@ -595,6 +694,13 @@ class RealDebridClient:
                 )
                 checked_count = idx
                 break
+            except CircuitOpenError:
+                logger.warning(
+                    "check_cached_batch: circuit open after %d/%d checks, stopping early",
+                    idx, len(to_check),
+                )
+                checked_count = idx
+                break
         logger.info(
             "check_cached_batch: checked %d/%d hashes, %d cached",
             checked_count if to_check else 0,
@@ -619,16 +725,36 @@ class RealDebridClient:
             RealDebridAuthError: If the API key is invalid.
             RealDebridError: On non-404 API failures.
         """
-        async with self._build_client() as client:
+        breaker = get_circuit_breaker("real_debrid")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError as exc:
+            logger.warning("delete_torrent: %s", exc)
+            raise
+
+        try:
+            client = await self._get_client()
             response = await client.delete(f"/torrents/delete/{torrent_id}")
+        except (httpx.RequestError, TimeoutError) as exc:
+            await breaker.record_failure()
+            logger.warning("delete_torrent: network error torrent_id=%s (%s)", torrent_id, exc)
+            raise
 
-            if response.status_code == 404:
-                logger.warning(
-                    "delete_torrent: torrent_id=%s not found (already deleted?)", torrent_id
-                )
-                return
+        if response.status_code == 404:
+            await breaker.record_success()
+            logger.warning(
+                "delete_torrent: torrent_id=%s not found (already deleted?)", torrent_id
+            )
+            return
 
+        try:
             self._raise_for_status(response)
+        except RealDebridRateLimitError:
+            raise
+        except RealDebridError:
+            await breaker.record_failure()
+            raise
+        await breaker.record_success()
         logger.info("delete_torrent: torrent_id=%s deleted", torrent_id)
 
 

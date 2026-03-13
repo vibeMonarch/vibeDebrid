@@ -4,6 +4,10 @@ Provides an in-memory SQLite engine and async session so every test module
 gets a fresh, isolated database without touching the real SQLite file on disk.
 All tables are created at engine-setup time and each session is rolled back
 after the test completes.
+
+Also provides an autouse fixture that closes all pooled HTTP clients after each
+test to prevent "Event loop is closed" errors caused by persistent connections
+that httpx tries to clean up after the event loop has already shut down.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.database import Base
 from src.models.media_item import MediaItem, MediaType, QueueState
+from src.services.http_client import close_all as _close_all_http_clients
 
 # Import all models so their metadata is registered on Base before create_all
 import src.models.torrent  # noqa: F401
@@ -23,6 +28,18 @@ import src.models.symlink  # noqa: F401
 import src.models.mount_index  # noqa: F401
 import src.models.monitored_show  # noqa: F401
 import src.models.xem_cache  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+async def _close_http_pool_after_test() -> None:
+    """Close all pooled HTTP clients after each test.
+
+    Prevents "Event loop is closed" RuntimeErrors that occur when httpx tries
+    to clean up persistent connections during garbage collection after the
+    event loop has already been shut down.  Each test starts with a clean pool.
+    """
+    yield
+    await _close_all_http_clients()
 
 
 @pytest.fixture

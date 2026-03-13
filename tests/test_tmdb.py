@@ -15,18 +15,25 @@ The mocking pattern mirrors test_zilean.py exactly:
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
+from src.services.http_client import CircuitBreaker
 from src.services.tmdb import (
     TmdbClient,
     TmdbExternalIds,
     TmdbItem,
     TmdbSearchResult,
 )
+
+
+def _make_noop_breaker() -> CircuitBreaker:
+    """Return a CircuitBreaker that is always CLOSED (never rejects requests)."""
+    return CircuitBreaker("test", failure_threshold=999, recovery_timeout=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -236,13 +243,13 @@ def _patch_client(
         default_response=default_response,
     )
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url="https://api.themoviedb.org/3",
             transport=transport,
         )
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
     return transport
 
 
@@ -259,6 +266,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TmdbClient:
     mock_settings = MagicMock()
     mock_settings.tmdb = cfg
     monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.tmdb.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     return TmdbClient()
 
@@ -271,6 +282,10 @@ def disabled_client(monkeypatch: pytest.MonkeyPatch) -> TmdbClient:
     mock_settings = MagicMock()
     mock_settings.tmdb = cfg
     monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.tmdb.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     return TmdbClient()
 
@@ -283,6 +298,10 @@ def no_key_client(monkeypatch: pytest.MonkeyPatch) -> TmdbClient:
     mock_settings = MagicMock()
     mock_settings.tmdb = cfg
     monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+    monkeypatch.setattr(
+        "src.services.tmdb.get_circuit_breaker",
+        lambda *args, **kwargs: _make_noop_breaker(),
+    )
 
     return TmdbClient()
 
@@ -430,10 +449,10 @@ async def test_get_trending_connection_error(client: TmdbClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_ConnErrorTransport())
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     results = await client.get_trending("movie")
 
@@ -448,10 +467,10 @@ async def test_get_trending_timeout(client: TmdbClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.TimeoutException("timed out", request=request)
 
-    def _fake_build_client() -> httpx.AsyncClient:
+    async def _fake_get_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_TimeoutTransport())
 
-    client._build_client = _fake_build_client  # type: ignore[method-assign]
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     results = await client.get_trending("tv")
 
@@ -685,7 +704,10 @@ async def test_search_connection_error(client: TmdbClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    client._build_client = lambda: httpx.AsyncClient(transport=_ConnErrorTransport())  # type: ignore[method-assign]
+    async def _fake_get_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=_ConnErrorTransport())
+
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     result = await client.search("test")
 
@@ -811,7 +833,10 @@ async def test_get_external_ids_connection_error(client: TmdbClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    client._build_client = lambda: httpx.AsyncClient(transport=_ConnErrorTransport())  # type: ignore[method-assign]
+    async def _fake_get_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=_ConnErrorTransport())
+
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
 
     result = await client.get_external_ids(123, "movie")
 
@@ -834,15 +859,47 @@ async def test_get_external_ids_disabled(disabled_client: TmdbClient) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _make_inline_client_patcher(
+    transport: _MockTransport,
+) -> Any:
+    """Return a context manager that patches the inline ``async with httpx.AsyncClient(...)``
+    used inside ``test_connection``.
+
+    ``test_connection`` bypasses the pooled ``_get_client`` and creates a fresh
+    client directly.  Patching ``src.services.tmdb.httpx.AsyncClient`` intercepts
+    that constructor call and returns a fake async context manager backed by the
+    supplied transport.
+
+    Args:
+        transport: The mock transport to inject.
+
+    Returns:
+        A context manager suitable for use in a ``with`` block.
+    """
+    fake_http_client = httpx.AsyncClient(
+        base_url="https://api.themoviedb.org/3",
+        transport=transport,
+    )
+
+    class _FakeCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_http_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    return patch("src.services.tmdb.httpx.AsyncClient", lambda **kwargs: _FakeCM())
+
+
 @pytest.mark.asyncio
 async def test_test_connection_success(client: TmdbClient) -> None:
     """test_connection returns True when the configuration endpoint returns 200."""
-    _patch_client(
-        client,
-        [_make_response(200, {"images": {"base_url": "http://image.tmdb.org/t/p/"}})],
+    transport = _MockTransport(
+        [_make_response(200, {"images": {"base_url": "http://image.tmdb.org/t/p/"}})]
     )
 
-    result = await client.test_connection()
+    with _make_inline_client_patcher(transport):
+        result = await client.test_connection()
 
     assert result is True
 
@@ -850,12 +907,12 @@ async def test_test_connection_success(client: TmdbClient) -> None:
 @pytest.mark.asyncio
 async def test_test_connection_failure(client: TmdbClient) -> None:
     """test_connection returns False on a 401 Unauthorized response."""
-    _patch_client(
-        client,
-        [_make_response(401, {"status_message": "Invalid API key."})],
+    transport = _MockTransport(
+        [_make_response(401, {"status_message": "Invalid API key."})]
     )
 
-    result = await client.test_connection()
+    with _make_inline_client_patcher(transport):
+        result = await client.test_connection()
 
     assert result is False
 
@@ -863,12 +920,10 @@ async def test_test_connection_failure(client: TmdbClient) -> None:
 @pytest.mark.asyncio
 async def test_test_connection_no_api_key(no_key_client: TmdbClient) -> None:
     """test_connection returns False immediately when api_key is not configured."""
-    transport = _patch_client(no_key_client, [])
-
+    # Short-circuits before any HTTP call — no need to patch the transport.
     result = await no_key_client.test_connection()
 
     assert result is False
-    assert len(transport.requests_made) == 0
 
 
 @pytest.mark.asyncio
@@ -879,9 +934,22 @@ async def test_test_connection_network_error(client: TmdbClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    client._build_client = lambda: httpx.AsyncClient(transport=_ConnErrorTransport())  # type: ignore[method-assign]
+    transport = _MockTransport([], default_response=None)
 
-    result = await client.test_connection()
+    fake_http_client = httpx.AsyncClient(
+        base_url="https://api.themoviedb.org/3",
+        transport=_ConnErrorTransport(),
+    )
+
+    class _FakeCM:
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return fake_http_client
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    with patch("src.services.tmdb.httpx.AsyncClient", lambda **kwargs: _FakeCM()):
+        result = await client.test_connection()
 
     assert result is False
 
@@ -889,12 +957,10 @@ async def test_test_connection_network_error(client: TmdbClient) -> None:
 @pytest.mark.asyncio
 async def test_test_connection_uses_configuration_endpoint(client: TmdbClient) -> None:
     """test_connection calls the /configuration endpoint."""
-    transport = _patch_client(
-        client,
-        [_make_response(200, {"images": {}})],
-    )
+    transport = _MockTransport([_make_response(200, {"images": {}})])
 
-    await client.test_connection()
+    with _make_inline_client_patcher(transport):
+        await client.test_connection()
 
     assert len(transport.requests_made) == 1
     url = str(transport.requests_made[0].url)

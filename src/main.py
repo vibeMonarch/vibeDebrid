@@ -1112,6 +1112,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler.shutdown(wait=False)
     from src.core.event_bus import event_bus
     event_bus.shutdown()
+    from src.services.http_client import close_all as close_http_clients
+    await close_http_clients()
     await engine.dispose()
     logger.info("Shutdown complete")
 

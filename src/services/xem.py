@@ -20,6 +20,7 @@ import httpx
 from pydantic import BaseModel
 
 from src.config import settings
+from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +67,12 @@ class XemClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self) -> httpx.AsyncClient:
-        """Create a new httpx.AsyncClient pointed at the XEM API."""
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the pooled httpx.AsyncClient for XEM."""
         cfg = settings.xem
-        return httpx.AsyncClient(
-            base_url=cfg.base_url.rstrip("/"),
+        return await get_client(
+            "xem",
+            cfg.base_url.rstrip("/"),
             timeout=cfg.timeout_seconds,
             headers={"User-Agent": "vibeDebrid/0.1"},
             follow_redirects=True,
@@ -133,10 +135,20 @@ class XemClient:
 
         params: dict[str, Any] = {"id": tvdb_id, "origin": "tvdb"}
 
+        breaker = get_circuit_breaker("xem")
         try:
-            async with self._build_client() as client:
-                response = await client.get("/map/all", params=params)
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning(
+                "xem.get_show_mappings: circuit open, skipping tvdb_id=%d", tvdb_id
+            )
+            return XemShowMappings(tvdb_id=tvdb_id)
+
+        try:
+            client = await self._get_client()
+            response = await client.get("/map/all", params=params)
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "xem.get_show_mappings: connection error tvdb_id=%d (%s)",
                 tvdb_id,
@@ -144,6 +156,7 @@ class XemClient:
             )
             return XemShowMappings(tvdb_id=tvdb_id)
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "xem.get_show_mappings: request timed out tvdb_id=%d (%s)",
                 tvdb_id,
@@ -151,6 +164,7 @@ class XemClient:
             )
             return XemShowMappings(tvdb_id=tvdb_id)
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "xem.get_show_mappings: network error tvdb_id=%d (%s)",
                 tvdb_id,
@@ -159,7 +173,10 @@ class XemClient:
             return XemShowMappings(tvdb_id=tvdb_id)
 
         if self._handle_error_status(response, "get_show_mappings"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return XemShowMappings(tvdb_id=tvdb_id)
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
@@ -238,29 +255,42 @@ class XemClient:
             logger.debug("xem.get_shows_with_mappings: XEM disabled, skipping")
             return set()
 
+        breaker = get_circuit_breaker("xem")
         try:
-            async with self._build_client() as client:
-                response = await client.get(
-                    "/map/havemap", params={"origin": "tvdb"}
-                )
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning("xem.get_shows_with_mappings: circuit open, skipping")
+            return set()
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                "/map/havemap", params={"origin": "tvdb"}
+            )
         except httpx.ConnectError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "xem.get_shows_with_mappings: connection error (%s)", exc
             )
             return set()
         except httpx.TimeoutException as exc:
+            await breaker.record_failure()
             logger.warning(
                 "xem.get_shows_with_mappings: request timed out (%s)", exc
             )
             return set()
         except httpx.RequestError as exc:
+            await breaker.record_failure()
             logger.warning(
                 "xem.get_shows_with_mappings: network error (%s)", exc
             )
             return set()
 
         if self._handle_error_status(response, "get_shows_with_mappings"):
+            if response.status_code != 429:
+                await breaker.record_failure()
             return set()
+        await breaker.record_success()
 
         try:
             data: dict[str, Any] = response.json()
