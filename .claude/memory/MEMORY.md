@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1767 tests, all passing (as of 2026-03-12)
+- 1789 tests, all passing (as of 2026-03-13)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -38,6 +38,7 @@
 - [Issue #30](reverse-containment.md): bidirectional mount scanner lookup — 2026-03-12
 - Issue #10: DB indexes on foreign keys + BigInteger filesize — 2026-03-12
 - Issue #9: session.rollback() → savepoints in scrape_pipeline + migration — 2026-03-12
+- [Episode mismatch filter + retry cleanup](episode-mismatch-filter.md) — 2026-03-13
 
 ## Remaining / Future Work
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
@@ -72,14 +73,9 @@
 - Loading spinner on "Remove Selected" button (`bulkRemoving` state)
 
 ## Mount Scan Optimization (Issue #25) — 2026-03-09
-- FUSE `readdir` is the dominant cost (~41s for 3104 files) — can't be optimized away
-- `WalkEntry` NamedTuple: lightweight walk with no PTN parsing (deferred to upsert)
-- `UpsertResult` NamedTuple: `(added, updated, unchanged, errors)`
-- Skip-unchanged: compare `(filename, filesize)` in `_upsert_records`; batch `UPDATE last_seen_at`
-- Stat-skip: `_load_known_files()` pre-loads DB; known files skip both `is_dir()` AND `stat()`
-- Startup scan skipped when DB has data — `get_index_stats()` check in `main.py`
-- `scan_directory()` always stats (passes `{}`) — targeted scans are small
-- `None == None` is True in Python (correct for filesize comparison); SQL NULL=NULL is FALSE
+- Skip-unchanged: compare `(filename, filesize)`, batch `UPDATE last_seen_at`
+- Stat-skip: `_load_known_files()` pre-loads DB; known files skip `is_dir()` + `stat()`
+- Startup scan skipped when DB has data; `scan_directory()` always stats (targeted scans small)
 
 ## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
 - `mount_scanner.py`: `_scandir_walk()` + `_upsert_records()` batch helper + `scan_directory()` targeted scan
@@ -123,16 +119,13 @@
 
 ## Bugs Fixed
 - Naive vs aware datetime in CHECKING timeout — normalize to tz-aware UTC
-- Season pack duplicate add + XEM scrape mapping (2026-03-08) — see below
-- Language filter Cyrillic bypass (2026-03-08): `_parse_languages()` only checked English tokens like "RUSSIAN"; Cyrillic-titled torrents had empty `languages` → assumed English → passed filter. Fix: added Cyrillic char detection (`\u0400-\u04FF`) + 11 abbreviated tokens (`RUS`,`JAP`,`JPN`,etc.) with `\b` word-boundary regex
-- Single-file mount scan (2026-03-08): `scan_directory()` only handled directories; single-file RD torrents (`.mkv` filename) couldn't be found. Fix: added `_scan_single_file()` — detects video extensions, checks file in mount root directly, with fuzzy fallback
-- Torrentio RD key filtering (2026-03-08): see Torrentio RD Key Stripping section below
-- Season pack false positive (2026-03-08): PTN can't parse anime `S2 - 06` notation → `_SEASON_DASH_EP_RE` regex fallback in both torrentio.py and zilean.py
-- Season pack scoring bias (2026-03-08): `prefer_season_packs` param on `filter_and_rank`; pipeline passes `item.is_season_pack` so episode items don't give +5 bonus to season pack results
-- Anime CHECKING failures (2026-03-08): PTN can't parse `[Group] Title - NN` filenames → `_ANIME_DASH_EP_RE` regex fallback. Complete collections (flat, absolute ep numbering) → TMDB-based absolute episode range mapping. Single-file anime torrents (title mismatch) → no-filter fallback with single-file guard. Season pack filter hard-rejects single-episode results (`prefer_season_packs=True` in Tier 1)
-- Search add silent failure (2026-03-09): `/api/add` returns HTTP 200 with `status="queued"` when `add_magnet` fails (e.g. RD rate limit from cache checking burst). Frontend now shows yellow "Queued" warning instead of green "Added"
-- check_cached race condition (2026-03-09): search `/api/check-cached` used `add_magnet`/`delete_torrent` probe with `keep_if_cached=False`. If hash already in user's RD account, `add_magnet` returns existing rd_id, then `finally` deletes it. Fix: query `rd_torrents` table first, skip probe if hash already tracked as ACTIVE
-- Search add missing metadata (2026-03-09): `AddRequest` lacked `tmdb_id`/`tvdb_id` fields, frontend hardcoded `year: null`. TMDB auto-resolve had the data but only saved `imdb_id`. Fix: capture year/tmdb_id/tvdb_id from TMDB resolve, pass in add payload, populate on MediaItem. Also added `tvdb_id` to discover resolve endpoint response
+- Season pack duplicate add + XEM scrape mapping (2026-03-08) — see Season Pack Dedup section
+- Language filter Cyrillic bypass (2026-03-08): added Cyrillic char detection + abbreviated tokens
+- Single-file mount scan (2026-03-08): `_scan_single_file()` for single-file RD torrents
+- Season pack false positive (2026-03-08): `_SEASON_DASH_EP_RE` regex fallback for anime `S2 - 06`
+- Anime CHECKING failures (2026-03-08): `_ANIME_DASH_EP_RE` regex + absolute episode range mapping
+- Search add: silent failure UX, check_cached race condition, missing year/tmdb_id (2026-03-09)
+- Episode mismatch (2026-03-13): [details](episode-mismatch-filter.md)
 
 ## Season Pack Split — 2026-03-08
 - When no season packs available, auto-splits into individual episode queue items
@@ -185,30 +178,17 @@ Three interrelated bugs when adding anime with XEM scene seasons:
 - Settings UI: toggle in Symlink Naming card, dims other toggles when active
 
 ## Torrentio RD Key Stripping — 2026-03-08
-- `realdebrid=<key>` in Torrentio opts causes addon to pre-filter to RD-cached results only
-- For niche content (anime): 41 results without key → 3 results with key (all Russian dubs)
-- `_DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")` strips segment from pipe-separated opts
-- `include_debrid_key: bool = True` param threaded through `_build_base_url` → `_build_client` → `_query` → `scrape_movie`/`scrape_episode`
-- Pipeline (`scrape_pipeline.py`) and search (`search.py`) both pass `include_debrid_key=False`
+- `realdebrid=<key>` in opts pre-filters to cached-only → stripped for pipeline/search (`include_debrid_key=False`)
 - Settings test endpoint keeps default `True` (tests user's configured opts work)
-- Zilean unaffected — Frieren S02 not in DMM hashlists yet (expected for airing content)
 
 ## Plex Watchlist Sync — 2026-03-09
-- `PlexConfig.watchlist_sync_enabled: bool = False`, `watchlist_poll_minutes: int = Field(default=30, ge=15)`
-- `plex.py:get_watchlist()` — discover.provider.plex.tv (NOT metadata), JSON, paginated, `includeGuids=1`
-- `src/core/plex_watchlist.py:sync_watchlist()` — batch dedup (tmdb_id + imdb_id IN query), per-item savepoints
-- Movies: WANTED, source="plex_watchlist"; Shows: S1 pack + monitoring + immediate `_check_single_show`
-- Mount index lookup before creating items (catches content added to RD outside vibeDebrid)
-- Scheduler: always registered (early-exit when disabled), `max_instances=1`, min 15min interval
-- 38 tests in `tests/test_plex_watchlist.py`
+- discover.provider.plex.tv (NOT metadata), JSON, paginated, `includeGuids=1`
+- Batch dedup (tmdb_id + imdb_id IN query), per-item savepoints
+- Movies: WANTED; Shows: S1 pack + monitoring + immediate `_check_single_show`
 
 ## TMDB ID Backfill — 2026-03-09
-- `tmdb.find_by_imdb_id()`: `/find/{imdb_id}?external_source=imdb_id`, resolves tmdb_id + tvdb_id
-- `backfill.py:backfill_tmdb_ids()`: Semaphore(10), gather(return_exceptions=True), batch UPDATE by imdb_id
-- Startup: non-blocking background task with `_backfill_lock` shared with API endpoint
+- Startup background task, Semaphore(10), batch UPDATE by imdb_id
 - `show_manager._check_single_show`: or_ query fallback for imdb_id when tmdb_id is NULL
-- Real data: 73/75 resolved, 1350 rows enriched
-- 35 tests in `tests/test_backfill.py`
 
 ## Key Conventions
 - Commit style: imperative summary, bullet details, `Co-Authored-By: Claude Opus 4.6`
