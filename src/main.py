@@ -1109,6 +1109,7 @@ from src.api.routes.discover import router as discover_router  # noqa: E402
 from src.api.routes.sse import router as sse_router  # noqa: E402
 from src.api.routes.tools import router as tools_router  # noqa: E402
 from src.api.routes.show import router as show_router  # noqa: E402
+from src.api.routes.health import router as health_router  # noqa: E402
 
 app.include_router(dashboard_router)
 app.include_router(queue_router, prefix="/api/queue", tags=["queue"])
@@ -1119,6 +1120,7 @@ app.include_router(discover_router, prefix="/api/discover", tags=["discover"])
 app.include_router(sse_router, prefix="/api", tags=["sse"])
 app.include_router(tools_router, tags=["tools"])
 app.include_router(show_router, prefix="/api/show", tags=["show"])
+app.include_router(health_router)
 
 
 # --- Page routes (serve Jinja2 templates) ---
