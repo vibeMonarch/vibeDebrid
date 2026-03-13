@@ -25,12 +25,10 @@ Real-Debrid (cloud) → Zurg (WebDAV, port 9090) → rclone (FUSE mount) → Ple
 
 ### Host Environment
 
-- Server: Linux (Ubuntu), user `hakan`, UID/PGID 1000
-- Project root: `/home/hakan/Projects/homeserver/`
-- Zurg rclone mount: `/home/hakan/Projects/homeserver/Zurg/mnt/__all__`
-- Symlink target directory: configurable, e.g., `/home/hakan/Projects/homeserver/vibeDebrid/library/`
+- Server: Linux, any user/UID
+- Zurg rclone mount: configurable, e.g., `/mnt/zurg/__all__`
+- Symlink target directory: configurable, e.g., `/srv/media/library/`
 - Plex runs on host (not in container) — symlink paths MUST be absolute host paths
-- Timezone: Europe/Berlin
 - Deployment: Docker container via docker-compose, alongside existing Zurg/rclone stack
 
 ### External Services
@@ -399,9 +397,9 @@ symlinks (
         }
     },
     "paths": {
-        "zurg_mount": "/home/hakan/Projects/homeserver/Zurg/mnt/__all__",
-        "library_movies": "/home/hakan/Projects/homeserver/vibeDebrid/library/movies",
-        "library_shows": "/home/hakan/Projects/homeserver/vibeDebrid/library/shows"
+        "zurg_mount": "/mnt/zurg/__all__",
+        "library_movies": "/srv/media/library/movies",
+        "library_shows": "/srv/media/library/shows"
     },
     "quality": {
         "default_profile": "high",

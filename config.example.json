@@ -1,17 +1,20 @@
 {
     "real_debrid": {
-        "api_key": "YOUR_RD_API_KEY_HERE",
+        "api_key": "YOUR_REAL_DEBRID_API_KEY",
         "api_url": "https://api.real-debrid.com/rest/1.0",
         "prefer_cached": true,
         "allow_uncached": false,
         "max_uncached_size_gb": 50
+    },
+    "tmdb": {
+        "api_key": "YOUR_TMDB_API_KEY"
     },
     "scrapers": {
         "torrentio": {
             "enabled": true,
             "base_url": "https://torrentio.strem.fun",
             "opts": "",
-            "timeout_seconds": 30,
+            "timeout_seconds": 10,
             "max_results": 100
         },
         "zilean": {
@@ -91,7 +94,18 @@
             "hdcam"
         ],
         "required_language": null,
+        "preferred_languages": [],
+        "prefer_original_language": false,
         "allow_multi_audio": true
+    },
+    "search": {
+        "cache_check_limit": 20
+    },
+    "xem": {
+        "enabled": true,
+        "base_url": "https://thexem.info",
+        "cache_hours": 168,
+        "timeout_seconds": 10
     },
     "retry": {
         "schedule_minutes": [
@@ -118,10 +132,12 @@
     "plex": {
         "enabled": false,
         "url": "http://localhost:32400",
-        "token": "",
+        "token": "YOUR_PLEX_TOKEN",
         "movie_section_ids": [],
         "show_section_ids": [],
-        "scan_after_symlink": true
+        "scan_after_symlink": true,
+        "watchlist_sync_enabled": false,
+        "watchlist_poll_minutes": 30
     },
     "server": {
         "host": "0.0.0.0",
@@ -136,6 +152,7 @@
     "symlink_naming": {
         "date_prefix": true,
         "release_year": true,
-        "resolution": false
+        "resolution": false,
+        "plex_naming": false
     }
 }

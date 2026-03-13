@@ -10,14 +10,18 @@ venv/
 *.egg-info/
 dist/
 build/
+*.pyo
+*.pyd
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 
-# Project
+# Project — runtime data, never commit
 *.db
 *.db-shm
 *.db-wal
@@ -26,13 +30,29 @@ config.json
 !config.example.json
 library/
 logs/
+backups/
+
+# Secrets and environment
+.env
+.env.*
+!.env.example
 
 # Docker
 .docker/
 
 # OS
 .DS_Store
+.DS_Store?
 Thumbs.db
+ehthumbs.db
+
+# Coverage / test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/worktrees/

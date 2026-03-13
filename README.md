@@ -88,7 +88,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 ## Setup
 
 ```bash
-git clone https://github.com/hkny/vibeDebrid.git
+git clone https://github.com/YOUR_USERNAME/vibeDebrid.git
 cd vibeDebrid
 python3 -m venv .venv
 .venv/bin/pip install -e .
@@ -203,7 +203,8 @@ Plex/Jellyfin        ←── reads symlinks
 
 <!-- ## Docker
 
-Docker deployment instructions coming soon. See [#18](https://github.com/hkny/vibeDebrid/issues/18) for the containerization plan. -->
+Docker deployment instructions coming soon. -->
+
 
 ## Development
 
@@ -218,6 +219,10 @@ Docker deployment instructions coming soon. See [#18](https://github.com/hkny/vi
 .venv/bin/ruff check src/
 ```
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
-Private / All rights reserved.
+Apache 2.0 — see [LICENSE](LICENSE).
