@@ -126,7 +126,7 @@ def _parse_filename(filename: str) -> dict[str, Any]:
     try:
         result: dict[str, Any] = PTN.parse(filename) or {}
         return result
-    except Exception as exc:  # PTN can raise ValueError or AttributeError
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
         logger.warning("dedup: PTN failed to parse filename=%r (%s)", filename, exc)
         return {}
 

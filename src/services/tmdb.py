@@ -347,7 +347,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.get_trending: malformed JSON (%s)", exc)
             return []
 
@@ -436,7 +436,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.search: malformed JSON query=%r (%s)", query, exc)
             return TmdbSearchResult(items=[])
 
@@ -512,7 +512,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error(
                 "tmdb.get_external_ids: malformed JSON tmdb_id=%d (%s)", tmdb_id, exc
             )
@@ -577,7 +577,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.get_top_rated: malformed JSON (%s)", exc)
             return []
 
@@ -640,7 +640,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.get_genres: malformed JSON (%s)", exc)
             return []
 
@@ -713,7 +713,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.discover: malformed JSON (%s)", exc)
             return TmdbSearchResult(items=[])
 
@@ -807,7 +807,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.get_show_details: malformed JSON tmdb_id=%d (%s)", tmdb_id, exc)
             return None
 
@@ -938,7 +938,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error(
                 "tmdb.find_by_imdb_id: malformed JSON imdb_id=%s (%s)", imdb_id, exc
             )
@@ -1011,7 +1011,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error("tmdb.get_movie_details: malformed JSON tmdb_id=%d (%s)", tmdb_id, exc)
             return None
 
@@ -1057,7 +1057,7 @@ class TmdbClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error(
                 "tmdb.get_season_details: malformed JSON tmdb_id=%d s=%d (%s)",
                 tmdb_id, season_number, exc,

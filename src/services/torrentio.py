@@ -398,7 +398,7 @@ class TorrentioClient:
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error(
                 "torrentio._query: malformed JSON for path=%s body=%s (%s)",
                 path,
@@ -500,7 +500,7 @@ class TorrentioClient:
         ptn_data: dict[str, Any] = {}
         try:
             ptn_data = PTN.parse(release_name) or {}
-        except Exception as exc:
+        except (ValueError, TypeError, KeyError) as exc:
             logger.debug(
                 "_parse_stream: PTN failed for release=%r (%s)", release_name, exc
             )

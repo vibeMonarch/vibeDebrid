@@ -30,6 +30,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -139,9 +140,27 @@ class ScrapePipeline:
 
         try:
             return await self._run_pipeline(session, item)
-        except Exception as exc:
+        except (httpx.RequestError, RealDebridError, TimeoutError, OSError) as exc:
+            # Transient network/API errors — back off and retry later.
             logger.error(
-                "scrape_pipeline.run: unexpected exception for item id=%d title=%r: %s",
+                "scrape_pipeline.run: transient error for item id=%d title=%r: %s",
+                item.id,
+                item.title,
+                exc,
+                exc_info=True,
+            )
+            await self._safe_transition_sleeping(session, item)
+            return PipelineResult(
+                item_id=item.id,
+                action="error",
+                message=f"Transient pipeline error: {exc}",
+            )
+        except Exception as exc:
+            # Unexpected / programming errors — log at CRITICAL so they surface
+            # in monitoring, but still transition to SLEEPING to avoid leaving
+            # the item stuck in SCRAPING state.
+            logger.critical(
+                "scrape_pipeline.run: unexpected error for item id=%d title=%r: %s",
                 item.id,
                 item.title,
                 exc,
@@ -243,10 +262,11 @@ class ScrapePipeline:
                         scene_episode,
                         item.id,
                     )
-            except Exception:
+            except Exception as exc:
                 logger.debug(
-                    "scrape_pipeline: XEM lookup failed for item id=%d, using original numbering",
+                    "scrape_pipeline: XEM lookup failed for item id=%d, using original numbering: %s",
                     item.id,
+                    exc,
                 )
 
         # ------------------------------------------------------------------
@@ -388,7 +408,7 @@ class ScrapePipeline:
                 cached_set = {
                     h for h, cr in cache_results.items() if cr.cached is True
                 }
-            except Exception as exc:
+            except (RealDebridError, httpx.RequestError, TimeoutError) as exc:
                 logger.warning(
                     "scrape_pipeline: check_cached_batch failed for item id=%d: %s",
                     item.id,

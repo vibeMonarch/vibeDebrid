@@ -294,7 +294,7 @@ class ZileanClient:
 
         try:
             raw_list: list[dict[str, Any]] = response.json()
-        except Exception as exc:
+        except ValueError as exc:
             logger.error(
                 "zilean.search: malformed JSON. query=%r body=%s (%s)",
                 query,
@@ -324,7 +324,7 @@ class ZileanClient:
         for entry in raw_list:
             try:
                 parsed = self._parse_entry(entry)
-            except Exception as exc:
+            except (ValueError, TypeError, KeyError) as exc:
                 logger.debug("zilean: skipping unparseable entry: %s", exc)
                 continue
             if parsed is not None:
@@ -401,7 +401,7 @@ class ZileanClient:
             ptn_data: dict[str, Any] = {}
             try:
                 ptn_data = PTN.parse(raw_title) or {}
-            except Exception as exc:
+            except (ValueError, TypeError, KeyError) as exc:
                 logger.debug(
                     "zilean._parse_entry: PTN failed for raw_title=%r (%s)",
                     raw_title,

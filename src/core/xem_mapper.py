@@ -6,6 +6,7 @@ import logging
 import time as _time
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -293,8 +294,8 @@ class XemMapper:
                 ext_ids = await tmdb_client.get_external_ids(int(tmdb_id), "tv")
                 if ext_ids is not None:
                     resolved_tvdb_id = ext_ids.tvdb_id
-            except Exception:
-                # Broad catch: TVDB ID resolution is a non-critical fallback path.
+            except (httpx.RequestError, ValueError, KeyError, TimeoutError):
+                # TVDB ID resolution is a non-critical fallback path.
                 # Failures here just mean we use original numbering.
                 logger.debug(
                     "xem_mapper: failed to resolve tvdb_id via TMDB for tmdb_id=%s",

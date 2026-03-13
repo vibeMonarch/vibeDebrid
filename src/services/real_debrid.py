@@ -173,7 +173,7 @@ class RealDebridClient:
             body = response.json()
             error_msg = body.get("error", error_msg)
             error_code = body.get("error_code")
-        except Exception:
+        except ValueError:
             pass
 
         status = response.status_code
@@ -548,14 +548,14 @@ class RealDebridClient:
                 return CacheCheckResult(info_hash=info_hash, cached=False, blocked=True)
             logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
             return CacheCheckResult(info_hash=info_hash, cached=None)
-        except Exception as exc:
-            logger.warning("check_cached: failed for hash=%s: %s", info_hash, exc)
+        except (httpx.RequestError, TimeoutError) as exc:
+            logger.warning("check_cached: network error for hash=%s: %s", info_hash, exc)
             return CacheCheckResult(info_hash=info_hash, cached=None)
         finally:
             if rd_id and not should_keep:
                 try:
                     await self.delete_torrent(rd_id)
-                except Exception as exc:
+                except (RealDebridError, httpx.RequestError, TimeoutError) as exc:
                     logger.warning(
                         "check_cached: cleanup delete failed for rd_id=%s: %s",
                         rd_id, exc,

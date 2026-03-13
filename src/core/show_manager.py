@@ -6,6 +6,7 @@ import logging
 from datetime import date, datetime, timezone
 from enum import Enum
 
+import httpx
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -157,11 +158,12 @@ class ShowManager:
 
         try:
             abs_map = await xem_mapper.get_absolute_scene_map(session, tvdb_id)
-        except Exception:
+        except (httpx.RequestError, ValueError, TimeoutError, KeyError) as exc:
             logger.warning(
                 "show_manager._derive_scene_seasons: XEM lookup failed for tvdb_id=%d, "
-                "falling back to TMDB seasons",
+                "falling back to TMDB seasons: %s",
                 tvdb_id,
+                exc,
                 exc_info=True,
             )
             return None
@@ -1095,10 +1097,10 @@ class ShowManager:
                 new_items = await self._check_single_show(session, show)
                 total_new += new_items
                 checked += 1
-            except Exception:
-                logger.exception(
-                    "check_monitored_shows: failed for tmdb_id=%d title=%r",
-                    show.tmdb_id, show.title,
+            except Exception as exc:
+                logger.error(
+                    "check_monitored_shows: failed for tmdb_id=%d title=%r: %s",
+                    show.tmdb_id, show.title, exc, exc_info=True,
                 )
 
         await session.flush()
