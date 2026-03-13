@@ -30,10 +30,13 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import PTN
@@ -290,23 +293,130 @@ def _build_ptn_groups(
     return groups
 
 
+async def _check_source_paths_exist(
+    source_paths: list[str],
+    semaphore: asyncio.Semaphore,
+) -> list[bool]:
+    """Check whether each path in *source_paths* exists on the filesystem.
+
+    Uses ``asyncio.to_thread`` to avoid blocking the event loop on FUSE I/O.
+    Each check is gated by *semaphore* to limit concurrency.
+
+    Args:
+        source_paths: List of absolute paths to check.
+        semaphore: Semaphore controlling maximum concurrent filesystem checks.
+
+    Returns:
+        List of booleans, one per path, in the same order as *source_paths*.
+    """
+    async def _exists(path: str) -> bool:
+        async with semaphore:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(os.path.exists, path), timeout=5.0
+                )
+            except (OSError, asyncio.TimeoutError) as exc:
+                logger.debug("rd_cleanup: os.path.exists failed for %r: %s", path, exc)
+                return False
+
+    return list(await asyncio.gather(*(_exists(p) for p in source_paths)))
+
+
+async def _build_live_mount_set(
+    source_paths: list[str],
+) -> set[tuple[str, int | None]]:
+    """Build a set of ``(normalized_title, season)`` tuples from live symlink sources.
+
+    For each source_path, checks whether the path still exists on the
+    filesystem.  When it does, the parent directory name is PTN-parsed to
+    extract (title, season).  This enables the categorizer to protect
+    replacement torrents that Zurg auto-recovered (different hash/rd_id but
+    the mount directory name matches a live symlink source path).
+
+    The filesystem checks run concurrently (up to 20 at once) via
+    ``asyncio.to_thread``.  If the mount appears to be entirely unavailable
+    (all checks fail), an empty set is returned so the caller can skip this
+    protection layer gracefully.
+
+    Args:
+        source_paths: All ``source_path`` values from the symlinks table.
+
+    Returns:
+        Set of ``(normalized_title, season)`` tuples for live mount paths.
+        Returns empty set when the mount is unavailable or no paths parse.
+    """
+    if not source_paths:
+        return set()
+
+    semaphore = asyncio.Semaphore(20)
+    existence = await _check_source_paths_exist(source_paths, semaphore)
+
+    live_set: set[tuple[str, int | None]] = set()
+    live_count = 0
+    for path, exists in zip(source_paths, existence):
+        if not exists:
+            continue
+        live_count += 1
+        # Extract parent directory name for PTN parsing.
+        # e.g. /mnt/__all__/Attack on Titan S02/S02E01.mkv → "Attack on Titan S02"
+        # For single-file torrents directly under __all__/, fall back to filename.
+        parent_dir = Path(path).parent.name
+        if not parent_dir:
+            continue
+        if parent_dir == "__all__":
+            # Single-file torrent — use the filename itself for PTN parsing
+            ptn_source = Path(path).name
+        else:
+            ptn_source = parent_dir
+        ptn = _parse_filename(ptn_source)
+        raw_title: str = ptn.get("title") or ""
+        if not raw_title:
+            continue
+        norm_title = _normalize_title(raw_title)
+        if not norm_title:
+            # Title has no alphanumeric characters — skip
+            continue
+        season: int | None = ptn.get("season")
+        live_set.add((norm_title, season))
+
+    if source_paths and live_count == 0:
+        logger.warning(
+            "rd_cleanup: all %d symlink source paths are missing — "
+            "Zurg mount may be unavailable; skipping live mount protection",
+            len(source_paths),
+        )
+        return set()
+
+    logger.debug(
+        "rd_cleanup: live_mount_set=%d entries from %d/%d live paths",
+        len(live_set),
+        live_count,
+        len(source_paths),
+    )
+    return live_set
+
+
 async def _build_protection_sets(
     session: AsyncSession,
-) -> tuple[set[str], set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str], set[tuple[str, int | None]]]:
     """Load protection identifiers from the local database.
 
-    Three complementary sets are returned so every protection avenue is covered:
+    Four complementary sets are returned so every protection avenue is covered:
 
     1. ``active_hashes`` — info hashes in ``rd_torrents`` with status=ACTIVE.
     2. ``active_rd_ids`` — ``rd_id`` values in ``rd_torrents`` with status=ACTIVE.
     3. ``symlink_mount_names`` — lowercase first-path-component extracted from
        every ``symlinks.source_path`` using ``_extract_mount_relative_name``.
+    4. ``live_mount_set`` — ``(normalized_title, season)`` tuples from symlinks
+       whose ``source_path`` still exists on the filesystem.  Used to protect
+       Zurg auto-recovered torrents that have a different hash/rd_id.
 
     Args:
         session: Async database session.
 
     Returns:
-        Tuple of ``(active_hashes, active_rd_ids, symlink_mount_names)``.
+        Tuple of
+        ``(active_hashes, active_rd_ids, symlink_mount_names, live_mount_set)``.
     """
     from src.config import settings
 
@@ -333,10 +443,12 @@ async def _build_protection_sets(
     symlink_rows = await session.execute(select(Symlink.source_path))
     zurg_mount: str = settings.paths.zurg_mount.rstrip("/")
     symlink_mount_names: set[str] = set()
+    source_paths: list[str] = []
     fallback_count = 0
     for (source_path,) in symlink_rows:
         if not source_path:
             continue
+        source_paths.append(source_path)
         mount_name = _extract_mount_relative_name(source_path, zurg_mount)
         if mount_name is None:
             mount_name = _extract_mount_name_any_base(source_path)
@@ -354,14 +466,18 @@ async def _build_protection_sets(
             zurg_mount,
         )
 
+    # Live mount set — filesystem existence checks (non-blocking via asyncio.to_thread)
+    live_mount_set = await _build_live_mount_set(source_paths)
+
     logger.debug(
         "rd_cleanup: protection sets — active_hashes=%d active_rd_ids=%d "
-        "symlink_mount_names=%d",
+        "symlink_mount_names=%d live_mount_set=%d",
         len(active_hashes),
         len(active_rd_ids),
         len(symlink_mount_names),
+        len(live_mount_set),
     )
-    return active_hashes, active_rd_ids, symlink_mount_names
+    return active_hashes, active_rd_ids, symlink_mount_names, live_mount_set
 
 
 def _categorize_torrent(
@@ -369,6 +485,7 @@ def _categorize_torrent(
     active_hashes: set[str],
     active_rd_ids: set[str],
     symlink_mount_names: set[str],
+    live_mount_set: set[tuple[str, int | None]],
     protected_rd_ids: set[str],
     ptn_groups: dict[tuple[str, int | None, int | None], list[str]],
     rd_id_to_filename: dict[str, str],
@@ -382,6 +499,9 @@ def _categorize_torrent(
         active_hashes: Set of lowercase info hashes considered protected.
         active_rd_ids: Set of RD ID strings considered protected.
         symlink_mount_names: Set of lowercase mount-relative names from symlinks.
+        live_mount_set: Set of ``(normalized_title, season)`` tuples from
+            symlinks whose source_path still exists on the filesystem.  Protects
+            Zurg auto-recovered torrents that have a new hash/rd_id.
         protected_rd_ids: Set of RD IDs already determined to be Protected (built
             incrementally in the caller to enable Duplicate detection).
         ptn_groups: Mapping from PTN group key to list of RD IDs in that group.
@@ -415,7 +535,7 @@ def _categorize_torrent(
         is_protected = True
         protect_reason = "rd_id in active rd_torrents registry"
     else:
-        # Check against symlink mount names
+        # Check against symlink mount names (exact and normalized filename match)
         name_candidates: list[str] = []
         if filename:
             name_candidates.append(filename.lower())
@@ -426,6 +546,17 @@ def _categorize_torrent(
                     is_protected = True
                     protect_reason = f"filename matches symlink mount path ({candidate!r})"
                     break
+
+    # Check 4: live mount set — PTN-parsed (title, season) match.
+    # Catches Zurg auto-recovered torrents: Zurg deleted and re-added the torrent
+    # (new hash/rd_id) but the mount directory name still matches a live symlink
+    # source path.  Only run when not already protected.
+    if not is_protected and live_mount_set and parsed_title:
+        norm_rd_title = _normalize_title(parsed_title)
+        rd_season: int | None = ptn.get("season")
+        if (norm_rd_title, rd_season) in live_mount_set:
+            is_protected = True
+            protect_reason = "backs active Zurg mount path"
 
     if is_protected:
         return CategorizedTorrent(
@@ -553,6 +684,7 @@ def _categorize_all(
     active_hashes: set[str],
     active_rd_ids: set[str],
     symlink_mount_names: set[str],
+    live_mount_set: set[tuple[str, int | None]] | None = None,
 ) -> tuple[list[CategorizedTorrent], dict[str, RdTorrentCategory], dict[str, str]]:
     """Categorize all torrents and return auxiliary lookup dicts.
 
@@ -566,6 +698,10 @@ def _categorize_all(
         active_hashes: Lowercase info hashes from local db (ACTIVE).
         active_rd_ids: RD ID strings from local db (ACTIVE).
         symlink_mount_names: Lowercase mount-relative names from symlinks.
+        live_mount_set: Optional set of ``(normalized_title, season)`` tuples
+            from symlinks whose source_path still exists on the filesystem.
+            When provided, enables Zurg auto-recovery protection.  Defaults to
+            None (disables the 4th protection check).
 
     Returns:
         Tuple of:
@@ -573,6 +709,8 @@ def _categorize_all(
         - ``category_map``: ``rd_id -> RdTorrentCategory`` for execute lookups.
         - ``hash_map``: ``rd_id -> info_hash`` for mark_torrent_removed calls.
     """
+    _live_mount_set: set[tuple[str, int | None]] = live_mount_set or set()
+
     ptn_groups = _build_ptn_groups(rd_torrents)
     rd_id_to_filename: dict[str, str] = {
         str(rd.get("id") or ""): rd.get("filename") or ""
@@ -597,10 +735,22 @@ def _categorize_all(
             if filename:
                 candidates.append(filename.lower())
                 candidates.append(_normalize_name(filename).lower())
+            matched = False
             for candidate in candidates:
                 if candidate in symlink_mount_names:
                     protected_rd_ids.add(rd_id)
+                    matched = True
                     break
+            # Live mount check: PTN-parse the RD filename and look up the
+            # (normalized_title, season) tuple in the live mount set.
+            if not matched and _live_mount_set and filename:
+                ptn = _parse_filename(filename)
+                raw_title: str = ptn.get("title") or ""
+                if raw_title:
+                    norm_title = _normalize_title(raw_title)
+                    season: int | None = ptn.get("season")
+                    if (norm_title, season) in _live_mount_set:
+                        protected_rd_ids.add(rd_id)
 
     # Pass 2 — full categorization
     categorized: list[CategorizedTorrent] = []
@@ -613,6 +763,7 @@ def _categorize_all(
             active_hashes=active_hashes,
             active_rd_ids=active_rd_ids,
             symlink_mount_names=symlink_mount_names,
+            live_mount_set=_live_mount_set,
             protected_rd_ids=protected_rd_ids,
             ptn_groups=ptn_groups,
             rd_id_to_filename=rd_id_to_filename,
@@ -667,12 +818,33 @@ async def scan_rd_account(session: AsyncSession) -> RdCleanupScan:
     # classifying protected torrents as deletable — let the exception propagate
     # so the caller can return an appropriate HTTP error rather than silently
     # presenting unsafe categorization results.
-    active_hashes, active_rd_ids, symlink_mount_names = (
+    active_hashes, active_rd_ids, symlink_mount_names, live_mount_set = (
         await _build_protection_sets(session)
     )
 
+    # Warn if live mount protection is unavailable (mount down).
+    if not live_mount_set and symlink_mount_names:
+        warnings.append(
+            "Zurg mount appears unavailable — live mount protection disabled for "
+            "this scan. Zurg auto-recovered torrents may not be detected as protected."
+        )
+
+    # Detect stale rd_ids: active db records whose rd_id is not present in the
+    # current RD account — a sign that Zurg auto-recovery replaced the torrent.
+    rd_account_ids: set[str] = {str(rd.get("id") or "") for rd in rd_torrents if rd.get("id")}
+    stale_rd_id_count = sum(
+        1 for rid in active_rd_ids if rid and rid not in rd_account_ids
+    )
+    if stale_rd_id_count:
+        warning_msg = (
+            f"{stale_rd_id_count} tracked torrent(s) have rd_ids not found in your "
+            "RD account (possible Zurg auto-recovery)"
+        )
+        warnings.append(warning_msg)
+        logger.warning("rd_cleanup.scan_rd_account: %s", warning_msg)
+
     categorized, category_map, hash_map = _categorize_all(
-        rd_torrents, active_hashes, active_rd_ids, symlink_mount_names
+        rd_torrents, active_hashes, active_rd_ids, symlink_mount_names, live_mount_set
     )
 
     summaries = _build_summaries(categorized)
@@ -778,35 +950,46 @@ async def execute_rd_cleanup(
         category_map: dict[str, RdTorrentCategory] = _last_scan_cache["category_map"]  # type: ignore[assignment]
         hash_map: dict[str, str] = _last_scan_cache["hash_map"]  # type: ignore[assignment]
 
-        # Re-validate protection sets from fresh DB state (cheap: 3 SQL queries).
+        # Re-validate protection sets from fresh DB state (cheap: DB queries).
         # One-way upgrade only: items can become Protected, never downgraded.
-        fresh_hashes, fresh_rd_ids, fresh_mount_names = (
+        fresh_hashes, fresh_rd_ids, fresh_mount_names, fresh_live_mount_set = (
             await _build_protection_sets(session)
         )
         upgraded = 0
         # Build an O(1) lookup from rd_id → (filename_lower, filename_norm)
         # once before the loop to avoid an O(N*M) scan on every iteration.
         rd_torrents_cache: list[dict] | None = _last_scan_cache.get("rd_torrents")
-        rd_id_to_filename: dict[str, tuple[str, str]] = {}
+        rd_id_to_filename: dict[str, tuple[str, str, str]] = {}
         if rd_torrents_cache:
             for rd in rd_torrents_cache:
                 rid_key = str(rd.get("id") or "")
                 if rid_key:
                     fn = rd.get("filename") or ""
-                    rd_id_to_filename[rid_key] = (fn.lower(), _normalize_name(fn).lower())
+                    rd_id_to_filename[rid_key] = (fn, fn.lower(), _normalize_name(fn).lower())
 
         for rid, cat in list(category_map.items()):
             if cat == RdTorrentCategory.PROTECTED:
                 continue
             # Check if this entry now qualifies as protected
             cached_hash = hash_map.get(rid, "")
-            rd_filename_lower, rd_filename_norm = rd_id_to_filename.get(rid, ("", ""))
+            rd_filename_orig, rd_filename_lower, rd_filename_norm = rd_id_to_filename.get(rid, ("", "", ""))
             newly_protected = (
                 (cached_hash and cached_hash in fresh_hashes)
                 or (rid and rid in fresh_rd_ids)
                 or (rd_filename_lower and rd_filename_lower in fresh_mount_names)
                 or (rd_filename_norm and rd_filename_norm in fresh_mount_names)
             )
+            # Live mount set check: PTN-parse the original RD filename and look up
+            # (normalized_title, season) in the fresh live mount set.
+            if not newly_protected and fresh_live_mount_set:
+                if rd_filename_orig:
+                    ptn = _parse_filename(rd_filename_orig)
+                    raw_title: str = ptn.get("title") or ""
+                    if raw_title:
+                        norm_title = _normalize_title(raw_title)
+                        rd_season: int | None = ptn.get("season")
+                        if (norm_title, rd_season) in fresh_live_mount_set:
+                            newly_protected = True
             if newly_protected:
                 category_map[rid] = RdTorrentCategory.PROTECTED
                 upgraded += 1
@@ -831,11 +1014,11 @@ async def execute_rd_cleanup(
             )
             raise
 
-        active_hashes, active_rd_ids, symlink_mount_names = (
+        active_hashes, active_rd_ids, symlink_mount_names, live_mount_set = (
             await _build_protection_sets(session)
         )
         _, category_map, hash_map = _categorize_all(
-            rd_torrents, active_hashes, active_rd_ids, symlink_mount_names
+            rd_torrents, active_hashes, active_rd_ids, symlink_mount_names, live_mount_set
         )
         _last_scan_cache["scanned_at"] = now
         _last_scan_cache["rd_torrents"] = rd_torrents

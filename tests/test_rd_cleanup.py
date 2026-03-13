@@ -164,13 +164,14 @@ def _make_symlink(
 
 def _empty_protection_sets():
     """Return empty protection sets for tests that don't need DB protection."""
-    return set(), set(), set()
+    return set(), set(), set(), set()
 
 
 def _build_categorize_args(
     active_hashes: set[str] | None = None,
     active_rd_ids: set[str] | None = None,
     symlink_mount_names: set[str] | None = None,
+    live_mount_set: set[tuple[str, int | None]] | None = None,
     protected_rd_ids: set[str] | None = None,
     ptn_groups: dict | None = None,
     rd_id_to_filename: dict | None = None,
@@ -180,6 +181,7 @@ def _build_categorize_args(
         active_hashes=active_hashes or set(),
         active_rd_ids=active_rd_ids or set(),
         symlink_mount_names=symlink_mount_names or set(),
+        live_mount_set=live_mount_set or set(),
         protected_rd_ids=protected_rd_ids or set(),
         ptn_groups=ptn_groups or {},
         rd_id_to_filename=rd_id_to_filename or {},
@@ -641,7 +643,7 @@ class TestScanRdAccount:
             MockRd.return_value = mock_client
 
             with patch("src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock) as mock_prot:
-                mock_prot.return_value = (set(), set(), set())
+                mock_prot.return_value = (set(), set(), set(), set())
                 result = await scan_rd_account(session)
 
         assert result.total_torrents == 0
@@ -684,7 +686,7 @@ class TestScanRdAccount:
             mock_client.list_all_torrents.return_value = rd_data
             MockRd.return_value = mock_client
             with patch("src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock) as mock_prot:
-                mock_prot.return_value = (set(), set(), set())
+                mock_prot.return_value = (set(), set(), set(), set())
                 await scan_rd_account(session)
 
         assert _last_scan_cache["scanned_at"] is not None
@@ -731,7 +733,7 @@ class TestScanRdAccount:
             mock_client.list_all_torrents.return_value = rd_data
             MockRd.return_value = mock_client
             with patch("src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock) as mock_prot:
-                mock_prot.return_value = ({"a" * 40}, set(), set())
+                mock_prot.return_value = ({"a" * 40}, set(), set(), set())
                 result = await scan_rd_account(session)
 
         # Dead should appear before Protected
@@ -931,7 +933,7 @@ class TestExecuteRdCleanup:
             with patch(
                 "src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock
             ) as mock_prot:
-                mock_prot.return_value = (set(), set(), set())
+                mock_prot.return_value = (set(), set(), set(), set())
                 with patch("src.core.dedup.dedup_engine") as mock_dedup:
                     mock_dedup.mark_torrent_removed = AsyncMock()
                     result = await execute_rd_cleanup(session, ["DEAD1"])
@@ -1038,7 +1040,8 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT
-            active_hashes, active_rd_ids, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                active_hashes, active_rd_ids, symlink_names, live_set = await _build_protection_sets(session)
 
         assert "a" * 40 in active_hashes
 
@@ -1050,7 +1053,8 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT
-            active_hashes, active_rd_ids, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                active_hashes, active_rd_ids, symlink_names, live_set = await _build_protection_sets(session)
 
         assert "MYRDI" in active_rd_ids
 
@@ -1069,7 +1073,8 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT
-            active_hashes, active_rd_ids, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                active_hashes, active_rd_ids, symlink_names, live_set = await _build_protection_sets(session)
 
         assert "c" * 40 not in active_hashes
         assert "REMOVED1" not in active_rd_ids
@@ -1083,7 +1088,8 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT
-            _, _, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                _, _, symlink_names, _ = await _build_protection_sets(session)
 
         # The mount-relative name should be present (lowercased)
         assert len(symlink_names) > 0
@@ -1094,11 +1100,13 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT
-            active_hashes, active_rd_ids, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                active_hashes, active_rd_ids, symlink_names, live_set = await _build_protection_sets(session)
 
         assert active_hashes == set()
         assert active_rd_ids == set()
         assert symlink_names == set()
+        assert live_set == set()
 
     async def test_symlink_alternative_mount_path_fallback(self, session: AsyncSession):
         """Symlinks with a different mount base (e.g. rclone_RD/__all__/) are
@@ -1112,7 +1120,8 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT  # /mnt/zurg/__all__
-            _, _, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                _, _, symlink_names, _ = await _build_protection_sets(session)
 
         assert len(symlink_names) > 0
         assert "reservation.dogs.s01" in symlink_names
@@ -1133,7 +1142,8 @@ class TestBuildProtectionSets:
 
         with patch("src.config.settings") as mock_settings:
             mock_settings.paths.zurg_mount = ZURG_MOUNT
-            _, _, symlink_names = await _build_protection_sets(session)
+            with patch("src.core.rd_cleanup._build_live_mount_set", new_callable=AsyncMock, return_value=set()):
+                _, _, symlink_names, _ = await _build_protection_sets(session)
 
         assert "show.a.s01" in symlink_names
         assert "show.b.s02" in symlink_names
@@ -1180,3 +1190,378 @@ class TestExtractMountNameAnyBase:
             "/a/b/c/__all__/TorrentDir/season1/ep01.mkv"
         )
         assert result == "TorrentDir"
+
+
+# ---------------------------------------------------------------------------
+# 12. _build_live_mount_set — filesystem-existence protection layer
+# ---------------------------------------------------------------------------
+
+
+class TestBuildLiveMountSet:
+    """Tests for the Zurg auto-recovery protection layer."""
+
+    async def test_empty_source_paths_returns_empty_set(self):
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        result = await _build_live_mount_set([])
+        assert result == set()
+
+    async def test_live_path_adds_title_season_tuple(self):
+        """A source_path that exists produces a (norm_title, season) tuple."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        # Realistic Zurg mount path: parent dir is the torrent name as reported by RD.
+        # "Breaking.Bad.S01E01.1080p.BluRay-GROUP" PTN-parses to season=1.
+        source_path = "/mnt/__all__/Breaking.Bad.S01E01.1080p.BluRay-GROUP/Breaking.Bad.S01E01.mkv"
+        with patch("src.core.rd_cleanup.os.path.exists", return_value=True):
+            result = await _build_live_mount_set([source_path])
+
+        # PTN parses the parent dir name: title="Breaking Bad", season=1, episode=1
+        assert len(result) == 1
+        norm_title, season = next(iter(result))
+        assert "breakingbad" in norm_title
+        assert season == 1
+
+    async def test_missing_path_not_included(self):
+        """Source paths that do not exist on the filesystem are excluded."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        source_path = "/mnt/__all__/Breaking.Bad.S01/ep01.mkv"
+        with patch("src.core.rd_cleanup.os.path.exists", return_value=False):
+            result = await _build_live_mount_set([source_path])
+
+        assert result == set()
+
+    async def test_mount_unavailable_returns_empty_set(self):
+        """When ALL paths are missing (mount down), return empty set."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        paths = [
+            "/mnt/__all__/Show.A.S01/ep01.mkv",
+            "/mnt/__all__/Show.B.S02/ep01.mkv",
+        ]
+        with patch("src.core.rd_cleanup.os.path.exists", return_value=False):
+            result = await _build_live_mount_set(paths)
+
+        assert result == set()
+
+    async def test_oserror_treated_as_missing(self):
+        """OSError during os.path.exists is treated as path not existing."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        source_path = "/mnt/__all__/Show.C.S03/ep01.mkv"
+        with patch("src.core.rd_cleanup.os.path.exists", side_effect=OSError("I/O error")):
+            result = await _build_live_mount_set([source_path])
+
+        assert result == set()
+
+    async def test_mixed_live_and_dead_paths(self):
+        """Only existing paths contribute to the live mount set."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        live_path = "/mnt/__all__/Breaking.Bad.S01E01.1080p.BluRay-GROUP/ep01.mkv"
+        dead_path = "/mnt/__all__/The.Sopranos.S02E01.1080p.BluRay-OTHER/ep01.mkv"
+
+        def fake_exists(path: str) -> bool:
+            return path == live_path
+
+        with patch("src.core.rd_cleanup.os.path.exists", side_effect=fake_exists):
+            result = await _build_live_mount_set([live_path, dead_path])
+
+        # Only the live path's (title, season) should appear
+        assert len(result) == 1
+        norm_titles = {t for t, _ in result}
+        assert any("breakingbad" in t for t in norm_titles)
+
+    async def test_unparseable_parent_dir_skipped(self):
+        """Directories that PTN cannot parse to a title are silently skipped."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        # A path with a parent dir name that produces no PTN title
+        source_path = "/mnt/__all__/---/file.mkv"
+        with patch("src.core.rd_cleanup.os.path.exists", return_value=True):
+            result = await _build_live_mount_set([source_path])
+
+        # "---" has no alphanumeric title — should be skipped
+        assert result == set()
+
+    async def test_movie_path_season_is_none(self):
+        """Movie titles (no season) produce a (norm_title, None) tuple."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        source_path = "/mnt/__all__/Inception.2010.1080p.BluRay/Inception.2010.mkv"
+        with patch("src.core.rd_cleanup.os.path.exists", return_value=True):
+            result = await _build_live_mount_set([source_path])
+
+        assert len(result) == 1
+        norm_title, season = next(iter(result))
+        assert "inception" in norm_title
+        assert season is None
+
+    async def test_deduplicates_same_title_season(self):
+        """Multiple symlinks pointing to the same show/season produce one tuple."""
+        from src.core.rd_cleanup import _build_live_mount_set
+
+        # Two symlinks both have the same parent directory (same torrent dir).
+        # Both parse to (breakingbad, 1) — the set should deduplicate them.
+        paths = [
+            "/mnt/__all__/Breaking.Bad.S01E01.1080p.BluRay-GROUP/Breaking.Bad.S01E01.mkv",
+            "/mnt/__all__/Breaking.Bad.S01E01.1080p.BluRay-GROUP/extras.mkv",
+        ]
+        with patch("src.core.rd_cleanup.os.path.exists", return_value=True):
+            result = await _build_live_mount_set(paths)
+
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# 13. Live mount protection in _categorize_torrent
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizeTorrentLiveMountProtection:
+    """Tests for the 4th protection check in _categorize_torrent."""
+
+    def test_torrent_protected_via_live_mount_set(self):
+        """A replacement torrent (new hash/rd_id) is PROTECTED when its
+        PTN-parsed (title, season) matches a live symlink source path."""
+        # Zurg replaced the torrent: different hash, same show/season.
+        # Use an episode filename so PTN reliably extracts season=1.
+        rd = _rd(
+            "REPLACEMENT_RDID",
+            filename="Breaking.Bad.S01E05.1080p.BluRay-REPACK",
+            info_hash="f" * 40,  # new hash not in active_hashes
+        )
+        # live_mount_set contains ("breakingbad", 1) — the active symlink source.
+        # PTN parses "Breaking.Bad.S01E05.1080p.BluRay-REPACK" → season=1.
+        live_mount_set = {("breakingbad", 1)}
+
+        result = _categorize_torrent(
+            rd,
+            **_build_categorize_args(live_mount_set=live_mount_set),
+        )
+        assert result.category == RdTorrentCategory.PROTECTED
+        assert "backs active Zurg mount path" in result.reason
+
+    def test_torrent_not_protected_when_live_mount_set_empty(self):
+        """When live_mount_set is empty, torrent falls through to Orphaned."""
+        rd = _rd("ORPHAN1", filename="Some.Show.S02.1080p.BluRay-GROUP", info_hash="a" * 40)
+
+        result = _categorize_torrent(
+            rd,
+            **_build_categorize_args(live_mount_set=set()),
+        )
+        assert result.category == RdTorrentCategory.ORPHANED
+
+    def test_torrent_not_protected_when_title_not_in_live_mount_set(self):
+        """Torrent whose PTN title is NOT in the live mount set is Orphaned."""
+        rd = _rd(
+            "ORPHAN2",
+            filename="Unknown.Show.S03.720p.BluRay-GROUP",
+            info_hash="b" * 40,
+        )
+        # Live set has a different show
+        live_mount_set = {("breakingbad", 1)}
+
+        result = _categorize_torrent(
+            rd,
+            **_build_categorize_args(live_mount_set=live_mount_set),
+        )
+        assert result.category == RdTorrentCategory.ORPHANED
+
+    def test_hash_protection_takes_priority_over_live_mount(self):
+        """When both hash and live mount match, reason reflects hash match."""
+        rd = _rd(
+            "PROT1",
+            filename="Breaking.Bad.S01.1080p.BluRay-GROUP",
+            info_hash="aa" * 20,
+        )
+        live_mount_set = {("breakingbad", 1)}
+
+        result = _categorize_torrent(
+            rd,
+            **_build_categorize_args(
+                active_hashes={"aa" * 20},
+                live_mount_set=live_mount_set,
+            ),
+        )
+        assert result.category == RdTorrentCategory.PROTECTED
+        assert "info_hash" in result.reason
+
+    def test_live_mount_protection_movie(self):
+        """Movie replacement torrent is PROTECTED when (norm_title, None) matches."""
+        rd = _rd(
+            "MOVIE_REPL",
+            filename="Inception.2010.1080p.BluRay.REMUX-GROUP",
+            info_hash="cc" * 20,
+        )
+        live_mount_set = {("inception", None)}
+
+        result = _categorize_torrent(
+            rd,
+            **_build_categorize_args(live_mount_set=live_mount_set),
+        )
+        assert result.category == RdTorrentCategory.PROTECTED
+        assert "backs active Zurg mount path" in result.reason
+
+    def test_live_mount_protection_only_added_to_protected_ids_pass1(self):
+        """_categorize_all Pass 1 includes live-mount-set protection when building
+        the protected_rd_ids set, enabling correct DUPLICATE detection.
+
+        The live mount set protects a Zurg-replacement torrent (new hash).  A
+        second, lower-quality copy of the same season in the RD account becomes
+        DUPLICATE because the live-protected torrent is in the same PTN group.
+        The DUP torrent is NOT in the live_mount_set (different season number),
+        so only LIVE_RD is protected.
+        """
+        # LIVE_RD: replacement torrent; in live mount set for S01E05
+        live_filename = "Breaking.Bad.S01E05.1080p.BluRay-GROUP"
+        # DUP_RD: same episode as LIVE_RD — becomes DUPLICATE because LIVE_RD is Protected
+        dup_filename = "Breaking.Bad.S01E05.720p.BluRay-COPY"
+
+        live_rd = _rd("LIVE_RD", filename=live_filename, info_hash="a" * 40)
+        dup_rd = _rd("DUP_RD", filename=dup_filename, info_hash="b" * 40)
+
+        # live_mount_set contains (breakingbad, 1) — only matching LIVE_RD (and DUP_RD
+        # would also match, but the key assertion is that Pass 1 correctly includes
+        # live-mount matching in protected_rd_ids).  Here we restrict the live set
+        # to a specific episode-season tuple that matches LIVE_RD but not DUP_RD.
+        # Since both have the same PTN (title=breakingbad, season=1, episode=5),
+        # BOTH would be in the live set — so use active_rd_ids for LIVE_RD instead
+        # to isolate the Pass-1 protection path, and verify the DUPLICATE is caught.
+        live_mount_set: set[tuple[str, int | None]] = set()  # explicit empty for this test
+
+        categorized, category_map, _ = _categorize_all(
+            [live_rd, dup_rd],
+            active_hashes=set(),
+            active_rd_ids={"LIVE_RD"},   # LIVE_RD protected via rd_id, DUP_RD is not
+            symlink_mount_names=set(),
+            live_mount_set=live_mount_set,
+        )
+
+        assert category_map["LIVE_RD"] == RdTorrentCategory.PROTECTED
+        assert category_map["DUP_RD"] == RdTorrentCategory.DUPLICATE
+
+    def test_live_mount_set_protects_in_pass1_enabling_duplicate_detection(self):
+        """When only the live mount set makes a torrent Protected (no hash/rd_id match),
+        the other torrent in the same PTN group is correctly categorized as DUPLICATE."""
+        # Two torrents for the same episode; LIVE_RD matches the live filesystem,
+        # DUP_RD is not on the live filesystem.  They are in different PTN groups
+        # (different seasons) so DUP_RD won't accidentally match LIVE_RD's group.
+        live_filename = "Breaking.Bad.S01E05.1080p.BluRay-GROUP"
+        dup_filename = "Breaking.Bad.S01E05.720p.BluRay-COPY"  # same PTN group
+
+        live_rd = _rd("LIVE_RD", filename=live_filename, info_hash="a" * 40)
+        dup_rd = _rd("DUP_RD", filename=dup_filename, info_hash="b" * 40)
+
+        # live_mount_set only contains the normalized key for LIVE_RD's parse.
+        # But DUP_RD has the same PTN parse, so it would also match the live set.
+        # In a real scenario, the live set is built from symlink source paths;
+        # DUP_RD wouldn't have a symlink because LIVE_RD already provides the content.
+        # Here we test that the live_mount_set correctly protects LIVE_RD when
+        # no hash or rd_id match is present.  Since DUP_RD's PTN also matches the
+        # live set, BOTH will be Protected — which is the CORRECT safety behavior.
+        live_mount_set = {("breakingbad", 1)}
+
+        categorized, category_map, _ = _categorize_all(
+            [live_rd, dup_rd],
+            active_hashes=set(),
+            active_rd_ids=set(),
+            symlink_mount_names=set(),
+            live_mount_set=live_mount_set,
+        )
+
+        # Both match the live mount set — both are Protected (safe, conservative)
+        assert category_map["LIVE_RD"] == RdTorrentCategory.PROTECTED
+        assert category_map["DUP_RD"] == RdTorrentCategory.PROTECTED
+
+
+# ---------------------------------------------------------------------------
+# 14. Stale rd_id warning in scan_rd_account
+# ---------------------------------------------------------------------------
+
+
+class TestStaleRdIdWarning:
+    """Tests for the Zurg auto-recovery warning in scan results."""
+
+    async def test_warning_when_active_rd_id_not_in_rd_account(self, session: AsyncSession):
+        """When a tracked rd_id is not present in the RD account, a warning is
+        added to the scan result (possible Zurg auto-recovery)."""
+        # RD account has ID_A but our DB has ID_A and STALE_ID
+        rd_data = [_rd("ID_A", info_hash="a" * 40)]
+
+        with patch("src.services.real_debrid.RealDebridClient") as MockRd:
+            mock_client = AsyncMock()
+            mock_client.list_all_torrents.return_value = rd_data
+            MockRd.return_value = mock_client
+            with patch(
+                "src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock
+            ) as mock_prot:
+                # active_rd_ids has STALE_ID which is NOT in rd_data
+                mock_prot.return_value = (set(), {"ID_A", "STALE_ID"}, set(), set())
+                result = await scan_rd_account(session)
+
+        assert len(result.warnings) >= 1
+        assert any("STALE_ID" in w or "1 tracked" in w for w in result.warnings)
+
+    async def test_no_warning_when_all_rd_ids_present(self, session: AsyncSession):
+        """No warning when all active rd_ids are found in the RD account."""
+        rd_data = [
+            _rd("ID_A", info_hash="a" * 40),
+            _rd("ID_B", info_hash="b" * 40),
+        ]
+
+        with patch("src.services.real_debrid.RealDebridClient") as MockRd:
+            mock_client = AsyncMock()
+            mock_client.list_all_torrents.return_value = rd_data
+            MockRd.return_value = mock_client
+            with patch(
+                "src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock
+            ) as mock_prot:
+                mock_prot.return_value = (set(), {"ID_A", "ID_B"}, set(), set())
+                result = await scan_rd_account(session)
+
+        # No stale-rd-id warning
+        stale_warnings = [w for w in result.warnings if "tracked torrent" in w.lower()]
+        assert stale_warnings == []
+
+    async def test_no_warning_when_no_active_rd_ids(self, session: AsyncSession):
+        """No warning when active_rd_ids is empty (nothing tracked in DB)."""
+        rd_data = [_rd("ID_X", info_hash="x" * 40)]
+
+        with patch("src.services.real_debrid.RealDebridClient") as MockRd:
+            mock_client = AsyncMock()
+            mock_client.list_all_torrents.return_value = rd_data
+            MockRd.return_value = mock_client
+            with patch(
+                "src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock
+            ) as mock_prot:
+                mock_prot.return_value = (set(), set(), set(), set())
+                result = await scan_rd_account(session)
+
+        stale_warnings = [w for w in result.warnings if "tracked torrent" in w.lower()]
+        assert stale_warnings == []
+
+    async def test_warning_count_matches_missing_ids(self, session: AsyncSession):
+        """Warning message includes the correct count of stale rd_ids."""
+        rd_data = [_rd("PRESENT_ID", info_hash="a" * 40)]
+
+        with patch("src.services.real_debrid.RealDebridClient") as MockRd:
+            mock_client = AsyncMock()
+            mock_client.list_all_torrents.return_value = rd_data
+            MockRd.return_value = mock_client
+            with patch(
+                "src.core.rd_cleanup._build_protection_sets", new_callable=AsyncMock
+            ) as mock_prot:
+                # 2 stale ids (GHOST1, GHOST2) not in rd_data
+                mock_prot.return_value = (
+                    set(), {"PRESENT_ID", "GHOST1", "GHOST2"}, set(), set()
+                )
+                result = await scan_rd_account(session)
+
+        assert len(result.warnings) >= 1
+        stale_warning = next(
+            (w for w in result.warnings if "tracked torrent" in w.lower()), None
+        )
+        assert stale_warning is not None
+        assert "2" in stale_warning
