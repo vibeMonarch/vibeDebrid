@@ -62,6 +62,16 @@ _ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
 # Matches a number at the very start of the filename.
 _LEADING_EP_RE = re.compile(r"^(\d{1,3})(?:\.|(?:\s*[-–]\s))")
 
+# Detect titles that look like episode markers rather than real show titles.
+# Examples (normalised): "s02e01 beast titan", "s01e01", "e01 prologue".
+# If a title starts with this pattern it almost certainly came from an
+# episode-titled filename (e.g. "S02E01 - Beast Titan.mkv") and lacks the
+# show name entirely.
+# Matches:
+#   s02e01 ...   — standard SxxExx prefix
+#   e01 ...      — bare EXX prefix (no season number before it)
+_EPISODE_MARKER_RE = re.compile(r"^(s\d{1,2})?e\d{1,3}\b")
+
 
 class WalkEntry(NamedTuple):
     """Lightweight record from the filesystem walk phase (no PTN parsing)."""
@@ -1072,7 +1082,10 @@ class MountScanner:
         for entry in changed_or_new:
             try:
                 # Parse filename now (deferred from walk phase).
-                parsed = _parse_filename(entry.filename)
+                # Pass parent_dir so that episode-titled files (e.g.
+                # "S02E01 - Beast Titan.mkv") can inherit the show title from
+                # their parent directory name ("Attack on Titan S02").
+                parsed = _parse_filename(entry.filename, parent_dir=entry.parent_dir)
 
                 # Apply season-from-path fallback.
                 if parsed.get("season") is None and root_dir:
@@ -1292,17 +1305,53 @@ def _extract_season_from_path(current_dir: str, root_dir: str) -> int | None:
     return None
 
 
-def _parse_filename(filename: str) -> dict[str, Any]:
+def _has_meaningful_title(normalized_title: str) -> bool:
+    """Return True when a normalised title looks like a real show/movie title.
+
+    Returns False when the title appears to be only an episode marker (e.g.
+    ``"s02e01 beast titan"`` parsed from ``"S02E01 - Beast Titan.mkv"``),
+    is empty, or is too short to be useful.  In those cases the caller should
+    fall back to the parent directory name for the title.
+
+    Args:
+        normalized_title: A title string already processed by
+            ``_normalize_title`` (lowercase, alphanumeric + spaces only).
+
+    Returns:
+        True if the title is meaningful, False if a directory-name fallback
+        should be attempted.
+    """
+    if not normalized_title:
+        return False
+    # Very short titles (< 3 chars) are not useful for matching.
+    if len(normalized_title) < 3:
+        return False
+    # Title starts with an episode marker like "s02e01" or "e01".
+    if _EPISODE_MARKER_RE.match(normalized_title):
+        return False
+    return True
+
+
+def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, Any]:
     """Parse a torrent filename using PTN, returning extracted metadata.
 
     Extracts title, year, season, episode, resolution, and codec from the
     filename.  PTN failures are caught and the filename stem is used as the
     title fallback so one bad file never aborts the entire scan.
 
-    The returned title is stripped and lowercased for consistent index queries.
+    When the filename-derived title is not meaningful (e.g. an episode-titled
+    file like ``"S02E01 - Beast Titan.mkv"`` whose PTN title becomes
+    ``"s02e01 beast titan"``), the parent directory basename is PTN-parsed to
+    extract the real show title (e.g. ``"Attack on Titan S02"`` →
+    ``"attack on titan"``).  Season and episode numbers from the filename
+    parse are always preferred over directory-derived values because they are
+    more granular.
 
     Args:
         filename: The raw filename string (including extension).
+        parent_dir: Optional absolute path of the directory containing this
+            file.  When provided and the filename title is not meaningful, the
+            directory basename is used as a title fallback.
 
     Returns:
         Dict with keys ``title``, ``year``, ``season``, ``episode``,
@@ -1349,8 +1398,39 @@ def _parse_filename(filename: str) -> dict[str, Any]:
         if leading_match:
             episode = int(leading_match.group(1))
 
+    normalized_title = _normalize_title(raw_title)
+
+    # Directory-name title fallback for season pack episode files.
+    # When episode files are named by episode title rather than show title
+    # (e.g. "S02E01 - Beast Titan.mkv"), PTN produces a title like
+    # "s02e01 beast titan" which cannot match a lookup for "Attack on Titan".
+    # If the parent directory is available and the filename title is not
+    # meaningful, derive the show title from the directory basename instead.
+    #
+    # PTN does not reliably strip season markers from directory names like
+    # "Attack on Titan S02" → PTN title = "Attack on Titan S02" (unchanged).
+    # So we strip known season/episode markers from the basename before
+    # normalising, using _DIR_SEASON_RE to detect and remove the suffix.
+    if not _has_meaningful_title(normalized_title) and parent_dir:
+        dir_basename = os.path.basename(parent_dir.rstrip("/"))
+        if dir_basename:
+            # Strip trailing season markers (e.g. "S02", "Season 2", "Staffel 3").
+            # _DIR_SEASON_RE matches at word boundaries so we replace with space
+            # and re-strip; multiple markers are handled by the loop.
+            dir_title_raw = _DIR_SEASON_RE.sub(" ", dir_basename)
+            dir_title = _normalize_title(dir_title_raw)
+            if _has_meaningful_title(dir_title):
+                logger.debug(
+                    "_parse_filename: filename title %r not meaningful, "
+                    "using parent dir title %r (dir=%r)",
+                    normalized_title,
+                    dir_title,
+                    dir_basename,
+                )
+                normalized_title = dir_title
+
     return {
-        "title": _normalize_title(raw_title),
+        "title": normalized_title,
         "year": parsed.get("year"),
         "season": season,
         "episode": episode,
