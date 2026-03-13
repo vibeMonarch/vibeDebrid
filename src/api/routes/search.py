@@ -6,7 +6,9 @@ import logging
 import re
 from datetime import UTC, datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from typing import Literal
 
 from pydantic import BaseModel
@@ -17,10 +19,11 @@ from sqlalchemy import select
 from src.api.deps import get_db
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import filter_engine
+from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
-from src.services.real_debrid import RealDebridError, rd_client
+from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
 
@@ -84,7 +87,8 @@ class CheckCachedResponse(BaseModel):
     """Response body for POST /api/check-cached."""
 
     info_hash: str
-    cached: bool
+    cached: bool | None = None
+    error: str | None = None
 
 
 class AddRequest(BaseModel):
@@ -300,9 +304,22 @@ async def check_cached(
         )
         return CheckCachedResponse(info_hash=normalized_hash, cached=True)
 
-    result = await rd_client.check_cached(normalized_hash, keep_if_cached=False)
-    cached = result.cached is True  # coerce None→False for frontend
-    return CheckCachedResponse(info_hash=normalized_hash, cached=cached)
+    try:
+        result = await rd_client.check_cached(normalized_hash, keep_if_cached=False)
+        cached = result.cached is True  # coerce None→False for frontend
+        return CheckCachedResponse(info_hash=normalized_hash, cached=cached)
+    except RealDebridRateLimitError:
+        logger.warning("check_cached: rate limited by RD for hash=%s", normalized_hash[:16])
+        return JSONResponse(
+            status_code=429,
+            content={"info_hash": normalized_hash, "cached": None, "error": "rate_limited"},
+        )
+    except (RealDebridError, httpx.RequestError) as exc:
+        logger.warning("check_cached: RD unavailable for hash=%s: %s", normalized_hash[:16], exc)
+        return JSONResponse(
+            status_code=502,
+            content={"info_hash": normalized_hash, "cached": None, "error": "rd_unavailable"},
+        )
 
 
 @router.post("/add")
@@ -363,14 +380,50 @@ async def add_torrent(
             detail="Season packs require a season number",
         )
 
+    # TMDB enrichment: when a tmdb_id is provided, fetch canonical title and
+    # year from TMDB so the MediaItem uses the official name rather than the
+    # raw search query.  This is intentionally non-fatal — any failure falls
+    # through and the caller-supplied values are used instead.
+    enriched_title: str | None = body.title
+    enriched_year: int | None = body.year
+    if body.tmdb_id is not None:
+        try:
+            from src.services.tmdb import tmdb_client
+
+            if media_type == MediaType.SHOW:
+                tmdb_details = await tmdb_client.get_show_details(body.tmdb_id)
+                if tmdb_details and tmdb_details.title:
+                    enriched_title = tmdb_details.title
+                    if tmdb_details.year is not None:
+                        enriched_year = tmdb_details.year
+                    logger.debug(
+                        "add_torrent: TMDB show enrichment tmdb_id=%d title=%r year=%s",
+                        body.tmdb_id, enriched_title, enriched_year,
+                    )
+            else:
+                tmdb_details = await tmdb_client.get_movie_details(body.tmdb_id)
+                if tmdb_details and tmdb_details.title:
+                    enriched_title = tmdb_details.title
+                    if tmdb_details.year is not None:
+                        enriched_year = tmdb_details.year
+                    logger.debug(
+                        "add_torrent: TMDB movie enrichment tmdb_id=%d title=%r year=%s",
+                        body.tmdb_id, enriched_title, enriched_year,
+                    )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning(
+                "add_torrent: TMDB enrichment failed for tmdb_id=%d, using caller values: %s",
+                body.tmdb_id, exc,
+            )
+
     # Always create the MediaItem first in ADDING state.  If the RD call
     # fails we fall back to WANTED so the pipeline can pick it up later.
     item = MediaItem(
         imdb_id=body.imdb_id,
         tmdb_id=str(body.tmdb_id) if body.tmdb_id is not None else None,
         tvdb_id=body.tvdb_id,
-        title=body.title or "Unknown",
-        year=body.year,
+        title=enriched_title or "Unknown",
+        year=enriched_year,
         media_type=media_type,
         season=body.season,
         episode=None if body.is_season_pack else body.episode,
@@ -461,18 +514,18 @@ async def add_torrent(
                 item.id,
             )
 
-            item.state = QueueState.CHECKING
+            await queue_manager.transition(session, item.id, QueueState.CHECKING)
         else:
             logger.warning(
                 "add_torrent: add_magnet returned empty id for item_id=%d", item.id
             )
-            item.state = QueueState.WANTED
+            await queue_manager.force_transition(session, item.id, QueueState.WANTED)
 
     except RealDebridError as exc:
         logger.error(
             "add_torrent: RD add_magnet failed for item_id=%d: %s", item.id, exc
         )
-        item.state = QueueState.WANTED
+        await queue_manager.force_transition(session, item.id, QueueState.WANTED)
 
     await session.commit()
 

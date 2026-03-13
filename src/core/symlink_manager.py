@@ -376,6 +376,7 @@ class SymlinkManager:
         session: AsyncSession,
         media_item: MediaItem,
         source_path: str,
+        episode_offset: int = 0,
     ) -> Symlink:
         """Create an organized library symlink for *media_item* pointing to *source_path*.
 
@@ -390,6 +391,10 @@ class SymlinkManager:
                 ``season``, and ``episode`` populated.
             source_path: Absolute path to the actual file inside the Zurg mount
                 (the symlink will *point to* this path).
+            episode_offset: Number to subtract from the parsed episode number
+                when generating plex_naming filenames for season packs.  Used
+                for absolute-numbered shows where episode 26 in the torrent
+                corresponds to S02E01 (offset=25).  Defaults to 0 (no remapping).
 
         Returns:
             The newly created (or found-existing) ``Symlink`` ORM object,
@@ -458,6 +463,13 @@ class SymlinkManager:
                     ep_episode = _parse_episode_from_filename(
                         os.path.basename(source_path)
                     )
+                    # Apply episode offset for absolute-numbered shows.
+                    # Example: a torrent with absolute episode 26 belongs to
+                    # S02E01 when the first season had 25 episodes (offset=25).
+                    if ep_episode is not None and episode_offset > 0:
+                        ep_episode = ep_episode - episode_offset
+                        if ep_episode <= 0:
+                            ep_episode = None  # invalid after offset, fall back to raw filename
 
                 if ep_episode is not None:
                     filename = f"{safe_title}{year_part} - S{ep_season:02d}E{ep_episode:02d}{ext}"

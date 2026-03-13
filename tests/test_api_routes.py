@@ -1073,7 +1073,7 @@ class TestSearch:
         assert data["results"][0]["info_hash"] == "c" * 40
 
     async def test_check_cached_returns_true(
-        self, http_no_db: AsyncClient
+        self, http: AsyncClient
     ) -> None:
         """POST /api/check-cached returns cached=True when RD confirms cache."""
         with patch(
@@ -1081,7 +1081,7 @@ class TestSearch:
             new_callable=AsyncMock,
             return_value=CacheCheckResult(info_hash="d" * 40, cached=True),
         ):
-            resp = await http_no_db.post(
+            resp = await http.post(
                 "/api/check-cached",
                 json={"info_hash": "d" * 40},
             )
@@ -1092,7 +1092,7 @@ class TestSearch:
         assert data["cached"] is True
 
     async def test_check_cached_returns_false(
-        self, http_no_db: AsyncClient
+        self, http: AsyncClient
     ) -> None:
         """POST /api/check-cached returns cached=False when torrent is not cached."""
         with patch(
@@ -1100,7 +1100,7 @@ class TestSearch:
             new_callable=AsyncMock,
             return_value=CacheCheckResult(info_hash="e" * 40, cached=False),
         ):
-            resp = await http_no_db.post(
+            resp = await http.post(
                 "/api/check-cached",
                 json={"info_hash": "e" * 40},
             )
