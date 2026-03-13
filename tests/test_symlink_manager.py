@@ -36,7 +36,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import SymlinkNamingConfig
+from src.config import SymlinkNamingConfig, settings
 from src.core.symlink_manager import (
     SourceNotFoundError,
     SymlinkCreationError,
@@ -620,6 +620,11 @@ class TestCreateSymlinkShow:
 
 class TestVerifySymlinks:
     """Tests for SymlinkManager.verify_symlinks."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_zurg_mount(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Patch zurg_mount to tmp_path so verify_symlinks doesn't skip."""
+        monkeypatch.setattr(settings.paths, "zurg_mount", str(tmp_path))
 
     async def _insert_symlink(
         self,
