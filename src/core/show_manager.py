@@ -1206,6 +1206,25 @@ class ShowManager:
                     if show.last_episode is not None and ep_num <= show.last_episode:
                         continue
                     if (season_num, ep_num) in existing_keys:
+                        # Check for stuck UNRELEASED items with NULL air_date.
+                        # TMDB may not have had the air date when the item was
+                        # created; now it does and the episode has aired — advance.
+                        existing_item = next(
+                            (i for i in existing_items
+                             if i.season == season_num and i.episode == ep_num
+                             and i.state == QueueState.UNRELEASED),
+                            None,
+                        )
+                        if existing_item is not None and existing_item.air_date is None:
+                            existing_item.air_date = ep_air_date
+                            existing_item.state = QueueState.WANTED
+                            existing_item.state_changed_at = now
+                            new_items += 1
+                            logger.info(
+                                "monitor: advanced stuck UNRELEASED %s S%02dE%02d to WANTED "
+                                "(air_date was NULL, now %s, tmdb_id=%d)",
+                                show.title, season_num, ep_num, ep_air_date, show.tmdb_id,
+                            )
                         continue
 
                     _orig_lang = tmdb_show.original_language if isinstance(tmdb_show.original_language, str) else None

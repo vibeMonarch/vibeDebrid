@@ -231,8 +231,8 @@
                 </td>
                 <td class="px-4 py-3 text-right" @click.stop>
                   <div class="flex items-center justify-end gap-1">
-                    <!-- Retry button — only for sleeping/dormant -->
-                    <button x-show="item.state === 'sleeping' || item.state === 'dormant' || item.state === 'wanted'"
+                    <!-- Retry button — for items that can be re-queued -->
+                    <button x-show="['sleeping','dormant','wanted','unreleased','done','complete'].includes(item.state)"
                             @click="retryItem(item)"
                             title="Retry item"
                             class="p-1.5 rounded-md hover:bg-vd-accent/20 text-vd-accent hover:text-vd-accent-hover transition-colors">
