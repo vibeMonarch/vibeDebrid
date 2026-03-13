@@ -54,6 +54,15 @@ _SEASON_DASH_EP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Fallback: ordinal season + episode, e.g. "2nd Season - 01", "1st Season - 28"
+_ORDINAL_SEASON_EP_RE = re.compile(
+    r"(\d+)(?:st|nd|rd|th)\s+Season\s*[-–]\s*(\d{1,3})\b",
+    re.IGNORECASE,
+)
+
+# Fallback: anime bare dash notation, e.g. "[Group] Title - 29 [1080p]"
+_ANIME_BARE_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
+
 # Dub / Dual Audio detection — used to tag results with "Dubbed" or "Dual Audio".
 # _DUB_RE matches "DUB" and "DUBBED" but not "DUBLIN" (word boundary prevents it).
 _DUB_RE = re.compile(r"\bDUB(?:BED)?\b", re.IGNORECASE)
@@ -414,6 +423,20 @@ class ZileanClient:
             if m:
                 season = int(m.group(1))
                 episode = int(m.group(2))
+
+        # Fallback: ordinal season notation "2nd Season - 01"
+        if episode is None:
+            m = _ORDINAL_SEASON_EP_RE.search(raw_title)
+            if m:
+                season = int(m.group(1))
+                episode = int(m.group(2))
+
+        # Fallback: anime bare dash "Title - 29 [1080p]"
+        if episode is None:
+            m = _ANIME_BARE_DASH_EP_RE.search(raw_title)
+            if m:
+                episode = int(m.group(1))
+                # No season info from this pattern — leave season as-is
 
         # --- Season pack detection ---
         # A result is a season pack if:

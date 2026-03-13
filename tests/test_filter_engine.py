@@ -1701,3 +1701,151 @@ class TestPreferSeasonPacks:
         assert len(ranked) == 1
         assert ranked[0].result.info_hash == "p" * 40
         assert ranked[0].score_breakdown["season_pack"] == 5.0
+
+
+class TestTier1EpisodeMismatchFilter:
+    """Hard-reject rules that discard results whose parsed season or episode
+    number does not match the requested season/episode."""
+
+    def _run_hard(
+        self,
+        result_season: int | None,
+        result_episode: int | None,
+        *,
+        requested_season: int | None,
+        requested_episode: int | None,
+        prefer_season_packs: bool = False,
+    ) -> tuple[bool, str | None]:
+        """Call _apply_hard_filters with the season/episode mismatch params."""
+        result = _make_result(season=result_season, episode=result_episode)
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            return ENGINE._apply_hard_filters(
+                result,
+                _DEFAULT_PROFILE,
+                prefer_season_packs,
+                requested_season=requested_season,
+                requested_episode=requested_episode,
+            )
+
+    def test_episode_mismatch_rejected(self):
+        passed, reason = self._run_hard(
+            result_season=2, result_episode=1,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is False
+        assert reason is not None
+        assert "episode" in reason.lower() and "mismatch" in reason.lower()
+
+    def test_season_mismatch_rejected(self):
+        passed, reason = self._run_hard(
+            result_season=1, result_episode=8,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is False
+        assert reason is not None
+        assert "season" in reason.lower() and "mismatch" in reason.lower()
+
+    def test_episode_match_passes(self):
+        passed, reason = self._run_hard(
+            result_season=2, result_episode=8,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_no_requested_episode_skips_check(self):
+        passed, reason = self._run_hard(
+            result_season=3, result_episode=99,
+            requested_season=None, requested_episode=None,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_only_requested_season_set_skips_check(self):
+        passed, reason = self._run_hard(
+            result_season=1, result_episode=5,
+            requested_season=2, requested_episode=None,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_only_requested_episode_set_skips_check(self):
+        passed, reason = self._run_hard(
+            result_season=1, result_episode=5,
+            requested_season=None, requested_episode=8,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_unparsed_episode_passes(self):
+        passed, reason = self._run_hard(
+            result_season=2, result_episode=None,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_unparsed_season_passes(self):
+        passed, reason = self._run_hard(
+            result_season=None, result_episode=8,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_both_unparsed_passes(self):
+        passed, reason = self._run_hard(
+            result_season=None, result_episode=None,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_season_packs_skip_episode_check(self):
+        result = _make_result(season=2, episode=1, is_season_pack=True)
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            passed, reason = ENGINE._apply_hard_filters(
+                result, _DEFAULT_PROFILE, True,
+                requested_season=2, requested_episode=8,
+            )
+        assert passed is True
+        assert reason is None
+
+    def test_episode_filter_integration(self):
+        r_wrong = _make_result(info_hash="1" * 40, season=2, episode=1)
+        r_correct = _make_result(info_hash="2" * 40, season=2, episode=8)
+        r_wrong2 = _make_result(info_hash="3" * 40, season=2, episode=3)
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            ranked = ENGINE.filter_and_rank(
+                [r_wrong, r_correct, r_wrong2],
+                requested_season=2, requested_episode=8,
+            )
+        assert len(ranked) == 1
+        assert ranked[0].result.info_hash == "2" * 40
+
+    def test_episode_filter_no_params_all_survive(self):
+        r1 = _make_result(info_hash="a" * 40, season=2, episode=1)
+        r2 = _make_result(info_hash="b" * 40, season=2, episode=8)
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            ranked = ENGINE.filter_and_rank([r1, r2])
+        assert len(ranked) == 2
+
+    def test_episode_rejection_reason_includes_numbers(self):
+        passed, reason = self._run_hard(
+            result_season=2, result_episode=1,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is False
+        assert "01" in reason and "08" in reason
+
+    def test_season_rejection_reason_includes_numbers(self):
+        passed, reason = self._run_hard(
+            result_season=1, result_episode=8,
+            requested_season=2, requested_episode=8,
+        )
+        assert passed is False
+        assert "S01" in reason or "S1" in reason or "01" in reason

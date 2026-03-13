@@ -300,6 +300,45 @@ class QueueManager:
         item.retry_count = 0
         item.next_retry_at = None
 
+        # Clean up dedup + symlinks when retrying from terminal states.
+        # Without this, the old RdTorrent entry causes check_content_duplicate
+        # to short-circuit back to CHECKING with the wrong torrent.
+        if from_state in (QueueState.DONE, QueueState.COMPLETE) and new_state == QueueState.WANTED:
+            from src.models.torrent import RdTorrent, TorrentStatus  # noqa: PLC0415
+            from src.core.symlink_manager import symlink_manager  # noqa: PLC0415
+
+            # Mark linked RdTorrent entries as REMOVED so dedup doesn't find them.
+            stmt = select(RdTorrent).where(
+                RdTorrent.media_item_id == item_id,
+                RdTorrent.status == TorrentStatus.ACTIVE,
+            )
+            result = await session.execute(stmt)
+            for torrent in result.scalars().all():
+                torrent.status = TorrentStatus.REMOVED
+                logger.info(
+                    "force_transition: marked rd_torrent id=%d info_hash=%s as REMOVED "
+                    "for retry (media_item_id=%d)",
+                    torrent.id,
+                    torrent.info_hash,
+                    item_id,
+                )
+
+            # Remove symlinks pointing to the (potentially wrong) file.
+            try:
+                removed = await symlink_manager.remove_symlink(session, item_id)
+                if removed:
+                    logger.info(
+                        "force_transition: removed %d symlink(s) for retry (media_item_id=%d)",
+                        removed,
+                        item_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "force_transition: symlink cleanup failed for item id=%d: %s",
+                    item_id,
+                    exc,
+                )
+
         await session.flush()
 
         logger.info(

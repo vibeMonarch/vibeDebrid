@@ -65,6 +65,15 @@ _SEASON_DASH_EP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Fallback: ordinal season + episode, e.g. "2nd Season - 01", "1st Season - 28"
+_ORDINAL_SEASON_EP_RE = re.compile(
+    r"(\d+)(?:st|nd|rd|th)\s+Season\s*[-–]\s*(\d{1,3})\b",
+    re.IGNORECASE,
+)
+
+# Fallback: anime bare dash notation, e.g. "[Group] Title - 29 [1080p]"
+_ANIME_BARE_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
+
 # Strips the ``realdebrid=<value>`` segment from pipe-separated Torrentio opts
 # so that scrape-pipeline queries return all results, not just RD-cached ones.
 _DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")
@@ -509,6 +518,20 @@ class TorrentioClient:
             if m:
                 ptn_season = int(m.group(1))
                 ptn_episode = int(m.group(2))
+
+        # Fallback: ordinal season notation "2nd Season - 01"
+        if ptn_episode is None:
+            m = _ORDINAL_SEASON_EP_RE.search(release_name)
+            if m:
+                ptn_season = int(m.group(1))
+                ptn_episode = int(m.group(2))
+
+        # Fallback: anime bare dash "Title - 29 [1080p]"
+        if ptn_episode is None:
+            m = _ANIME_BARE_DASH_EP_RE.search(release_name)
+            if m:
+                ptn_episode = int(m.group(1))
+                # No season info from this pattern — leave ptn_season as-is
 
         # --- Season pack detection ---
         # PTN does NOT emit a 'season' key when it cannot find an episode number

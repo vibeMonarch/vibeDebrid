@@ -321,6 +321,8 @@ class ScrapePipeline:
             cached_hashes=set(),
             prefer_season_packs=bool(item.is_season_pack),
             original_language=orig_lang_name,
+            requested_season=scene_season if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
+            requested_episode=scene_episode if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
         )
 
         # --- Hash-based dedup: skip cache check if top result already registered ---
@@ -401,6 +403,8 @@ class ScrapePipeline:
                 cached_hashes=cached_set,
                 prefer_season_packs=bool(item.is_season_pack),
                 original_language=orig_lang_name,
+                requested_season=scene_season if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
+                requested_episode=scene_episode if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
             )
 
         # When force_original is set, double the original_language score component

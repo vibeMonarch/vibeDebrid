@@ -57,6 +57,8 @@ class ScrapeResult(Protocol):
     seeders: int | None
     languages: list[str]
     is_season_pack: bool
+    season: int | None
+    episode: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +152,8 @@ class FilterEngine:
         cached_hashes: set[str] | None = None,
         prefer_season_packs: bool = False,
         original_language: str | None = None,
+        requested_season: int | None = None,
+        requested_episode: int | None = None,
     ) -> list[FilteredResult]:
         """Apply Tier 1 hard filters then Tier 2 quality scoring to a result list.
 
@@ -175,6 +179,16 @@ class FilterEngine:
                 original language (e.g. ``"ja"`` or ``"Japanese"``).  Used to
                 score dubs/subs preference when ``prefer_original_language`` is
                 enabled.  Defaults to None (no original language scoring).
+            requested_season: The season number that was requested (after XEM
+                scene mapping, if applicable).  When set together with
+                ``requested_episode``, results whose parsed season differs are
+                hard-rejected unless ``prefer_season_packs`` is True or the
+                result's season is None (PTN parse failure — benefit of doubt).
+                Pass None for movies or when episode validation is not needed
+                (e.g. search endpoint).  Defaults to None.
+            requested_episode: The episode number that was requested (after XEM
+                scene mapping, if applicable).  Behaviour mirrors
+                ``requested_season``.  Defaults to None.
 
         Returns:
             List of FilteredResult objects sorted by score descending.
@@ -195,7 +209,7 @@ class FilterEngine:
         rejected_count = 0
 
         for result in results:
-            passed, reason = self._apply_hard_filters(result, profile, prefer_season_packs)
+            passed, reason = self._apply_hard_filters(result, profile, prefer_season_packs, requested_season, requested_episode)
             if not passed:
                 logger.debug(
                     "filter_engine: REJECTED title=%r reason=%r",
@@ -246,6 +260,8 @@ class FilterEngine:
         cached_hashes: set[str] | None = None,
         prefer_season_packs: bool = False,
         original_language: str | None = None,
+        requested_season: int | None = None,
+        requested_episode: int | None = None,
     ) -> FilteredResult | None:
         """Return the highest-scored result, or None if all were rejected.
 
@@ -259,6 +275,12 @@ class FilterEngine:
                 scoring bonus.  Defaults to False.
             original_language: ISO 639-1 code or language name for original
                 language scoring.  Defaults to None.
+            requested_season: The season number that was requested.  When set
+                together with ``requested_episode``, results with a mismatched
+                season are hard-rejected.  Defaults to None.
+            requested_episode: The episode number that was requested.  When set
+                together with ``requested_season``, results with a mismatched
+                episode are hard-rejected.  Defaults to None.
 
         Returns:
             The top-ranked FilteredResult, or None when the list is empty or
@@ -270,6 +292,8 @@ class FilterEngine:
             cached_hashes=cached_hashes,
             prefer_season_packs=prefer_season_packs,
             original_language=original_language,
+            requested_season=requested_season,
+            requested_episode=requested_episode,
         )
         return ranked[0] if ranked else None
 
@@ -282,6 +306,8 @@ class FilterEngine:
         result: ScrapeResult,
         profile: QualityProfile,
         prefer_season_packs: bool = False,
+        requested_season: int | None = None,
+        requested_episode: int | None = None,
     ) -> tuple[bool, str | None]:
         """Evaluate Tier 1 hard-reject rules against a single result.
 
@@ -296,6 +322,13 @@ class FilterEngine:
                 season pack.  Single-episode results are hard-rejected so that
                 a stray episode torrent is never downloaded in place of the
                 intended season pack.
+            requested_season: The season number that was requested (after XEM
+                scene mapping).  When both this and ``requested_episode`` are
+                set and the result carries a parsed season, a mismatch causes
+                rejection.  Skipped when ``prefer_season_packs`` is True or
+                when either value is None.
+            requested_episode: The episode number that was requested (after XEM
+                scene mapping).  Behaviour mirrors ``requested_season``.
 
         Returns:
             A 2-tuple ``(passed, reason)`` where ``passed`` is True when the
@@ -306,7 +339,20 @@ class FilterEngine:
         if prefer_season_packs and not result.is_season_pack:
             return False, "single episode result for season pack request"
 
-        # 2. Minimum file size
+        # 2. Episode/season mismatch (skip for season packs and when PTN didn't parse)
+        if not prefer_season_packs and requested_season is not None and requested_episode is not None:
+            if result.season is not None and result.season != requested_season:
+                return False, (
+                    f"season mismatch: result has S{result.season:02d} "
+                    f"but S{requested_season:02d} was requested"
+                )
+            if result.episode is not None and result.episode != requested_episode:
+                return False, (
+                    f"episode mismatch: result has E{result.episode:02d} "
+                    f"but E{requested_episode:02d} was requested"
+                )
+
+        # 3. Minimum file size
         if result.size_bytes is not None:
             min_bytes = profile.min_size_mb * 1024 * 1024
             if result.size_bytes < min_bytes:
@@ -315,7 +361,7 @@ class FilterEngine:
                     f"< {min_bytes} bytes)"
                 )
 
-        # 3. Maximum file size
+        # 4. Maximum file size
         if result.size_bytes is not None:
             max_bytes = profile.max_size_gb * 1024 * 1024 * 1024
             if result.size_bytes > max_bytes:
@@ -324,7 +370,7 @@ class FilterEngine:
                     f"> {max_bytes} bytes)"
                 )
 
-        # 4. Blocked keywords (whole-word, case-insensitive match against title)
+        # 5. Blocked keywords (whole-word, case-insensitive match against title)
         for keyword in settings.filters.blocked_keywords:
             pattern = re.compile(
                 rf"\b{re.escape(keyword)}\b", re.IGNORECASE
@@ -332,14 +378,14 @@ class FilterEngine:
             if pattern.search(result.title):
                 return False, f"blocked keyword: {keyword!r}"
 
-        # 5. Blocked release groups (case-insensitive exact match)
+        # 6. Blocked release groups (case-insensitive exact match)
         if result.release_group is not None:
             release_group_lower = result.release_group.lower()
             for blocked in settings.filters.blocked_release_groups:
                 if release_group_lower == blocked.lower():
                     return False, f"blocked release group: {result.release_group!r}"
 
-        # 6. Language filter
+        # 7. Language filter
         preferred_langs = settings.filters.preferred_languages
         if preferred_langs:
             # New-style: reject anything not in the preferred list
@@ -379,7 +425,7 @@ class FilterEngine:
                         f"(languages={result.languages})"
                     )
 
-        # 7. Minimum resolution (only enforced when resolution is known)
+        # 8. Minimum resolution (only enforced when resolution is known)
         if result.resolution is not None:
             resolution_order_lower = [
                 r.lower() for r in profile.resolution_order
