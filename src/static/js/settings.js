@@ -161,6 +161,15 @@
       setField('plex-watchlist-poll', s.plex.watchlist_poll_minutes != null ? s.plex.watchlist_poll_minutes : 30);
       window.updateWatchlistPollVisibility();
     }
+
+    // OMDb
+    var omdb = s.omdb || {};
+    var omdbMasked = document.getElementById('omdb-api-key-masked');
+    if (omdb.api_key && omdbMasked) {
+      omdbMasked.textContent = 'Current: ' + omdb.api_key + '  — enter a new value to replace it';
+    }
+    setToggle('omdb-enabled', omdb.enabled);
+    setField('omdb-cache-hours', omdb.cache_hours != null ? omdb.cache_hours : 168);
   }
 
   function setField(id, value) {
@@ -320,6 +329,15 @@
           }
         };
       }
+      case 'omdb': {
+        var key = document.getElementById('omdb-api-key').value.trim();
+        var payload = {
+          enabled: getToggle('omdb-enabled'),
+          cache_hours: parseInt(document.getElementById('omdb-cache-hours').value) || 168,
+        };
+        if (key) payload.api_key = key;
+        return { omdb: payload };
+      }
       default:
         return {};
     }
@@ -366,6 +384,20 @@
           if (maskedEl) maskedEl.textContent = tmdb.api_key || '';
           // Clear the password field after a successful save
           document.getElementById('tmdb-api-key').value = '';
+        }
+      }
+      if (section === 'omdb') {
+        const refreshed = await fetch('/api/settings');
+        if (refreshed.ok) {
+          const data = await refreshed.json();
+          currentSettings = data.settings || {};
+          const omdb = currentSettings.omdb || {};
+          const maskedEl = document.getElementById('omdb-api-key-masked');
+          if (maskedEl && omdb.api_key) {
+            maskedEl.textContent = 'Current: ' + omdb.api_key + '  — enter a new value to replace it';
+          }
+          // Clear the password field after a successful save
+          document.getElementById('omdb-api-key').value = '';
         }
       }
     } catch (err) {

@@ -107,6 +107,11 @@
         "cache_hours": 168,
         "timeout_seconds": 10
     },
+    "omdb": {
+        "enabled": false,
+        "api_key": "YOUR_OMDB_API_KEY",
+        "cache_hours": 168
+    },
     "retry": {
         "schedule_minutes": [
             30,

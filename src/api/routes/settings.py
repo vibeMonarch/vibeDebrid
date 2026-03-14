@@ -13,6 +13,7 @@ from src.config import (
     BackupConfig,
     FiltersConfig,
     MountScannerConfig,
+    OmdbConfig,
     PathsConfig,
     PlexConfig,
     QualityConfig,
@@ -65,6 +66,7 @@ class SettingsUpdate(BaseModel):
     search: SearchConfig | None = None
     tmdb: TmdbConfig | None = None
     xem: XemConfig | None = None
+    omdb: OmdbConfig | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -259,6 +261,22 @@ async def plex_auth_check(pin_id: int) -> dict[str, Any]:
 
     masked = "***" + token[-4:] if len(token) >= 4 else "***"
     return {"status": "authenticated", "token_masked": masked}
+
+
+@router.post("/test/omdb")
+async def test_omdb() -> TestResult:
+    """Test OMDb API connection by fetching The Matrix (tt0133093)."""
+    from src.services.omdb import omdb_client
+    try:
+        result = await omdb_client.test_connection()
+        if result:
+            return TestResult(
+                status="ok",
+                message=f"Connected — tested with: {result.get('Title', 'unknown')}",
+            )
+        return TestResult(status="error", message="OMDb not configured or disabled")
+    except Exception as exc:
+        return TestResult(status="error", message=f"Connection failed: {exc}")
 
 
 @router.get("/plex/libraries")

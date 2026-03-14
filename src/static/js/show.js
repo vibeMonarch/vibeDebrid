@@ -16,6 +16,9 @@
       }
       _showData = await resp.json();
       render(_showData);
+      if (_showData.imdb_id) {
+        fetchOmdbRatings(_showData.imdb_id);
+      }
     } catch (e) {
       showError('Network error: ' + e.message);
     }
@@ -329,6 +332,59 @@
       addBtn.textContent = 'Add to Queue';
     }
   };
+
+  // ---- OMDb ratings ----
+
+  function fetchOmdbRatings(imdbId) {
+    fetch('/api/omdb/' + encodeURIComponent(imdbId))
+      .then(function(resp) {
+        if (!resp.ok) return null;
+        return resp.json();
+      })
+      .then(function(data) {
+        if (data) renderRatings(data);
+      })
+      .catch(function() {
+        // Silently fail — OMDb ratings are optional
+      });
+  }
+
+  function renderRatings(data) {
+    var container = document.getElementById('show-ratings');
+    if (!container) return;
+    var hasAny = false;
+
+    if (data.imdb_rating != null) {
+      document.getElementById('rating-imdb-value').textContent = '\u2605 ' + data.imdb_rating;
+      var votesEl = document.getElementById('rating-imdb-votes');
+      if (data.imdb_votes) votesEl.textContent = '(' + data.imdb_votes + ')';
+      document.getElementById('rating-imdb').classList.remove('hidden');
+      hasAny = true;
+    }
+
+    if (data.rt_score != null) {
+      document.getElementById('rating-rt-icon').textContent = data.rt_score >= 60 ? '\uD83C\uDF45' : '\uD83E\uDD22';
+      document.getElementById('rating-rt-value').textContent = data.rt_score + '%';
+      document.getElementById('rating-rt').classList.remove('hidden');
+      hasAny = true;
+    }
+
+    if (data.metascore != null) {
+      var badge = document.getElementById('rating-meta-badge');
+      badge.textContent = data.metascore;
+      if (data.metascore >= 61) {
+        badge.className = 'text-xs font-bold px-1.5 py-0.5 rounded bg-green-600 text-white';
+      } else if (data.metascore >= 40) {
+        badge.className = 'text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-500 text-black';
+      } else {
+        badge.className = 'text-xs font-bold px-1.5 py-0.5 rounded bg-red-600 text-white';
+      }
+      document.getElementById('rating-meta').classList.remove('hidden');
+      hasAny = true;
+    }
+
+    if (hasAny) container.classList.remove('hidden');
+  }
 
   // Kick off load
   loadShow();

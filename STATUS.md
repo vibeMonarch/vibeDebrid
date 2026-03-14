@@ -376,6 +376,16 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### OMDb Ratings Integration ✅ (2026-03-14, Issues #6 + #7)
+- New `src/services/omdb.py`: OMDb client with in-memory TTL cache (7-day default), circuit breaker
+- `GET /api/omdb/{imdb_id}` endpoint — returns IMDb rating, RT Tomatometer, Metascore
+- Show detail page: non-blocking ratings fetch after page load, hidden when unavailable
+- Settings: OMDb card with enabled toggle, API key, cache hours, connection test
+- Color-coded display: IMDb yellow, RT tomato/green, Metascore green/yellow/red badges
+- Optional — disabled by default, graceful degradation when unconfigured
+- 18 new tests
+- Total: 2193 tests, all passing
+
 ### Dashboard Upcoming Episodes ✅ (2026-03-14, Issue #8)
 - Upcoming Episodes card replaces redundant Active Processing section
 - Two-column layout: Upcoming Episodes (left) + Queue States (right)

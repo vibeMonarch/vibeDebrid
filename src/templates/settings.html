@@ -116,6 +116,21 @@
       <span id="test-result-plex" class="test-result text-sm text-vd-muted"></span>
     </div>
 
+    <!-- OMDb test -->
+    <div class="flex flex-col gap-2 flex-1">
+      <button onclick="runTest('omdb', this)"
+              class="flex items-center justify-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test OMDb
+      </button>
+      <span id="test-result-omdb" class="test-result text-sm"></span>
+    </div>
+
   </div>
 </div>
 
@@ -335,6 +350,63 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
               </svg>
               Save TMDB
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OMDb section (collapsed by default) -->
+  <div id="section-omdb" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('omdb')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
+        </svg>
+        <span class="font-semibold text-white">OMDb</span>
+      </div>
+      <svg id="chevron-omdb" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-omdb" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 space-y-4 border-t border-vd-border pt-4">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-sm font-semibold text-gray-300">Service</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="omdb-enabled" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+            <span class="text-xs text-vd-muted">Enabled</span>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="omdb-api-key">API Key</label>
+            <input type="password" id="omdb-api-key" name="api_key" autocomplete="new-password"
+                   placeholder="Enter new value to update"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p id="omdb-api-key-masked" class="text-xs text-vd-muted mt-1"></p>
+            <p class="text-xs text-vd-muted mt-1">Get a free API key at <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" class="text-vd-accent hover:underline">omdbapi.com/apikey.aspx</a></p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="omdb-cache-hours">Cache Duration (hours)</label>
+            <input type="number" id="omdb-cache-hours" min="1" max="8760"
+                   placeholder="168"
+                   class="w-32 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">How long to cache ratings before re-fetching. Default: 168 (1 week).</p>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('omdb')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save OMDb
             </button>
           </div>
         </div>

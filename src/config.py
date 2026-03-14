@@ -179,6 +179,16 @@ class XemConfig(BaseModel):
     timeout_seconds: int = 10
 
 
+class OmdbConfig(BaseModel):
+    """Configuration for the Open Movie Database (OMDb) API."""
+
+    enabled: bool = False
+    api_key: str = ""
+    base_url: str = "http://www.omdbapi.com"
+    cache_hours: int = 168  # 7 days
+    timeout_seconds: int = 10
+
+
 # --- Main settings ---
 
 
@@ -219,6 +229,7 @@ class Settings(BaseSettings):
     search: SearchConfig = SearchConfig()
     tmdb: TmdbConfig = TmdbConfig()
     xem: XemConfig = XemConfig()
+    omdb: OmdbConfig = OmdbConfig()
 
     @classmethod
     def load(cls) -> "Settings":

@@ -113,6 +113,28 @@
     </div>
   </div>
 
+  <!-- OMDb Ratings -->
+  <div class="px-4 lg:px-8 mb-3">
+    <div id="show-ratings" class="flex items-center gap-4 flex-wrap hidden">
+      <!-- IMDb -->
+      <div id="rating-imdb" class="hidden flex items-center gap-1.5">
+        <span class="text-xs font-semibold text-yellow-400">IMDb</span>
+        <span id="rating-imdb-value" class="text-sm text-white font-medium"></span>
+        <span id="rating-imdb-votes" class="text-xs text-vd-muted"></span>
+      </div>
+      <!-- Rotten Tomatoes -->
+      <div id="rating-rt" class="hidden flex items-center gap-1.5">
+        <span id="rating-rt-icon" class="text-sm"></span>
+        <span id="rating-rt-value" class="text-sm text-white font-medium"></span>
+      </div>
+      <!-- Metascore -->
+      <div id="rating-meta" class="hidden flex items-center gap-1.5">
+        <span id="rating-meta-badge" class="text-xs font-bold px-1.5 py-0.5 rounded"></span>
+        <span class="text-xs text-vd-muted">Metascore</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Overview -->
   <div class="px-4 lg:px-8 mb-6">
     <p id="show-overview" class="text-vd-muted text-sm leading-relaxed"></p>

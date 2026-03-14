@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 2175 tests, all passing (as of 2026-03-14)
+- 2193 tests, all passing (as of 2026-03-14)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -70,6 +70,7 @@
 - Issue #12: Extract duplicated code (torrent_parser.py shared module + utils.js) — 2026-03-14
 - Issue #22: Extract inline JS to static files (8 page JS files, ~5,300 lines moved) — 2026-03-14
 - Issue #8: Dashboard upcoming episodes card (replaces Active Processing) — 2026-03-14
+- Issues #6+#7: OMDb ratings on show detail page (IMDb, RT, Metascore) — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
@@ -83,8 +84,6 @@
 ## Open Issues
 - ~~#22: Extract inline JS to static files~~ resolved — 8 page JS files extracted
 - #18: Dockerization (unblocks #32)
-- #7: Rotten Tomatoes scores on Discover
-- #6: IMDb ratings on Discover
 - #4: Per-episode TV discovery
 
 ## Remaining Review Findings (not yet fixed)
