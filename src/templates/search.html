@@ -411,10 +411,11 @@
                 bestMatch = item;
               }
             }
-            // Store tmdb_id and year from the best match
+            // Store tmdb_id, year, and canonical title from the best match
             payload.tmdb_id = bestMatch.tmdb_id || null;
             const rawDate = bestMatch.release_date || bestMatch.first_air_date || '';
             payload.year = rawDate.length >= 4 ? parseInt(rawDate.substring(0, 4), 10) : null;
+            payload.tmdb_title = bestMatch.title || bestMatch.name || null;
 
             const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(bestMatch.tmdb_id));
             if (resolveResp.ok) {
@@ -883,13 +884,19 @@
     if (!infoHash || !_lastSearchPayload) return;
 
     const isSeasonPack = btn.dataset.seasonPack === 'true';
-    const season = btn.dataset.season !== 'null' && btn.dataset.season !== 'undefined' ? parseInt(btn.dataset.season, 10) : null;
-    const episode = isSeasonPack ? null : (btn.dataset.episode !== 'null' && btn.dataset.episode !== 'undefined' ? parseInt(btn.dataset.episode, 10) : null);
+    // Prefer user-supplied season/episode from the search form over PTN-parsed
+    // values from the torrent title.  For a torrent like "S01-S04 COMPLETE",
+    // PTN would parse season=1 even when the user searched for season=2.
+    const ptnSeason = btn.dataset.season !== 'null' && btn.dataset.season !== 'undefined' ? parseInt(btn.dataset.season, 10) : null;
+    const ptnEpisode = btn.dataset.episode !== 'null' && btn.dataset.episode !== 'undefined' ? parseInt(btn.dataset.episode, 10) : null;
+    const season = (_lastSearchPayload.season != null) ? _lastSearchPayload.season : ptnSeason;
+    const episode = isSeasonPack ? null : ((_lastSearchPayload.episode != null) ? _lastSearchPayload.episode : ptnEpisode);
     const releaseTitle = btn.dataset.title || null;
 
     const payload = {
       magnet_or_hash:    infoHash,
-      title:             _lastSearchPayload.query,
+      // Prefer TMDB-resolved canonical title when available; fall back to raw query.
+      title:             _lastSearchPayload.tmdb_title || _lastSearchPayload.query,
       release_title:     releaseTitle,
       imdb_id:           _lastSearchPayload.imdb_id || null,
       tmdb_id:           _lastSearchPayload.tmdb_id || null,

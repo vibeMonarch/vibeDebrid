@@ -380,14 +380,50 @@ async def add_torrent(
             detail="Season packs require a season number",
         )
 
+    # TMDB enrichment: when a tmdb_id is provided, fetch canonical title and
+    # year from TMDB so the MediaItem uses the official name rather than the
+    # raw search query.  This is intentionally non-fatal — any failure falls
+    # through and the caller-supplied values are used instead.
+    enriched_title: str | None = body.title
+    enriched_year: int | None = body.year
+    if body.tmdb_id is not None:
+        try:
+            from src.services.tmdb import tmdb_client
+
+            if media_type == MediaType.SHOW:
+                tmdb_details = await tmdb_client.get_show_details(body.tmdb_id)
+                if tmdb_details and tmdb_details.title:
+                    enriched_title = tmdb_details.title
+                    if tmdb_details.year is not None:
+                        enriched_year = tmdb_details.year
+                    logger.debug(
+                        "add_torrent: TMDB show enrichment tmdb_id=%d title=%r year=%s",
+                        body.tmdb_id, enriched_title, enriched_year,
+                    )
+            else:
+                tmdb_details = await tmdb_client.get_movie_details(body.tmdb_id)
+                if tmdb_details and tmdb_details.title:
+                    enriched_title = tmdb_details.title
+                    if tmdb_details.year is not None:
+                        enriched_year = tmdb_details.year
+                    logger.debug(
+                        "add_torrent: TMDB movie enrichment tmdb_id=%d title=%r year=%s",
+                        body.tmdb_id, enriched_title, enriched_year,
+                    )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning(
+                "add_torrent: TMDB enrichment failed for tmdb_id=%d, using caller values: %s",
+                body.tmdb_id, exc,
+            )
+
     # Always create the MediaItem first in ADDING state.  If the RD call
     # fails we fall back to WANTED so the pipeline can pick it up later.
     item = MediaItem(
         imdb_id=body.imdb_id,
         tmdb_id=str(body.tmdb_id) if body.tmdb_id is not None else None,
         tvdb_id=body.tvdb_id,
-        title=body.title or "Unknown",
-        year=body.year,
+        title=enriched_title or "Unknown",
+        year=enriched_year,
         media_type=media_type,
         season=body.season,
         episode=None if body.is_season_pack else body.episode,
