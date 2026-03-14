@@ -1057,7 +1057,7 @@ class MountScanner:
         all_filepaths = list(record_map.keys())
 
         # Phase 1: Fetch ONLY comparison columns (not full ORM objects).
-        existing_map: dict[str, tuple[str, int | None]] = {}
+        existing_map: dict[str, tuple[str, int | None, int | None]] = {}
         for i in range(0, len(all_filepaths), _BATCH_SIZE):
             batch = all_filepaths[i : i + _BATCH_SIZE]
             result = await session.execute(
@@ -1065,10 +1065,11 @@ class MountScanner:
                     MountIndex.filepath,
                     MountIndex.filename,
                     MountIndex.filesize,
+                    MountIndex.parsed_episode,
                 ).where(MountIndex.filepath.in_(batch))
             )
             for row in result.all():
-                existing_map[row.filepath] = (row.filename, row.filesize)
+                existing_map[row.filepath] = (row.filename, row.filesize, row.parsed_episode)
 
         # Phase 2: Classify records into unchanged vs new/changed.
         unchanged_filepaths: list[str] = []
@@ -1077,10 +1078,13 @@ class MountScanner:
         for filepath, entry in record_map.items():
             existing = existing_map.get(filepath)
             if existing is not None:
-                old_filename, old_filesize = existing
-                # Both match → skip re-parse; None == None is True in Python
-                # which is correct: if stat failed both times treat as unchanged.
-                if old_filename == entry.filename and old_filesize == entry.filesize:
+                old_filename, old_filesize, old_episode = existing
+                # Both match AND episode was parsed → skip re-parse.
+                # Re-parse when parsed_episode is NULL so new parser
+                # fallbacks (e.g. bare trailing number) can fill it in.
+                if (old_filename == entry.filename
+                        and old_filesize == entry.filesize
+                        and old_episode is not None):
                     unchanged_filepaths.append(filepath)
                     continue
             changed_or_new.append(entry)

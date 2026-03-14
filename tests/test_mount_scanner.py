@@ -325,7 +325,7 @@ class TestScan:
         """
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
-            open(os.path.join(tmpdir, "Movie.2024.mkv"), "wb").write(b"fake")
+            open(os.path.join(tmpdir, "Show.S01E05.1080p.mkv"), "wb").write(b"fake")
 
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
@@ -339,7 +339,7 @@ class TestScan:
 
         assert second.files_found == 1
         assert second.files_added == 0
-        # File content unchanged → skip-unchanged path; files_updated=0, files_unchanged=1.
+        # File content unchanged and parsed_episode is set → skip-unchanged path.
         assert second.files_updated == 0
         assert second.files_unchanged == 1
         assert second.files_removed == 0
@@ -548,9 +548,9 @@ class TestScan:
         """
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
-            f1 = os.path.join(tmpdir, "Movie.A.2020.mkv")
-            f2 = os.path.join(tmpdir, "Movie.B.2021.mkv")
-            f3 = os.path.join(tmpdir, "Movie.C.2022.mkv")
+            f1 = os.path.join(tmpdir, "Show.S01E01.mkv")
+            f2 = os.path.join(tmpdir, "Show.S01E02.mkv")
+            f3 = os.path.join(tmpdir, "Show.S01E03.mkv")
             for fp in (f1, f2, f3):
                 open(fp, "wb").write(b"fake")
 
@@ -566,7 +566,7 @@ class TestScan:
 
                 second = await scanner.scan(session)
 
-        # The 2 surviving files are unchanged (same filename + filesize).
+        # The 2 surviving files are unchanged (same filename + filesize + parsed_episode set).
         assert second.files_unchanged == 2
         # The removed file is deleted from the index.
         assert second.files_removed == 1
@@ -1325,8 +1325,8 @@ class TestBatchUpsert:
         """Re-upserting identical filepaths with matching filename/filesize counts as unchanged."""
         scanner = MountScanner()
         fp = "/mnt/existing.mkv"
-        # Insert with filesize=1024 (default in _make_record).
-        await _insert_entry(session, filepath=fp, filename="existing.mkv", filesize=1024)
+        # Insert with filesize=1024 and parsed_episode set (otherwise re-parse triggers).
+        await _insert_entry(session, filepath=fp, filename="existing.mkv", filesize=1024, parsed_episode=1)
         await session.flush()
 
         records = [_make_record(fp)]  # same filename, same filesize=1024
@@ -1379,7 +1379,7 @@ class TestBatchUpsert:
         """Mix of new, unchanged, and changed filepaths splits correctly."""
         scanner = MountScanner()
         existing_fp = "/mnt/already.mkv"
-        await _insert_entry(session, filepath=existing_fp, filename="already.mkv", filesize=1024)
+        await _insert_entry(session, filepath=existing_fp, filename="already.mkv", filesize=1024, parsed_episode=1)
         await session.flush()
 
         records = [
