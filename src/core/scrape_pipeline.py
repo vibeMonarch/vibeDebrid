@@ -42,7 +42,7 @@ from src.core.mount_scanner import mount_scanner
 from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
-from src.services.real_debrid import RealDebridError, rd_client
+from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrentio import TorrentioResult, torrentio_client
 from src.services.zilean import ZileanResult, zilean_client
 
@@ -1164,6 +1164,23 @@ class ScrapePipeline:
             )
             try:
                 add_response = await rd_client.add_magnet(candidate_magnet)
+            except RealDebridRateLimitError as exc:
+                # Rate limit is transient — leave in SCRAPING so the next queue
+                # cycle (60s) retries automatically. No state transition needed.
+                err_msg = f"RD rate limited during add_magnet: {exc}"
+                logger.warning(
+                    "scrape_pipeline: %s for item id=%d — staying in SCRAPING, "
+                    "will retry next cycle",
+                    err_msg, item.id,
+                )
+                return PipelineResult(
+                    item_id=item.id,
+                    action="rate_limited",
+                    message=err_msg,
+                    selected_hash=info_hash,
+                    scrape_results_count=scrape_results_count,
+                    filtered_results_count=filtered_results_count,
+                )
             except RealDebridError as exc:
                 if exc.status_code == 451:
                     err_msg = f"Torrent blocked by RD (HTTP 451 infringing_file): hash={info_hash}"
