@@ -1018,11 +1018,11 @@ class ScrapePipeline:
             except Exception as exc:
                 logger.warning(
                     "scrape_pipeline: cache check attempt %d/%d: get_torrent_info "
-                    "failed for item id=%d hash=%s rd_id=%s: %s",
+                    "failed for item id=%d hash=%s rd_id=%s: %s — keeping as fallback",
                     attempt_idx + 1, len(candidates), item_id, info_hash, rd_id, exc,
                 )
-                # Treat as not cached; keep it in RD as fallback.
-                cached = False
+                # Unknown cache status — keep in RD as fallback, don't delete.
+                return candidate, rd_id, False
 
             logger.info(
                 "scrape_pipeline: cache check attempt %d/%d: hash=%s cached=%s "
@@ -1048,19 +1048,20 @@ class ScrapePipeline:
 
             # Not cached and not last — delete from RD, record as last-seen fallback,
             # then try the next candidate.
+            deleted = False
             try:
                 await rd_client.delete_torrent(rd_id)
+                deleted = True
             except Exception as exc:
                 logger.warning(
                     "scrape_pipeline: cache check: failed to delete uncached "
-                    "torrent rd_id=%s hash=%s: %s",
+                    "torrent rd_id=%s hash=%s: %s — torrent still in RD",
                     rd_id, info_hash, exc,
                 )
-            # Record the candidate (without its rd_id — it was deleted) so that if
-            # the next add_magnet fails we can return this candidate and call
-            # add_magnet fresh in _step_add_to_rd.
+            # Record as fallback. If delete failed, keep the rd_id since the
+            # torrent is still in RD (avoids orphan + redundant re-add).
             last_added = candidate
-            last_rd_id = None
+            last_rd_id = None if deleted else rd_id
 
         # All candidates were skipped (e.g. all 451-blocked).
         # Fall back to the top-ranked result with no rd_id.

@@ -87,7 +87,7 @@ _PATCH_TARGETS = {
     "torrentio_episode": "src.core.scrape_pipeline.torrentio_client.scrape_episode",
     "rd_add": "src.core.scrape_pipeline.rd_client.add_magnet",
     "rd_select": "src.core.scrape_pipeline.rd_client.select_files",
-    "rd_check_cached_batch": "src.core.scrape_pipeline.rd_client.check_cached_batch",
+    "rd_get_torrent_info": "src.core.scrape_pipeline.rd_client.get_torrent_info",
     "rd_delete": "src.core.scrape_pipeline.rd_client.delete_torrent",
     "filter_rank": "src.core.scrape_pipeline.filter_engine.filter_and_rank",
     "queue_transition": "src.core.scrape_pipeline.queue_manager.transition",
@@ -107,7 +107,7 @@ class _Mocks:
     torrentio_episode: AsyncMock
     rd_add: AsyncMock
     rd_select: AsyncMock
-    rd_check_cached_batch: AsyncMock
+    rd_get_torrent_info: AsyncMock
     rd_delete: AsyncMock
     filter_rank: MagicMock
     queue_transition: AsyncMock
@@ -162,8 +162,9 @@ async def _all_mocks(
     mocks.rd_select = started["rd_select"]
     mocks.rd_select.return_value = None
 
-    mocks.rd_check_cached_batch = started["rd_check_cached_batch"]
-    mocks.rd_check_cached_batch.return_value = {}
+    # Default: torrent is not cached (pipeline will keep last uncached result for download)
+    mocks.rd_get_torrent_info = started["rd_get_torrent_info"]
+    mocks.rd_get_torrent_info.return_value = {"status": "magnet_conversion", "id": "RD123"}
 
     mocks.rd_delete = started["rd_delete"]
     mocks.rd_delete.return_value = None
@@ -395,7 +396,14 @@ class TestCheckCached451Handling:
 
 
 class TestPipelineFallbackOn451:
-    """_step_add_to_rd falls back through ranked candidates on HTTP 451."""
+    """_sequential_cache_check + _step_add_to_rd fall back through candidates on HTTP 451.
+
+    The pipeline now uses sequential cache checking: it calls add_magnet then
+    get_torrent_info per candidate to detect cached status. A 451 on add_magnet
+    causes that candidate to be skipped. When all candidates are 451-blocked,
+    _sequential_cache_check returns winner_rd_id=None and _step_add_to_rd re-tries
+    add_magnet on the top-ranked result, which also hits 451 → SLEEPING.
+    """
 
     async def test_first_candidate_451_second_succeeds(
         self, session: AsyncSession, wanted_item: MediaItem
@@ -415,8 +423,9 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_magnet_side_effect
+            # hash_2 is not cached — kept in RD for download, winner_rd_id="RD_2"
+            m.rd_get_torrent_info.return_value = {"status": "magnet_conversion", "id": "RD_2"}
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
@@ -427,7 +436,7 @@ class TestPipelineFallbackOn451:
     async def test_first_candidate_451_result_uses_second_hash(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """The scrape log selected_result records the fallback winner's hash."""
+        """The pipeline result records the fallback winner's hash."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_1 = "1" * 40
         hash_2 = "2" * 40
@@ -442,8 +451,8 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_magnet_side_effect
+            m.rd_get_torrent_info.return_value = {"status": "magnet_conversion", "id": "RD_WINNER"}
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
@@ -453,7 +462,12 @@ class TestPipelineFallbackOn451:
     async def test_all_candidates_blocked_transitions_to_sleeping(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """When every candidate is 451-blocked, the item transitions to SLEEPING."""
+        """When every candidate is 451-blocked, the item transitions to SLEEPING.
+
+        All candidates are skipped in _sequential_cache_check (winner_rd_id=None).
+        _step_add_to_rd re-calls add_magnet on the top-ranked result, also gets
+        451, and transitions the item to SLEEPING.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_1 = "1" * 40
         hash_2 = "2" * 40
@@ -467,7 +481,7 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2, fr3]
-            m.rd_check_cached_batch.return_value = {}
+            # All candidates 451 in the sequential check AND in _step_add_to_rd
             m.rd_add.side_effect = blocked_exc
 
             pipeline = ScrapePipeline()
@@ -494,7 +508,6 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = blocked_exc
 
             pipeline = ScrapePipeline()
@@ -505,14 +518,24 @@ class TestPipelineFallbackOn451:
     async def test_first_451_second_rate_limit_stops_loop(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """A transient error (rate limit) after a 451 stops the loop and sends to SLEEPING."""
+        """A transient error (rate limit) on add_magnet after a 451 stops the loop → SLEEPING.
+
+        In _sequential_cache_check: hash_1 → 451 (skipped), hash_2 → rate limit (stop early,
+        return ranked[0] with no rd_id). _step_add_to_rd then calls add_magnet for ranked[0]
+        (hash_1) — which also 451s — so the item goes SLEEPING.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_1 = "1" * 40
         hash_2 = "2" * 40
         fr1 = _make_filtered_result(hash_1, score=90.0)
         fr2 = _make_filtered_result(hash_2, score=80.0)
 
+        call_count: dict[str, int] = {}
+
         def _add_side_effect(magnet: str):
+            for h in (hash_1, hash_2):
+                if h in magnet:
+                    call_count[h] = call_count.get(h, 0) + 1
             if hash_1 in magnet:
                 raise RealDebridError("infringing_file", status_code=451, error_code=35)
             raise RealDebridRateLimitError("Too many requests", status_code=429)
@@ -520,7 +543,6 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_side_effect
 
             pipeline = ScrapePipeline()
@@ -554,7 +576,6 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_side_effect
 
             pipeline = ScrapePipeline()
@@ -562,66 +583,70 @@ class TestPipelineFallbackOn451:
 
         assert result.action == "error"
 
-    async def test_cache_results_blocked_hashes_pre_filtered(
+    async def test_top_ranked_451_skipped_second_added_successfully(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """Hashes flagged blocked=True in cache_results are excluded before the loop."""
+        """451 on the top candidate in sequential check; second candidate succeeds.
+
+        The sequential check skips hash_blocked (451) and adds hash_ok to RD.
+        get_torrent_info returns a non-cached status, so the torrent is kept as
+        an uncached download. _step_add_to_rd reuses the winner_rd_id from the
+        check without re-calling add_magnet.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_blocked = "b" * 40
         hash_ok = "c" * 40
         fr_blocked = _make_filtered_result(hash_blocked, score=95.0)
         fr_ok = _make_filtered_result(hash_ok, score=85.0)
 
-        # cache_results marks the top-scored hash as blocked
-        blocked_cache = {
-            hash_blocked: CacheCheckResult(
-                info_hash=hash_blocked, cached=False, blocked=True
-            )
-        }
+        def _add_side_effect(magnet: str):
+            if hash_blocked in magnet:
+                raise RealDebridError("infringing_file", status_code=451, error_code=35)
+            return {"id": "RD_OK", "uri": ""}
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr_blocked, fr_ok]
-            m.rd_check_cached_batch.return_value = blocked_cache
-            m.rd_add.return_value = {"id": "RD_OK", "uri": ""}
+            m.rd_add.side_effect = _add_side_effect
+            # hash_ok is uncached; sequential check keeps it as the last-added result
+            m.rd_get_torrent_info.return_value = {"status": "magnet_conversion", "id": "RD_OK"}
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         assert result.action == "added_to_rd"
-        # add_magnet must have been called with the OK hash, not the blocked one
-        assert m.rd_add.call_count >= 1
+        assert result.selected_hash == hash_ok
+        # add_magnet was called only inside the sequential check (once for the
+        # blocked hash which raised 451, once for the ok hash)
+        assert m.rd_add.call_count == 2
         for mock_call in m.rd_add.call_args_list:
             magnet_arg = mock_call.args[0] if mock_call.args else ""
-            assert hash_blocked not in magnet_arg, (
-                f"Blocked hash {hash_blocked} was submitted to add_magnet"
-            )
+            # hash_blocked was attempted but 451-skipped
+            assert hash_ok in magnet_arg or hash_blocked in magnet_arg
 
-    async def test_all_cache_blocked_no_candidates_transitions_sleeping(
+    async def test_all_candidates_blocked_transitions_sleeping_add_not_called_in_check(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """When all ranked results are pre-filtered due to blocked cache results → SLEEPING."""
+        """When all candidates 451 in the sequential check, add_magnet is still tried once
+        in _step_add_to_rd (on the top-ranked result), which also 451s → SLEEPING."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_1 = "1" * 40
         hash_2 = "2" * 40
         fr1 = _make_filtered_result(hash_1, score=90.0)
         fr2 = _make_filtered_result(hash_2, score=80.0)
 
-        all_blocked_cache = {
-            hash_1: CacheCheckResult(info_hash=hash_1, cached=False, blocked=True),
-            hash_2: CacheCheckResult(info_hash=hash_2, cached=False, blocked=True),
-        }
+        blocked_exc = RealDebridError("infringing_file", status_code=451, error_code=35)
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = all_blocked_cache
+            # add_magnet always 451s
+            m.rd_add.side_effect = blocked_exc
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         assert result.action == "error"
-        m.rd_add.assert_not_called()
         sleeping_called = any(
             QueueState.SLEEPING in call_args.args
             or QueueState.SLEEPING in call_args.kwargs.values()
@@ -629,10 +654,14 @@ class TestPipelineFallbackOn451:
         )
         assert sleeping_called
 
-    async def test_three_candidates_middle_one_wins(
+    async def test_three_candidates_middle_one_cached_wins(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """451 on first, success on second — third candidate never attempted."""
+        """451 on first, cache hit on second — sequential check exits immediately.
+
+        When hash_2 is found to be cached, the loop exits and hash_3 is never
+        attempted. _step_add_to_rd reuses the winner_rd_id from the check.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_1 = "1" * 40
         hash_2 = "2" * 40
@@ -641,30 +670,34 @@ class TestPipelineFallbackOn451:
         fr2 = _make_filtered_result(hash_2, score=80.0)
         fr3 = _make_filtered_result(hash_3, score=70.0)
 
-        call_order: list[str] = []
+        add_magnet_calls: list[str] = []
 
         def _add_side_effect(magnet: str):
+            add_magnet_calls.append(magnet)
             if hash_1 in magnet:
-                call_order.append("hash_1_blocked")
                 raise RealDebridError("infringing_file", status_code=451, error_code=35)
             if hash_2 in magnet:
-                call_order.append("hash_2_ok")
                 return {"id": "RD_2", "uri": ""}
-            call_order.append("hash_3_never")
             return {"id": "RD_3", "uri": ""}
+
+        def _get_info_side_effect(rd_id: str):
+            # Only hash_2 should ever reach get_torrent_info
+            return {"status": "downloaded", "id": rd_id}
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2, fr3]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_side_effect
+            # hash_2 is cached — sequential check exits immediately on first hit
+            m.rd_get_torrent_info.side_effect = _get_info_side_effect
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         assert result.action == "added_to_rd"
         assert result.selected_hash == hash_2
-        assert "hash_3_never" not in call_order
+        # hash_3 must never have been attempted
+        assert not any(hash_3 in c for c in add_magnet_calls)
 
     async def test_transition_to_adding_on_fallback_success(
         self, session: AsyncSession, wanted_item: MediaItem
@@ -684,8 +717,8 @@ class TestPipelineFallbackOn451:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_side_effect
+            m.rd_get_torrent_info.return_value = {"status": "magnet_conversion", "id": "RD_GOOD"}
 
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
@@ -709,7 +742,11 @@ class TestPipeline451EdgeCases:
     async def test_single_candidate_gets_451_transitions_sleeping(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """A single candidate that gets 451 sends the item to SLEEPING."""
+        """A single candidate that gets 451 sends the item to SLEEPING.
+
+        The sequential check skips it (451), then _step_add_to_rd re-tries
+        add_magnet on the same (only) candidate, also gets 451, and goes SLEEPING.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_only = "0" * 40
         fr_only = _make_filtered_result(hash_only, score=80.0)
@@ -719,7 +756,6 @@ class TestPipeline451EdgeCases:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr_only]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = blocked_exc
 
             pipeline = ScrapePipeline()
@@ -733,64 +769,78 @@ class TestPipeline451EdgeCases:
         )
         assert sleeping_called
 
-    async def test_reusable_rd_id_from_cache_check_bypasses_add_magnet(
+    async def test_reusable_rd_id_from_sequential_check_bypasses_add_magnet(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """When cache check kept the torrent (rd_id in cache_results), add_magnet is skipped."""
+        """When the sequential check finds a cached torrent, _step_add_to_rd skips add_magnet.
+
+        The sequential check calls add_magnet (once, in the check itself) and
+        get_torrent_info, finds the torrent cached, and returns winner_rd_id set.
+        _step_add_to_rd then reuses that rd_id and does NOT call add_magnet again.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_kept = "k" * 40
         fr_kept = _make_filtered_result(hash_kept, score=90.0)
 
-        # Simulate the cache check having kept the torrent
-        kept_cache = {
-            hash_kept: CacheCheckResult(
-                info_hash=hash_kept, cached=True, rd_id="RD_KEPT"
-            )
-        }
+        add_magnet_calls: list[str] = []
+
+        def _add_side_effect(magnet: str):
+            add_magnet_calls.append(magnet)
+            return {"id": "RD_KEPT", "uri": ""}
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr_kept]
-            m.rd_check_cached_batch.return_value = kept_cache
-            # rd_add should never be called since the kept rd_id is reused
-            m.rd_add.side_effect = AssertionError("add_magnet must not be called")
+            m.rd_add.side_effect = _add_side_effect
+            # Torrent is cached — sequential check returns winner_rd_id immediately
+            m.rd_get_torrent_info.return_value = {"status": "downloaded", "id": "RD_KEPT"}
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         assert result.action == "added_to_rd"
-        m.rd_add.assert_not_called()
+        # add_magnet called exactly once (inside the sequential check)
+        assert len(add_magnet_calls) == 1
+        assert hash_kept in add_magnet_calls[0]
 
-    async def test_reusable_rd_id_used_even_when_other_candidates_would_be_451(
+    async def test_reusable_rd_id_cached_hit_stops_check_before_second_candidate(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """The kept rd_id path exits before the loop can encounter any 451 candidates."""
-        ScrapePipeline, PipelineResult = _import_pipeline()
-        hash_kept = "k" * 40
-        hash_would_be_451 = "x" * 40
-        fr_kept = _make_filtered_result(hash_kept, score=90.0)
-        fr_blocked = _make_filtered_result(hash_would_be_451, score=80.0)
+        """A cache hit on the first candidate stops the sequential check immediately.
 
-        kept_cache = {
-            hash_kept: CacheCheckResult(
-                info_hash=hash_kept, cached=True, rd_id="RD_KEPT_REUSE"
-            )
-        }
+        The second candidate is never attempted in the sequential check.
+        _step_add_to_rd reuses the winner_rd_id and never calls add_magnet again.
+        """
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        hash_first = "k" * 40
+        hash_second = "x" * 40
+        fr_first = _make_filtered_result(hash_first, score=90.0)
+        fr_second = _make_filtered_result(hash_second, score=80.0)
+
+        add_magnet_calls: list[str] = []
+
+        def _add_side_effect(magnet: str):
+            add_magnet_calls.append(magnet)
+            return {"id": "RD_KEPT_REUSE", "uri": ""}
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
-            m.filter_rank.return_value = [fr_kept, fr_blocked]
-            m.rd_check_cached_batch.return_value = kept_cache
-            # Both candidates would 451 if add_magnet were called — but it must not be
-            m.rd_add.side_effect = RealDebridError(
-                "infringing_file", status_code=451, error_code=35
-            )
+            m.filter_rank.return_value = [fr_first, fr_second]
+            m.rd_add.side_effect = _add_side_effect
+            # First candidate is cached → loop exits immediately
+            m.rd_get_torrent_info.return_value = {
+                "status": "downloaded", "id": "RD_KEPT_REUSE"
+            }
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         assert result.action == "added_to_rd"
-        m.rd_add.assert_not_called()
+        # add_magnet called exactly once (sequential check stopped at first cached hit)
+        assert len(add_magnet_calls) == 1
+        assert hash_first in add_magnet_calls[0]
+        # Second candidate's hash was never submitted to add_magnet
+        assert not any(hash_second in c for c in add_magnet_calls)
 
     async def test_451_does_not_increment_add_magnet_call_for_skipped_hash(
         self, session: AsyncSession, wanted_item: MediaItem
@@ -815,43 +865,43 @@ class TestPipeline451EdgeCases:
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = {}
             m.rd_add.side_effect = _add_side_effect
+            # hash_2 is not cached; sequential check keeps it as last result
+            m.rd_get_torrent_info.return_value = {"status": "magnet_conversion", "id": "RD_SECOND"}
 
             pipeline = ScrapePipeline()
             await pipeline.run(session, wanted_item)
 
-        # Each hash must be attempted exactly once
+        # hash_1 attempted once (451-skipped in sequential check)
+        # hash_2 attempted once (kept in RD; _step_add_to_rd reuses winner_rd_id — no extra call)
         assert call_count_per_hash.get(hash_1, 0) == 1
         assert call_count_per_hash.get(hash_2, 0) == 1
 
-    async def test_451_mixed_with_blocked_cache_results(
+    async def test_451_both_candidates_all_blocked_transitions_sleeping(
         self, session: AsyncSession, wanted_item: MediaItem
     ) -> None:
-        """Blocked cache result for hash_1 AND live 451 on hash_2 → SLEEPING."""
+        """Both candidates 451 in sequential check; top-ranked re-tried in _step_add_to_rd
+        and also 451s → SLEEPING."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         hash_1 = "1" * 40
         hash_2 = "2" * 40
         fr1 = _make_filtered_result(hash_1, score=90.0)
         fr2 = _make_filtered_result(hash_2, score=80.0)
 
-        # hash_1 blocked in cache, hash_2 gets a live 451
-        mixed_cache = {
-            hash_1: CacheCheckResult(info_hash=hash_1, cached=False, blocked=True),
-        }
         blocked_exc = RealDebridError("infringing_file", status_code=451, error_code=35)
 
         async with _all_mocks() as m:
             m.torrentio_movie.return_value = [_make_torrentio_result("f" * 40)]
             m.filter_rank.return_value = [fr1, fr2]
-            m.rd_check_cached_batch.return_value = mixed_cache
-            m.rd_add.side_effect = blocked_exc  # fires for hash_2
+            m.rd_add.side_effect = blocked_exc
 
             pipeline = ScrapePipeline()
             result: PipelineResult = await pipeline.run(session, wanted_item)
 
         assert result.action == "error"
-        # hash_1 must never reach add_magnet (pre-filtered)
-        for mock_call in m.rd_add.call_args_list:
-            magnet_arg = mock_call.args[0] if mock_call.args else ""
-            assert hash_1 not in magnet_arg
+        sleeping_called = any(
+            QueueState.SLEEPING in call_args.args
+            or QueueState.SLEEPING in call_args.kwargs.values()
+            for call_args in m.queue_transition.call_args_list
+        )
+        assert sleeping_called
