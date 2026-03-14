@@ -50,6 +50,15 @@ tests/                 → pytest tests, one file per core module
 6. **Exponential backoff.** Retry schedule: 30min, 1hr, 2hr, 6hr, 12hr, 24hr, then daily, then DORMANT.
 7. **Queue processor stages are sequential.** `process_queue()` wakes SLEEPING→SCRAPING, then Stage 1 must process both WANTED and SCRAPING items. Never use `force_transition(WANTED)` for recovery — it resets retry_count and breaks DORMANT escalation.
 
+## Frontend Conventions
+
+- **No inline JS in templates.** All page JavaScript lives in `src/static/js/<pagename>.js`, loaded via `<script src="/static/js/<pagename>.js?v={{ js_version }}"></script>`.
+- Shared utilities live in `src/static/js/utils.js` (loaded from `base.html`): `VD.formatBytes()`, `VD.escapeHtml()`, `VD.escapeAttr()`.
+- Server-side data injection stays inline as a small `<script>var PAGE_DATA = { ... };</script>` block before the external JS file.
+- Functions referenced from HTML `onclick`/`onchange` attributes must be assigned to `window.*` inside the JS file.
+- When adding a new page: create a matching `.js` file, never put substantial JS inline in the template.
+- Cache busting: `{{ js_version }}` is a Jinja2 global set in `main.py`.
+
 ## Working Patterns
 
 When implementing a new module:

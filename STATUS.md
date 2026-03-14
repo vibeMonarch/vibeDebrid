@@ -376,6 +376,16 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### Extract Inline JS to Static Files ✅ (2026-03-14, Issue #22)
+- 8 page-specific JS files in `src/static/js/`: dashboard, discover, search, settings, show, queue, tools, duplicates
+- ~5,300 lines of inline JS removed from templates
+- Server-side data injection pattern: `PAGE_DATA` inline → external JS reads it (show, search)
+- Alpine.js integration: `queue.js` uses `defer` after Alpine CDN for correct load order
+- All files IIFE-wrapped except queue.js (Alpine needs global `queuePage`)
+- Cache busting via `{{ js_version }}` Jinja2 global
+- Frontend convention documented in CLAUDE.md
+- Total: 2171 tests, all passing
+
 ### Extract Duplicated Code ✅ (2026-03-14, Issue #12)
 - New `src/services/torrent_parser.py`: shared torrent-name parsing (11 regexes, language detection, 4 functions)
 - Eliminated ~150 lines duplication between `torrentio.py` and `zilean.py` (regexes, language detection, anime fallback chain)

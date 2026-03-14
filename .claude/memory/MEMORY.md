@@ -68,6 +68,7 @@
 - Issue #34: Alternative title fallback for Zilean (original_title + TMDB alt titles, lazy fetch, capped at 5) — 2026-03-14
 - Issue #24: RD account health dashboard card (premium status, days remaining) — 2026-03-14
 - Issue #12: Extract duplicated code (torrent_parser.py shared module + utils.js) — 2026-03-14
+- Issue #22: Extract inline JS to static files (8 page JS files, ~5,300 lines moved) — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
@@ -79,7 +80,7 @@
 - 1 unresolved IMDB ID: tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
 
 ## Open Issues
-- #22: Extract inline JS to static files (partially done by #12 — shared utils extracted, large inline blocks remain)
+- ~~#22: Extract inline JS to static files~~ resolved — 8 page JS files extracted
 - #18: Dockerization (unblocks #32)
 - #8: Dashboard card for upcoming episodes
 - #7: Rotten Tomatoes scores on Discover
@@ -129,3 +130,4 @@
 ## User Feedback
 - [Never push without consent](feedback-no-push.md) — always ask before pushing
 - Always confirm approach before implementing — present plan, get approval first
+- [Frontend JS convention](frontend-js-convention.md) — no inline JS in templates, use src/static/js/<pagename>.js

@@ -33,6 +33,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.globals["js_version"] = "1"
 scheduler = AsyncIOScheduler()
 
 # Module-level reference to the background backfill task.  Storing it prevents
