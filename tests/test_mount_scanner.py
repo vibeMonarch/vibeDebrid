@@ -22,6 +22,9 @@ Covers:
     extension variety, matched_dir_path=None invariant, directory regression,
     re-scan dedup, timeout graceful exit, fallback to directory scan when
     single-file returns 0, no directory fallback when single-file succeeds
+  - _upsert_records UNIQUE constraint robustness: duplicate filepaths in input,
+    concurrent insert of same filepath (ON CONFLICT DO UPDATE), large batch with
+    duplicates spanning _BATCH_SIZE boundary
 """
 
 from __future__ import annotations
@@ -2578,3 +2581,203 @@ class TestParseFilenameDirectoryFallback:
         mock_single.assert_called_once_with(session, "Movie.mkv")
         assert result.files_indexed == 1
         assert result.matched_dir_path == "/mnt/Movie.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Group: _upsert_records UNIQUE constraint robustness
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertRecordsUniqueConstraint:
+    """Tests verifying that _upsert_records never crashes with a UNIQUE
+    constraint violation, even when duplicate filepaths appear in the input
+    or when a concurrent caller has already inserted the same filepath.
+    """
+
+    def _make_entry(
+        self,
+        filepath: str = "/mnt/test/Movie.2024.mkv",
+        filename: str = "Movie.2024.mkv",
+        filesize: int | None = 1_000_000,
+        parent_dir: str = "/mnt/test",
+    ) -> WalkEntry:
+        return WalkEntry(
+            filepath=filepath,
+            filename=filename,
+            filesize=filesize,
+            parent_dir=parent_dir,
+        )
+
+    async def test_duplicate_filepath_in_records_does_not_raise(
+        self, session: AsyncSession
+    ) -> None:
+        """Duplicate WalkEntry objects with the same filepath are deduplicated
+        before insertion so no UNIQUE constraint violation is raised.
+
+        This reproduces the crash scenario where _scandir_walk produces two
+        entries for the same file (e.g. via a symlink loop).
+        """
+        scanner = MountScanner()
+        ts = datetime.now(timezone.utc)
+        entry = self._make_entry()
+
+        # Supply the same filepath twice — before the fix this would cause
+        # session.add() to be called twice for the same filepath, and
+        # session.flush() would raise IntegrityError.
+        records = [entry, entry]
+
+        result = await scanner._upsert_records(session, records, ts)
+        await session.flush()
+
+        assert result.added == 1
+        assert result.errors == 0
+
+        # Only one row must exist in the DB.
+        from sqlalchemy import select as sa_select
+
+        rows = (await session.execute(sa_select(MountIndex))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].filepath == entry.filepath
+
+    async def test_duplicate_filepath_different_objects_does_not_raise(
+        self, session: AsyncSession
+    ) -> None:
+        """Two distinct WalkEntry objects with the same filepath but different
+        filenames are deduplicated (last entry wins) without raising.
+        """
+        scanner = MountScanner()
+        ts = datetime.now(timezone.utc)
+        entry_a = self._make_entry(filename="Movie.2024.OLD.mkv")
+        entry_b = self._make_entry(filename="Movie.2024.mkv")
+
+        # Both have the same filepath but different filenames — last wins.
+        records = [entry_a, entry_b]
+
+        result = await scanner._upsert_records(session, records, ts)
+        await session.flush()
+
+        assert result.added == 1
+        assert result.errors == 0
+
+        from sqlalchemy import select as sa_select
+
+        rows = (await session.execute(sa_select(MountIndex))).scalars().all()
+        assert len(rows) == 1
+        # Last entry (entry_b) wins.
+        assert rows[0].filename == "Movie.2024.mkv"
+
+    async def test_insert_when_row_already_exists_does_not_raise(
+        self, session: AsyncSession
+    ) -> None:
+        """When a row already exists in the DB (inserted by a concurrent scan),
+        calling _upsert_records with the same filepath must not raise a UNIQUE
+        constraint violation.
+
+        This reproduces the race between scan() and scan_directory(): both
+        call _upsert_records for the same filepath, both see an empty
+        existing_map at query time, and both attempt to INSERT.
+        """
+        scanner = MountScanner()
+        ts = datetime.now(timezone.utc)
+        entry = self._make_entry()
+
+        # First call: inserts the row.
+        result1 = await scanner._upsert_records(session, [entry], ts)
+        await session.flush()
+        assert result1.added == 1
+
+        # Simulate a concurrent scan: evict the ORM object from the session
+        # identity map so the second _upsert_records call cannot see it via
+        # the session cache and must rely on its own SELECT.  This reproduces
+        # the scenario where two separate sessions both race to insert.
+        session.expire_all()
+
+        # Second call with the same filepath — before the fix this would
+        # raise IntegrityError because the SELECT returned no row (the
+        # session's identity map was cleared) so the code path fell through
+        # to session.add(new MountIndex(...)) again.
+        result2 = await scanner._upsert_records(session, [entry], ts)
+        await session.flush()
+
+        # The second call should report the file as added (ON CONFLICT path)
+        # or updated (if existing_map catch works), with zero errors.
+        assert result2.errors == 0
+        assert result2.added + result2.updated + result2.unchanged == 1
+
+        from sqlalchemy import select as sa_select
+
+        rows = (await session.execute(sa_select(MountIndex))).scalars().all()
+        assert len(rows) == 1
+
+    async def test_on_conflict_updates_metadata_for_existing_filepath(
+        self, session: AsyncSession
+    ) -> None:
+        """When ON CONFLICT fires (filepath already exists), the new metadata
+        is written — the upsert acts as a full update rather than silently
+        ignoring the conflict.
+        """
+        scanner = MountScanner()
+        ts1 = datetime.now(timezone.utc)
+        entry_v1 = self._make_entry(
+            filename="Movie.2024.1080p.mkv",
+            filesize=1_000_000,
+        )
+
+        await scanner._upsert_records(session, [entry_v1], ts1)
+        await session.flush()
+        session.expire_all()
+
+        # Simulate concurrent insert of the same filepath with updated metadata.
+        ts2 = datetime.now(timezone.utc)
+        entry_v2 = self._make_entry(
+            filename="Movie.2024.2160p.mkv",
+            filesize=4_000_000,
+        )
+
+        await scanner._upsert_records(session, [entry_v2], ts2)
+        await session.flush()
+
+        from sqlalchemy import select as sa_select
+
+        rows = (await session.execute(sa_select(MountIndex))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].filename == "Movie.2024.2160p.mkv"
+        assert rows[0].filesize == 4_000_000
+
+    async def test_large_batch_with_duplicates_does_not_raise(
+        self, session: AsyncSession
+    ) -> None:
+        """A large batch that exceeds _BATCH_SIZE with embedded duplicates
+        is processed without errors (tests batch boundary dedup behaviour).
+        """
+        scanner = MountScanner()
+        ts = datetime.now(timezone.utc)
+
+        # Build 600 unique entries (exceeds _BATCH_SIZE=500) plus 3 duplicates.
+        entries: list[WalkEntry] = []
+        for i in range(600):
+            entries.append(
+                WalkEntry(
+                    filepath=f"/mnt/test/ep{i:04d}.mkv",
+                    filename=f"ep{i:04d}.mkv",
+                    filesize=1_000 + i,
+                    parent_dir="/mnt/test",
+                )
+            )
+        # Append 3 duplicates of already-included entries.
+        entries.append(entries[0])
+        entries.append(entries[100])
+        entries.append(entries[500])
+
+        result = await scanner._upsert_records(session, entries, ts)
+        await session.flush()
+
+        assert result.added == 600
+        assert result.errors == 0
+
+        from sqlalchemy import select as sa_select, func as sa_func
+
+        count = (
+            await session.execute(sa_select(sa_func.count(MountIndex.id)))
+        ).scalar()
+        assert count == 600
