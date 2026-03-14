@@ -75,6 +75,21 @@ _ORDINAL_SEASON_EP_RE = re.compile(
 # Fallback: anime bare dash notation, e.g. "[Group] Title - 29 [1080p]"
 _ANIME_BARE_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
 
+# Anime batch/season pack patterns — checked BEFORE _ANIME_BARE_DASH_EP_RE so that
+# episode-range titles (e.g. "- 01 ~ 13") are not mistakenly parsed as episode 1.
+
+# Episode range: "- 01 ~ 13", "- 01~13", "01 - 13" (two distinct episode numbers)
+# The range must span at least 2 episodes to avoid matching single-ep "- 01".
+_ANIME_EP_RANGE_RE = re.compile(
+    r"[-–]\s*(\d{1,3})\s*[~–-]\s*(\d{1,3})(?:\s|$|\[|\()",
+)
+
+# [BATCH] or BATCH keyword (case-insensitive, bracket-optional)
+_ANIME_BATCH_RE = re.compile(r"\[BATCH\]|\bBATCH\b", re.IGNORECASE)
+
+# "(Season N)" or "Season N" — extracts the season number (1-based)
+_ANIME_SEASON_KEYWORD_RE = re.compile(r"\bSeason\s+(\d{1,2})\b", re.IGNORECASE)
+
 # Strips the ``realdebrid=<value>`` segment from pipe-separated Torrentio opts
 # so that scrape-pipeline queries return all results, not just RD-cached ones.
 _DEBRID_OPT_RE = re.compile(r"realdebrid=[^|]*")
@@ -553,8 +568,44 @@ class TorrentioClient:
                 ptn_season = int(m.group(1))
                 ptn_episode = int(m.group(2))
 
-        # Fallback: anime bare dash "Title - 29 [1080p]"
+        # Fallback: anime batch/season pack detection — checked BEFORE the bare
+        # dash episode fallback so that range titles like "- 01 ~ 13" are not
+        # mistakenly identified as single episode 1.
+        #
+        # Order matters:
+        #   1. Episode range "- 01 ~ 13" → season pack (skip single-ep parse)
+        #   2. [BATCH] keyword           → season pack
+        #   3. "Season N" keyword        → extract season number
+        #   4. Bare dash "- 29"          → single episode (existing fallback)
+        _is_anime_batch = False
         if ptn_episode is None:
+            # (1) Episode range pattern — e.g. "- 01 ~ 13" or "01-13"
+            range_m = _ANIME_EP_RANGE_RE.search(release_name)
+            if range_m:
+                ep_start = int(range_m.group(1))
+                ep_end = int(range_m.group(2))
+                if ep_end > ep_start:
+                    # Genuine range spanning multiple episodes → season pack.
+                    # Do NOT set ptn_episode — leave it None to trigger pack detection.
+                    _is_anime_batch = True
+
+            # (2) BATCH keyword — e.g. "[BATCH]"
+            if not _is_anime_batch and _ANIME_BATCH_RE.search(release_name):
+                _is_anime_batch = True
+
+        # (3) "Season N" keyword — extract season number regardless of pack status.
+        #     A bare "(Season N)" title with no episode indicator is itself a
+        #     season pack marker, so we also set _is_anime_batch when it fires
+        #     and episode is still None.
+        if ptn_season is None:
+            season_kw_m = _ANIME_SEASON_KEYWORD_RE.search(release_name)
+            if season_kw_m:
+                ptn_season = int(season_kw_m.group(1))
+                if ptn_episode is None:
+                    _is_anime_batch = True
+
+        # (4) Bare dash episode fallback — only when NOT an anime batch pack
+        if ptn_episode is None and not _is_anime_batch:
             m = _ANIME_BARE_DASH_EP_RE.search(release_name)
             if m:
                 ptn_episode = int(m.group(1))
@@ -565,12 +616,13 @@ class TorrentioClient:
         # — instead it folds e.g. "S02" into the title string.  A result is a
         # season pack if PTN found no episode, AND either:
         #   (a) the release name matches our season-only pattern, OR
-        #   (b) the release name contains "complete" / "season" keywords.
+        #   (b) the release name contains "complete" / "season" keywords, OR
+        #   (c) we detected an anime batch/range above.
         is_season_pack = False
         if ptn_episode is None:
             has_season_marker = bool(_SEASON_ONLY_RE.search(release_name))
             has_complete_marker = bool(_COMPLETE_RE.search(release_name))
-            if has_season_marker or has_complete_marker:
+            if has_season_marker or has_complete_marker or _is_anime_batch:
                 is_season_pack = True
 
         # --- Language detection ---

@@ -1238,3 +1238,157 @@ class TestAnimeDashNotationParsing:
         assert result is not None
         assert result.is_season_pack is True
         assert result.episode is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_entry — anime batch/season pack patterns
+# ---------------------------------------------------------------------------
+
+
+class TestAnimeBatchPackParsing:
+    """Tests for anime batch/season pack detection patterns in _parse_entry.
+
+    Covers:
+      - Episode range "- 01 ~ 13" → season pack, episode NOT set to 1
+      - [BATCH] keyword → season pack
+      - "(Season N)" keyword → season number extraction
+      - Single-episode bare dash NOT misidentified as batch
+    """
+
+    def _entry_for(
+        self,
+        raw_title: str,
+        info_hash: str = "a" * 40,
+        seasons: list[int] | None = None,
+        episodes: list[int] | None = None,
+    ) -> dict:
+        """Build a minimal Zilean entry with empty seasons/episodes arrays so
+        the fallback detection paths are exercised.
+        """
+        return _make_zilean_entry(
+            info_hash=info_hash,
+            raw_title=raw_title,
+            seasons=seasons if seasons is not None else [],
+            episodes=episodes if episodes is not None else [],
+        )
+
+    def test_batch_keyword_is_season_pack(self, client: ZileanClient) -> None:
+        """'[Erai-raws] Title - 01 ~ 13 [1080p][BATCH]' must be a season pack.
+
+        The [BATCH] keyword signals a multi-episode release.  The episode
+        field must remain None (not extracted as episode 1 via bare-dash).
+        """
+        raw_title = "[Erai-raws] Kamonohashi Ron no Kindan Suiri - 01 ~ 13 [1080p][BATCH][Multiple Subtitle]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_episode_range_tilde_is_season_pack(self, client: ZileanClient) -> None:
+        """'[Erai-raws] Title - 01 ~ 13 [720p][BATCH]' — the episode range
+        '01 ~ 13' must trigger season pack detection.
+        """
+        raw_title = "[Erai-raws] Title - 01 ~ 13 [720p][BATCH]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_episode_range_without_batch_is_season_pack(self, client: ZileanClient) -> None:
+        """'[Group] Title - 01 ~ 24 [1080p]' — range alone (no BATCH keyword)
+        is enough to detect a season pack.
+        """
+        raw_title = "[Group] Some Anime - 01 ~ 24 [1080p]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_batch_keyword_alone_no_range_is_season_pack(self, client: ZileanClient) -> None:
+        """'[NanakoRaws] Title (1080p)[BATCH]' — BATCH without a range is still
+        recognised as a season pack.
+        """
+        raw_title = "[NanakoRaws] Kamonohashi Ron no Kindan Suiri (1080p)[BATCH]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_season_keyword_extracts_season_number(self, client: ZileanClient) -> None:
+        """'[Judas] Title (Season 1)' — '(Season 1)' must set season=1."""
+        raw_title = "[Judas] Kamonohashi Ron no Kindan Suiri (Ron Kamonohashi's Forbidden Deductions) (Season 1)"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 1
+        assert result.is_season_pack is True
+
+    def test_season_keyword_season_2(self, client: ZileanClient) -> None:
+        """'[Group] Show Name (Season 2) [1080p]' — season number extracted correctly."""
+        raw_title = "[Group] Show Name (Season 2) [1080p]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 2
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_single_episode_bare_dash_not_batch(self, client: ZileanClient) -> None:
+        """'[Group] Title - 07 [1080p]' (no range, no BATCH) must NOT be a
+        season pack.  The bare-dash fallback should still extract episode=7.
+        """
+        raw_title = "[Group] Some Anime Title - 07 [1080p]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.episode == 7
+
+    def test_range_where_end_equals_start_not_batch(self, client: ZileanClient) -> None:
+        """'Title - 07 ~ 07 [1080p]' — range with identical start/end is NOT
+        treated as a batch (ep_end == ep_start), so bare-dash fallback fires
+        and extracts episode=7.
+        """
+        raw_title = "[Group] Some Anime - 07 ~ 07 [1080p]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.episode == 7
+
+    def test_batch_keyword_sets_season_none_when_no_marker(self, client: ZileanClient) -> None:
+        """When [BATCH] is present but no season marker exists, the season
+        stays None — the caller is responsible for defaulting the season.
+        """
+        raw_title = "[NanakoRaws] Some Anime (1080p)[BATCH]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.season is None
+
+    def test_batch_with_season_keyword_sets_season(self, client: ZileanClient) -> None:
+        """'[Group] Title (Season 2) [BATCH]' — both season number and pack
+        flag must be set correctly.
+        """
+        raw_title = "[Group] Some Anime (Season 2) [BATCH]"
+        entry = self._entry_for(raw_title)
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.season == 2
+        assert result.episode is None

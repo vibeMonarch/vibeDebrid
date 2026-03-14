@@ -1485,3 +1485,151 @@ class TestAnimeDashNotationParsing:
         assert result is not None
         assert result.is_season_pack is True
         assert result.episode is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_stream — anime batch/season pack patterns
+# ---------------------------------------------------------------------------
+
+
+class TestAnimeBatchPackParsing:
+    """Tests for the new anime batch/season pack detection patterns.
+
+    Covers:
+      - Episode range "- 01 ~ 13" → season pack, episode NOT set to 1
+      - [BATCH] keyword → season pack
+      - "(Season N)" keyword → season number extraction
+      - Bare title with no markers → bare-dash fallback still works
+      - Single-episode bare dash NOT misidentified as batch
+    """
+
+    def _stream_for(self, release_name: str, info_hash: str = "a" * 40) -> dict[str, Any]:
+        """Build a minimal Torrentio stream dict for the given release name."""
+        return {
+            "name": "Torrentio\n1080p",
+            "title": f"{release_name}\n\U0001f464 10 \U0001f4be 8.0 GB \u2699\ufe0f TPB",
+            "infoHash": info_hash,
+        }
+
+    def test_batch_keyword_is_season_pack(self, client: TorrentioClient) -> None:
+        """'[Erai-raws] Title - 01 ~ 13 [1080p][BATCH]' must be a season pack.
+
+        The [BATCH] keyword signals a multi-episode release.  The episode
+        field must remain None (not extracted as episode 1 via bare-dash).
+        """
+        release = "[Erai-raws] Kamonohashi Ron no Kindan Suiri - 01 ~ 13 [1080p][BATCH][Multiple Subtitle]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_episode_range_tilde_is_season_pack(self, client: TorrentioClient) -> None:
+        """'[Erai-raws] Title - 01 ~ 13 [720p][BATCH]' — the episode range
+        '01 ~ 13' must trigger season pack detection regardless of [BATCH].
+        """
+        release = "[Erai-raws] Title - 01 ~ 13 [720p][BATCH]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_episode_range_without_batch_is_season_pack(self, client: TorrentioClient) -> None:
+        """'[Group] Title - 01 ~ 24 [1080p]' — range alone (no BATCH keyword)
+        is enough to detect a season pack.
+        """
+        release = "[Group] Some Anime - 01 ~ 24 [1080p]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_batch_keyword_alone_no_range_is_season_pack(self, client: TorrentioClient) -> None:
+        """'[NanakoRaws] Title (1080p)[BATCH]' — BATCH without a range is still
+        recognised as a season pack.
+        """
+        release = "[NanakoRaws] Kamonohashi Ron no Kindan Suiri (1080p)[BATCH]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_season_keyword_extracts_season_number(self, client: TorrentioClient) -> None:
+        """'[Judas] Title (Season 1)' — '(Season 1)' must set season=1."""
+        release = "[Judas] Kamonohashi Ron no Kindan Suiri (Ron Kamonohashi's Forbidden Deductions) (Season 1)"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.season == 1
+        assert result.is_season_pack is True
+
+    def test_season_keyword_season_2(self, client: TorrentioClient) -> None:
+        """'[Group] Show Name (Season 2) [1080p]' — season number extracted correctly."""
+        release = "[Group] Show Name (Season 2) [1080p]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.season == 2
+        assert result.is_season_pack is True
+        assert result.episode is None
+
+    def test_single_episode_bare_dash_not_batch(self, client: TorrentioClient) -> None:
+        """'[Group] Title - 07 [1080p]' (no range, no BATCH) must NOT be a
+        season pack.  The bare-dash fallback should still extract episode=7.
+        """
+        release = "[Group] Some Anime Title - 07 [1080p]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.episode == 7
+
+    def test_range_where_end_equals_start_not_batch(self, client: TorrentioClient) -> None:
+        """'Title - 07 ~ 07 [1080p]' — range with identical start/end is NOT
+        treated as a batch (ep_end == ep_start), so bare-dash fallback fires
+        and extracts episode=7.
+        """
+        release = "[Group] Some Anime - 07 ~ 07 [1080p]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is False
+        assert result.episode == 7
+
+    def test_batch_keyword_sets_season_1_fallback(self, client: TorrentioClient) -> None:
+        """When [BATCH] is present but no season marker exists, the season
+        defaults to None (not forced to 1) — the caller (scrape pipeline) is
+        responsible for defaulting the season when needed.
+        """
+        release = "[NanakoRaws] Some Anime (1080p)[BATCH]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        # Season stays None when no season marker is present
+        assert result.season is None
+
+    def test_batch_with_season_keyword_sets_season(self, client: TorrentioClient) -> None:
+        """'[Group] Title (Season 2) [BATCH]' — both season number and pack
+        flag must be set correctly.
+        """
+        release = "[Group] Some Anime (Season 2) [BATCH]"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.is_season_pack is True
+        assert result.season == 2
+        assert result.episode is None
