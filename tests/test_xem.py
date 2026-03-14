@@ -1399,3 +1399,89 @@ class TestGetSceneNumberingForItemAbsoluteFallback:
         assert result is None
         mapper.get_scene_numbering.assert_not_awaited()
         mapper.get_absolute_scene_map.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # Bug fix: absolute fallback must NOT fire for season > 1
+    # (real multi-season shows like "To Your Eternity" S02/S03)
+    # ------------------------------------------------------------------
+
+    async def test_absolute_fallback_skipped_for_season_2(
+        self, session: AsyncSession
+    ) -> None:
+        """Absolute fallback is skipped when season > 1.
+
+        For shows with real separate seasons (e.g. S03E01), the episode number
+        is season-relative, not an absolute counter.  Applying abs_map[1]
+        would return S01E01 — completely wrong content.
+        """
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # abs_map has episode 1 → (S01, E01) — would be wrong for S03E01
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={1: (1, 1), 2: (1, 2)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=3,
+            episode=1,
+        )
+
+        # Must return None — absolute fallback should not apply for season > 1
+        assert result is None
+        # get_absolute_scene_map must NOT be called (would produce wrong result)
+        mapper.get_absolute_scene_map.assert_not_awaited()
+
+    async def test_absolute_fallback_skipped_for_season_2_episode_1(
+        self, session: AsyncSession
+    ) -> None:
+        """S02E01 with abs_map containing episode 1 → None, not a bogus S01 remap."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # abs_map[1] = (1, 1) — episode 1 in season 1 absolute
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={1: (1, 1), 25: (2, 1), 26: (2, 2)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=2,
+            episode=1,
+        )
+
+        # S02E01 must not be remapped via absolute fallback to S01E01
+        assert result is None
+        mapper.get_absolute_scene_map.assert_not_awaited()
+
+    async def test_absolute_fallback_still_works_for_season_1(
+        self, session: AsyncSession
+    ) -> None:
+        """Absolute fallback still fires for season=1 (anime single-season TMDB convention)."""
+        from src.core.xem_mapper import XemMapper
+
+        mapper = XemMapper()
+        mapper.get_scene_numbering = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # S01E29 in TMDB maps to S02E01 in the scene via absolute episode number
+        mapper.get_absolute_scene_map = AsyncMock(  # type: ignore[method-assign]
+            return_value={29: (2, 1), 30: (2, 2)}
+        )
+
+        result = await mapper.get_scene_numbering_for_item(
+            session,
+            tvdb_id=TVDB_ID,
+            tmdb_id=None,
+            season=1,
+            episode=29,
+        )
+
+        # Absolute fallback correctly applied for season=1
+        assert result == (2, 1)
+        mapper.get_absolute_scene_map.assert_awaited_once_with(session, TVDB_ID)
