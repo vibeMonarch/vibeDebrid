@@ -63,6 +63,19 @@ _ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
 # Matches a number at the very start of the filename.
 _LEADING_EP_RE = re.compile(r"^(\d{1,3})(?:\.|(?:\s*[-–]\s))")
 
+# Bare trailing number naming convention (last-resort anime fallback), e.g.:
+#   "Wolf's Rain 01.mkv" → episode 1
+#   "Wolf's Rain 26.mkv" → episode 26
+# Matches 1-3 digit numbers preceded by a space or dot at the end of the stem.
+# Explicitly excludes 4-digit numbers (years like 2003) and common
+# resolution/bitrate values (480, 720, 1080, 2160, 4320).
+_BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
+
+# Values that look like episode numbers but are resolution/bitrate markers.
+# These must NOT be treated as episode numbers when matched by the bare
+# trailing pattern above.
+_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({480, 576, 720, 1080, 2160, 4320})
+
 # Detect titles that look like episode markers rather than real show titles.
 # Examples (normalised): "s02e01 beast titan", "s01e01", "e01 prologue".
 # If a title starts with this pattern it almost certainly came from an
@@ -1437,6 +1450,18 @@ def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, A
         leading_match = _LEADING_EP_RE.match(os.path.splitext(filename)[0])
         if leading_match:
             episode = int(leading_match.group(1))
+
+    # Last-resort fallback: bare trailing number anime naming convention.
+    # "Wolf's Rain 01.mkv" → episode 1
+    # Only applied when all other parsers have failed and the trailing number
+    # is not a known non-episode value (resolution, bitrate, etc.).
+    if episode is None:
+        stem = os.path.splitext(filename)[0]
+        trailing_match = _BARE_TRAILING_EP_RE.search(stem)
+        if trailing_match:
+            candidate = int(trailing_match.group(1))
+            if candidate not in _NON_EPISODE_NUMBERS:
+                episode = candidate
 
     normalized_title = _normalize_title(raw_title)
 

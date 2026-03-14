@@ -167,6 +167,66 @@ class TestParseFilename:
         assert result["codec"] is not None
         assert "265" in result["codec"].lower()
 
+    # ------------------------------------------------------------------
+    # Bare trailing number (anime naming convention)
+    # ------------------------------------------------------------------
+
+    def test_bare_trailing_ep_simple(self) -> None:
+        """'Wolf's Rain 01.mkv' yields episode 1 via bare trailing fallback."""
+        result = _parse_filename("Wolf's Rain 01.mkv")
+        assert result["episode"] == 1
+
+    def test_bare_trailing_ep_two_digit(self) -> None:
+        """'Wolf's Rain 26.mkv' yields episode 26."""
+        result = _parse_filename("Wolf's Rain 26.mkv")
+        assert result["episode"] == 26
+
+    def test_bare_trailing_ep_leading_zero(self) -> None:
+        """'Show Name 03.mkv' yields episode 3 (leading zero stripped by int())."""
+        result = _parse_filename("Show Name 03.mkv")
+        assert result["episode"] == 3
+
+    def test_bare_trailing_ep_does_not_match_year(self) -> None:
+        """'Show Name 2003.mkv' must NOT extract a 4-digit year as episode number.
+
+        The regex only matches 1-3 digit numbers, so 2003 is ignored.  PTN
+        may pick up the year in the year field instead.
+        """
+        result = _parse_filename("Show Name 2003.mkv")
+        # 2003 is 4 digits — must not be treated as an episode number.
+        assert result["episode"] is None
+
+    def test_bare_trailing_ep_does_not_match_resolution_720(self) -> None:
+        """A bare '720' at the end must NOT be treated as an episode number."""
+        result = _parse_filename("Some Show 720.mkv")
+        assert result["episode"] is None
+
+    def test_bare_trailing_ep_does_not_match_resolution_1080(self) -> None:
+        """A bare '1080' at the end must NOT be treated as an episode number."""
+        result = _parse_filename("Some Show 1080.mkv")
+        assert result["episode"] is None
+
+    def test_bare_trailing_ep_does_not_match_resolution_480(self) -> None:
+        """A bare '480' at the end must NOT be treated as an episode number."""
+        result = _parse_filename("Some Show 480.mkv")
+        assert result["episode"] is None
+
+    def test_bare_trailing_ep_not_used_when_sxexx_present(self) -> None:
+        """When SxxExx is present the bare trailing fallback is not invoked."""
+        result = _parse_filename("Wolf's Rain S01E05 01.mkv")
+        # Standard SxxExx parser wins; bare trailing should not override.
+        assert result["episode"] == 5
+
+    def test_bare_trailing_ep_not_used_when_anime_dash_present(self) -> None:
+        """When the anime-dash pattern matches the bare trailing fallback is not invoked."""
+        result = _parse_filename("[Group] Wolf's Rain - 12.mkv")
+        assert result["episode"] == 12
+
+    def test_bare_trailing_ep_dot_separator(self) -> None:
+        """'Show.Name.07.mkv' — dot separator before trailing number is also handled."""
+        result = _parse_filename("Show.Name.07.mkv")
+        assert result["episode"] == 7
+
 
 # ---------------------------------------------------------------------------
 # Group 2: is_mount_available
