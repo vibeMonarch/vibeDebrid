@@ -242,6 +242,11 @@ async def bulk_remove(
         except Exception as exc:
             errors.append(f"Item {item_id}: {exc}")
 
+    # Commit DB changes first so the records are gone even if RD cleanup fails.
+    # RD deletion is fire-and-forget: failures are logged but do not affect the
+    # DB state that was already committed.
+    await session.commit()
+
     # Delete RD torrents concurrently (deduped, max 5 at a time).
     # Results are collected from gather() return values to avoid concurrent
     # list mutation — _delete_rd raises on failure so exceptions are the signal.
@@ -262,8 +267,6 @@ async def bulk_remove(
 
     if rd_failed:
         errors.append(f"Failed to delete {len(rd_failed)} RD torrent(s) from account")
-
-    await session.commit()
 
     logger.info(
         "bulk_remove: processed=%d rd_deleted=%d/%d errors=%d",

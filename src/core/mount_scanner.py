@@ -340,9 +340,8 @@ class MountScanner:
         stale_result = await session.execute(
             delete(MountIndex)
             .where(MountIndex.last_seen_at < scan_started_at)
-            .returning(MountIndex.id)
         )
-        files_removed = len(stale_result.fetchall())
+        files_removed = stale_result.rowcount
         await session.flush()
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -549,9 +548,9 @@ class MountScanner:
             Number of rows deleted.
         """
         result = await session.execute(
-            delete(MountIndex).returning(MountIndex.id)
+            delete(MountIndex)
         )
-        count = len(result.fetchall())
+        count = result.rowcount
         await session.flush()
 
         logger.warning("clear_index: deleted %d rows from mount_index", count)

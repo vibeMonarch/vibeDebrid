@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -182,15 +183,27 @@ class ShowManager:
         today = datetime.now(timezone.utc).date()
         groups: dict[int, list[SceneEpisodeInfo]] = {}
 
+        # Fetch all season details concurrently (max 5 in-flight) rather than
+        # sequentially — reduces wall-clock time from O(N*RTT) to O(RTT).
+        non_special_seasons = [s for s in tmdb_seasons if s.season_number != 0]
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_season_detail(season_num: int):
+            async with sem:
+                return season_num, await tmdb_client.get_season_details(tmdb_id, season_num)
+
+        fetch_results = await asyncio.gather(
+            *[_fetch_season_detail(s.season_number) for s in non_special_seasons]
+        )
+        season_detail_map = {snum: detail for snum, detail in fetch_results}
+
         # Compute a running absolute offset across TMDB seasons so that
-        # multi-season TMDB shows also map correctly.
+        # multi-season TMDB shows also map correctly.  Seasons must be
+        # processed in order so the offset accumulates correctly.
         absolute_offset = 0
 
-        for s in tmdb_seasons:
-            if s.season_number == 0:
-                continue  # Skip specials
-
-            season_detail = await tmdb_client.get_season_details(tmdb_id, s.season_number)
+        for s in non_special_seasons:
+            season_detail = season_detail_map.get(s.season_number)
             if season_detail is None:
                 logger.warning(
                     "show_manager._derive_scene_seasons: could not fetch season detail "
