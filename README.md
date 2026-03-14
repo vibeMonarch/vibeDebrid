@@ -54,7 +54,8 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Discovery & Monitoring**
 - TMDB integration: trending, search, top rated, genre browsing
-- Show detail pages with season/episode status
+- Show and movie detail pages with season/episode status
+- Optional OMDb ratings: IMDb, Rotten Tomatoes Tomatometer, Metascore on detail pages
 - Show monitoring: auto-checks TMDB every 6 hours for new episodes
 - Airing season tracking with per-episode air dates
 
@@ -105,6 +106,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - A [Real-Debrid](https://real-debrid.com/) account with API key
 - A [TMDB](https://www.themoviedb.org/settings/api) API key
 - Optional: [Zilean](https://github.com/iPromKnight/zilean) for additional scraping
+- Optional: [OMDb](https://www.omdbapi.com/apikey.aspx) API key (free) for IMDb/Rotten Tomatoes/Metascore ratings on detail pages
 - Optional: Plex Media Server
 
 ## Setup
@@ -175,6 +177,7 @@ All settings are configurable via `config.json`, the web UI, or environment vari
 | `plex` | `enabled`, `url`, `token`, `section_ids`, `scan_after_symlink` | disabled |
 | `symlink_naming` | `date_prefix`, `release_year`, `resolution`, `plex_naming` | date prefix on |
 | `xem` | `enabled`, `cache_hours` | enabled, 24h cache |
+| `omdb` | `enabled`, `api_key`, `cache_hours` | disabled, 7-day cache |
 
 ### Quality Profiles
 
