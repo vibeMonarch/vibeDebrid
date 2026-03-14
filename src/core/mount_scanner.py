@@ -30,6 +30,7 @@ from typing import Any, NamedTuple
 import PTN
 from pydantic import BaseModel
 from sqlalchemy import delete, func, literal, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -999,10 +1000,21 @@ class MountScanner:
         ``last_seen_at`` timestamp update — PTN is never re-run on them.  Only
         new or changed files are parsed and fully upserted.
 
+        Duplicate filepaths in the input ``records`` list are deduplicated
+        before processing (last entry wins), guarding against symlink loops or
+        concurrent scan calls that produce overlapping file sets.
+
+        New files are inserted via ``INSERT OR REPLACE`` (SQLite
+        ``ON CONFLICT DO UPDATE``) rather than plain ``INSERT`` so that a
+        concurrent scan or a race between ``scan()`` and ``scan_directory()``
+        cannot produce a ``UNIQUE constraint failed`` crash on the
+        ``mount_index.filepath`` column.
+
         Args:
             session: Active async SQLAlchemy session.
             records: List of ``WalkEntry`` namedtuples as produced by
-                ``_scandir_walk``.
+                ``_scandir_walk``.  May contain duplicate filepaths; they are
+                deduplicated internally (last occurrence wins).
             scan_timestamp: Timestamp to write into ``last_seen_at`` for every
                 touched row.
             root_dir: Walk root used for ``_extract_season_from_path`` fallback.
@@ -1017,8 +1029,18 @@ class MountScanner:
 
         _BATCH_SIZE = 500
 
-        # Build filepath -> WalkEntry map.
-        record_map: dict[str, WalkEntry] = {r.filepath: r for r in records}
+        # Belt-and-suspenders deduplication: if the walk produced duplicate
+        # filepaths (e.g. via symlink loops or concurrent scan overlap) keep
+        # only the last occurrence so later phases never see the same filepath
+        # twice.
+        record_map: dict[str, WalkEntry] = {}
+        for r in records:
+            if r.filepath in record_map:
+                logger.debug(
+                    "_upsert_records: duplicate filepath in input, keeping last: %r",
+                    r.filepath,
+                )
+            record_map[r.filepath] = r
         all_filepaths = list(record_map.keys())
 
         # Phase 1: Fetch ONLY comparison columns (not full ORM objects).
@@ -1094,20 +1116,39 @@ class MountScanner:
 
                 existing_obj = changed_orm_map.get(entry.filepath)
                 if existing_obj is None:
-                    # New file — INSERT.
-                    new_entry = MountIndex(
-                        filepath=entry.filepath,
-                        filename=entry.filename,
-                        parsed_title=parsed.get("title"),
-                        parsed_year=parsed.get("year"),
-                        parsed_season=parsed.get("season"),
-                        parsed_episode=parsed.get("episode"),
-                        parsed_resolution=parsed.get("resolution"),
-                        parsed_codec=parsed.get("codec"),
-                        filesize=entry.filesize,
-                        last_seen_at=scan_timestamp,
+                    # New file — use INSERT OR REPLACE (ON CONFLICT DO UPDATE)
+                    # so that a concurrent scan or a race between scan() and
+                    # scan_directory() cannot produce a UNIQUE constraint crash.
+                    stmt = (
+                        sqlite_insert(MountIndex)
+                        .values(
+                            filepath=entry.filepath,
+                            filename=entry.filename,
+                            parsed_title=parsed.get("title"),
+                            parsed_year=parsed.get("year"),
+                            parsed_season=parsed.get("season"),
+                            parsed_episode=parsed.get("episode"),
+                            parsed_resolution=parsed.get("resolution"),
+                            parsed_codec=parsed.get("codec"),
+                            filesize=entry.filesize,
+                            last_seen_at=scan_timestamp,
+                        )
+                        .on_conflict_do_update(
+                            index_elements=[MountIndex.filepath],
+                            set_={
+                                "filename": entry.filename,
+                                "parsed_title": parsed.get("title"),
+                                "parsed_year": parsed.get("year"),
+                                "parsed_season": parsed.get("season"),
+                                "parsed_episode": parsed.get("episode"),
+                                "parsed_resolution": parsed.get("resolution"),
+                                "parsed_codec": parsed.get("codec"),
+                                "filesize": entry.filesize,
+                                "last_seen_at": scan_timestamp,
+                            },
+                        )
                     )
-                    session.add(new_entry)
+                    await session.execute(stmt)
                     files_added += 1
                 else:
                     # Changed file — UPDATE all fields.
