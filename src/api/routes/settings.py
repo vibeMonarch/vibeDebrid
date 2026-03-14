@@ -6,9 +6,31 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
-from src.config import CONFIG_FILE, Settings, config_lock, settings
+from src.config import (
+    CONFIG_FILE,
+    BackupConfig,
+    FiltersConfig,
+    MountScannerConfig,
+    PathsConfig,
+    PlexConfig,
+    QualityConfig,
+    RealDebridConfig,
+    RetryConfig,
+    SchedulerConfig,
+    ScrapersConfig,
+    SearchConfig,
+    ServerConfig,
+    Settings,
+    SymlinkNamingConfig,
+    TmdbConfig,
+    TraktConfig,
+    UpgradeConfig,
+    XemConfig,
+    config_lock,
+    settings,
+)
 from src.services.plex import plex_client
 from src.services.real_debrid import RealDebridAuthError, RealDebridError, rd_client
 from src.services.torrentio import torrentio_client
@@ -17,6 +39,50 @@ from src.services.zilean import zilean_client
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Known top-level settings fields. Keys not in this set are rejected.
+_KNOWN_SETTINGS_KEYS: frozenset[str] = frozenset(Settings.model_fields.keys())
+
+
+class SettingsUpdate(BaseModel):
+    """Validated subset of Settings that the PUT endpoint accepts.
+
+    Only known top-level keys are permitted.  Unknown keys raise 422 before
+    any data is written so arbitrary config injection is prevented.
+    """
+
+    real_debrid: RealDebridConfig | None = None
+    scrapers: ScrapersConfig | None = None
+    paths: PathsConfig | None = None
+    quality: QualityConfig | None = None
+    filters: FiltersConfig | None = None
+    retry: RetryConfig | None = None
+    upgrade: UpgradeConfig | None = None
+    mount_scanner: MountScannerConfig | None = None
+    trakt: TraktConfig | None = None
+    plex: PlexConfig | None = None
+    server: ServerConfig | None = None
+    backup: BackupConfig | None = None
+    scheduler: SchedulerConfig | None = None
+    symlink_naming: SymlinkNamingConfig | None = None
+    search: SearchConfig | None = None
+    tmdb: TmdbConfig | None = None
+    xem: XemConfig | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown_keys(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            unknown = set(values.keys()) - _KNOWN_SETTINGS_KEYS
+            if unknown:
+                raise ValueError(f"Unknown settings keys: {sorted(unknown)}")
+        return values
+
+    def to_partial_dict(self) -> dict[str, Any]:
+        """Return only the fields that were explicitly provided."""
+        return self.model_dump(exclude_none=True)
 
 
 # Pydantic schemas
@@ -32,7 +98,8 @@ def _mask_api_keys(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, dict):
             masked[key] = _mask_api_keys(value)
         elif any(s in key.lower() for s in ("api_key", "token", "secret")) and isinstance(value, str) and value:
-            masked[key] = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
+            # Show only last 4 characters to minimize key exposure
+            masked[key] = "***" + value[-4:] if len(value) >= 4 else "***"
         else:
             masked[key] = value
     return masked
@@ -46,7 +113,7 @@ async def get_settings() -> dict[str, Any]:
 
 
 @router.put("")
-async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
+async def update_settings(body: SettingsUpdate) -> dict[str, Any]:
     """Update configuration by writing to config.json and reloading."""
     async with config_lock:
         # Read existing config
@@ -55,7 +122,7 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
             raw = await asyncio.to_thread(CONFIG_FILE.read_text)
             existing = json.loads(raw)
 
-        # Deep merge new values
+        # Deep merge new values (only the fields that were provided)
         def _deep_merge(base: dict, update: dict) -> dict:
             for key, value in update.items():
                 if isinstance(value, dict) and isinstance(base.get(key), dict):
@@ -64,13 +131,15 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
                     base[key] = value
             return base
 
-        merged = _deep_merge(existing, body)
+        merged = _deep_merge(existing, body.to_partial_dict())
 
-        # Validate by constructing a Settings instance
+        # Final validation by constructing a full Settings instance
         try:
             Settings(**merged)
         except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid settings: {exc}") from exc
+            # Do not echo back submitted values — log detail internally only
+            logger.warning("Settings validation failed: %s", exc)
+            raise HTTPException(status_code=422, detail="Invalid settings: validation failed") from exc
 
         # Write to config.json
         await asyncio.to_thread(CONFIG_FILE.write_text, json.dumps(merged, indent=2))
@@ -186,7 +255,7 @@ async def plex_auth_check(pin_id: int) -> dict[str, Any]:
         for field in reloaded.model_fields:
             setattr(settings, field, getattr(reloaded, field))
 
-    masked = token[:4] + "***" + token[-4:] if len(token) > 8 else "***"
+    masked = "***" + token[-4:] if len(token) >= 4 else "***"
     return {"status": "authenticated", "token_masked": masked}
 
 

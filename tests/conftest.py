@@ -42,6 +42,21 @@ async def _close_http_pool_after_test() -> None:
     await _close_all_http_clients()
 
 
+@pytest.fixture(autouse=True)
+def _csrf_bypass_for_tests() -> None:
+    """Bypass CSRF enforcement for all tests.
+
+    The CSRF middleware checks ``app.state.csrf_bypass`` before enforcing
+    token validation.  Setting this flag here prevents every existing test
+    from needing to supply a CSRF token.  CSRF behaviour itself is tested
+    in ``test_csrf_middleware.py`` which does NOT use this fixture.
+    """
+    from src.main import app
+    app.state.csrf_bypass = True
+    yield
+    app.state.csrf_bypass = False
+
+
 @pytest.fixture
 async def engine():
     """In-memory async SQLite engine with all tables created."""

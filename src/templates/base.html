@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}vibeDebrid{% endblock %}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.tailwindcss.com/3.4.17" integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" crossorigin="anonymous"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -28,6 +28,32 @@
     }
   </script>
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+  <script>
+    // Read the CSRF token from the cookie set by the server.
+    function getCsrfToken() {
+      var match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : '';
+    }
+
+    // Configure htmx to include the CSRF token on every mutation request.
+    document.addEventListener('htmx:configRequest', function(evt) {
+      var method = (evt.detail.verb || '').toUpperCase();
+      if (method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH') {
+        evt.detail.headers['X-CSRF-Token'] = getCsrfToken();
+      }
+    });
+
+    // Convenience wrapper: fetch() with CSRF header pre-populated.
+    function csrfFetch(url, options) {
+      options = options || {};
+      options.headers = options.headers || {};
+      var method = (options.method || 'GET').toUpperCase();
+      if (method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH') {
+        options.headers['X-CSRF-Token'] = getCsrfToken();
+      }
+      return fetch(url, options);
+    }
+  </script>
   <style>
     body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
     .htmx-indicator { display: none; }

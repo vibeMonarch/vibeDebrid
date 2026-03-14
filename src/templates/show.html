@@ -219,7 +219,7 @@
     document.getElementById('show-loading').classList.add('hidden');
 
     // Hero
-    if (data.backdrop_url) {
+    if (data.backdrop_url && data.backdrop_url.startsWith('https://image.tmdb.org/')) {
       document.getElementById('show-backdrop').style.backgroundImage = `url('${data.backdrop_url}')`;
     }
     if (data.poster_url) {
@@ -441,7 +441,7 @@
         original_language: _showData.original_language || window._discoverOriginalLanguage || null,
       };
 
-      const resp = await fetch('/api/show/add', {
+      const resp = await csrfFetch('/api/show/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

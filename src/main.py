@@ -1168,6 +1168,33 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from src.middleware.csrf import CSRFMiddleware  # noqa: E402
+app.add_middleware(CSRFMiddleware)
+
+# Custom validation error handler: strip 'input' from 422 responses so that
+# submitted values (API keys, passwords) are never echoed back in error bodies.
+from fastapi import Request as _Request  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_request: _Request, exc: RequestValidationError) -> JSONResponse:
+    sanitized = []
+    for error in exc.errors():
+        entry: dict = {}
+        for k, v in error.items():
+            if k == "input":
+                # Never echo back submitted values
+                continue
+            if k == "ctx" and isinstance(v, dict):
+                # ctx may contain non-serialisable Exception objects
+                entry[k] = {ck: str(cv) for ck, cv in v.items()}
+            else:
+                entry[k] = v
+        sanitized.append(entry)
+    return JSONResponse(status_code=422, content={"detail": sanitized})
+
 # Static files (create dir on first run if missing)
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

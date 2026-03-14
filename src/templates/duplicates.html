@@ -606,7 +606,7 @@
     const card = document.getElementById('group-' + key);
     if (card) card.classList.add('group-resolving');
 
-    fetch('/api/duplicates/resolve', {
+    csrfFetch('/api/duplicates/resolve', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ keep_rd_id: keepId, remove_rd_ids: removeIds }),
@@ -731,7 +731,7 @@
     const card = document.getElementById('group-' + key);
     if (card) card.classList.add('group-resolving');
 
-    return fetch('/api/duplicates/resolve', {
+    return csrfFetch('/api/duplicates/resolve', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ keep_rd_id: keepId, remove_rd_ids: removeIds }),

@@ -447,7 +447,7 @@
       _totalFiltered = 0;
 
       // Fire zilean request (fast)
-      const zileanPromise = fetch('/api/search', {
+      const zileanPromise = csrfFetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, scrapers: ['zilean'] }),
@@ -459,7 +459,7 @@
       // Fire torrentio request in parallel (slow, only if imdb_id is set)
       let torrentioPromise = null;
       if (payload.imdb_id) {
-        torrentioPromise = fetch('/api/search', {
+        torrentioPromise = csrfFetch('/api/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...payload, scrapers: ['torrentio'] }),
@@ -582,7 +582,7 @@
       }
 
       try {
-        const resp = await fetch('/api/check-cached', {
+        const resp = await csrfFetch('/api/check-cached', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ info_hash: hash }),
@@ -942,7 +942,7 @@
     });
 
     // Make the API call
-    fetch('/api/check-cached', {
+    csrfFetch('/api/check-cached', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ info_hash: infoHash }),
@@ -978,7 +978,7 @@
     if (spinner) spinner.classList.remove('hidden');
 
     try {
-      const resp = await fetch('/api/add', {
+      const resp = await csrfFetch('/api/add', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(payload),
@@ -1089,7 +1089,7 @@
     };
 
     try {
-      const resp = await fetch('/api/add', {
+      const resp = await csrfFetch('/api/add', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(payload),

@@ -1212,7 +1212,7 @@
   async function saveSection(section) {
     const payload = collectSection(section);
     try {
-      const res = await fetch('/api/settings', {
+      const res = await csrfFetch('/api/settings', {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(payload),
@@ -1270,7 +1270,7 @@
     resultEl.className   = 'test-result text-sm text-vd-muted';
 
     try {
-      const res  = await fetch('/api/settings/test/' + service, { method: 'POST' });
+      const res  = await csrfFetch('/api/settings/test/' + service, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.status === 'ok') {
         resultEl.className   = 'test-result text-sm text-green-400 flex items-center gap-1';
@@ -1389,7 +1389,7 @@
   // ---------------------------------------------------------------------------
   async function startPlexAuth() {
     try {
-      const resp = await fetch('/api/settings/plex/auth/start', { method: 'POST' });
+      const resp = await csrfFetch('/api/settings/plex/auth/start', { method: 'POST' });
       if (!resp.ok) throw new Error('Failed to start auth');
       const data = await resp.json();
 
@@ -1403,7 +1403,7 @@
           return;
         }
         try {
-          const checkResp = await fetch(`/api/settings/plex/auth/check/${data.pin_id}`, { method: 'POST' });
+          const checkResp = await csrfFetch(`/api/settings/plex/auth/check/${data.pin_id}`, { method: 'POST' });
           const checkData = await checkResp.json();
           if (checkData.status === 'authenticated') {
             clearInterval(pollInterval);

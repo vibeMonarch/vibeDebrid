@@ -837,7 +837,7 @@
     document.getElementById('result-section').classList.add('hidden');
     _preview = null;
 
-    fetch('/api/tools/migration/preview', {
+    csrfFetch('/api/tools/migration/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ movies_path: moviesPath, shows_path: showsPath })
@@ -1042,7 +1042,7 @@
 
     setExecuteLoading(true);
 
-    fetch('/api/tools/migration/execute', {
+    csrfFetch('/api/tools/migration/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ movies_path: moviesPath, shows_path: showsPath })
@@ -1156,7 +1156,7 @@
     setBackfillLoading(true);
     document.getElementById('backfill-result').classList.add('hidden');
 
-    fetch('/api/tools/backfill', { method: 'POST' })
+    csrfFetch('/api/tools/backfill', { method: 'POST' })
     .then(function(resp) {
       if (!resp.ok) {
         return resp.json().then(function(body) {
@@ -1214,7 +1214,7 @@
     setBridgeLoading(true);
     document.getElementById('bridge-result').classList.add('hidden');
 
-    fetch('/api/tools/bridge-rd', { method: 'POST' })
+    csrfFetch('/api/tools/bridge-rd', { method: 'POST' })
     .then(function(resp) {
       if (!resp.ok) {
         return resp.json().then(function(body) {
@@ -1475,7 +1475,7 @@
     setSmartExecuteLoading(true);
     document.getElementById('smart-result').classList.add('hidden');
 
-    fetch('/api/tools/cleanup/execute', {
+    csrfFetch('/api/tools/cleanup/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ groups: _smartPreview.groups })
@@ -1624,7 +1624,7 @@
     _selectedIds.clear();
     _activeFilter = 'all';
 
-    fetch('/api/tools/rd-cleanup/scan', { method: 'POST' })
+    csrfFetch('/api/tools/rd-cleanup/scan', { method: 'POST' })
     .then(function(resp) {
       if (!resp.ok) {
         return resp.json().then(function(body) {
@@ -1895,7 +1895,7 @@
     // Disable all checkboxes
     renderTorrentTable();
 
-    fetch('/api/tools/rd-cleanup/execute', {
+    csrfFetch('/api/tools/rd-cleanup/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rd_ids: rdIds })
@@ -2053,7 +2053,7 @@
     _selectedIds.clear();
     _activeFilter = 'all';
 
-    fetch('/api/tools/symlink-health/scan', { method: 'POST' })
+    csrfFetch('/api/tools/symlink-health/scan', { method: 'POST' })
     .then(function(resp) {
       if (!resp.ok) {
         return resp.json().then(function(body) {
@@ -2346,7 +2346,7 @@
     setShActionLoading(true, loadingLabel);
     document.getElementById('sh-execute-result').classList.add('hidden');
 
-    fetch('/api/tools/symlink-health/execute', {
+    csrfFetch('/api/tools/symlink-health/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)

@@ -664,7 +664,7 @@
       // ------------------------------------------------------------------ //
       async retryItem(item) {
         try {
-          const res = await fetch('/api/queue/' + item.id + '/retry', { method: 'POST' });
+          const res = await csrfFetch('/api/queue/' + item.id + '/retry', { method: 'POST' });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           showToast('"' + item.title + '" queued for retry', 'success');
           await this.loadItems();
@@ -681,7 +681,7 @@
       async removeItem(item) {
         if (!confirm('Remove "' + item.title + '" from the queue? This also removes associated data.')) return;
         try {
-          const res = await fetch('/api/queue/' + item.id, { method: 'DELETE' });
+          const res = await csrfFetch('/api/queue/' + item.id, { method: 'DELETE' });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           showToast('"' + item.title + '" removed', 'success');
           if (this.expandedId === item.id) { this.expandedId = null; this.detail = null; }
@@ -700,7 +700,7 @@
         const ids = Array.from(this.selectedIds);
         if (ids.length === 0) return;
         try {
-          const res = await fetch('/api/queue/bulk/retry', {
+          const res = await csrfFetch('/api/queue/bulk/retry', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ids }),
@@ -720,7 +720,7 @@
         if (!confirm('Remove ' + ids.length + ' item' + (ids.length !== 1 ? 's' : '') + '? This cannot be undone.')) return;
         this.bulkRemoving = true;
         try {
-          const res = await fetch('/api/queue/bulk/remove', {
+          const res = await csrfFetch('/api/queue/bulk/remove', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ids }),
@@ -782,7 +782,7 @@
       async rescrapeOriginal(item) {
         if (!item) return;
         try {
-          const res = await fetch('/api/queue/' + item.id + '/rescrape-original', { method: 'POST' });
+          const res = await csrfFetch('/api/queue/' + item.id + '/rescrape-original', { method: 'POST' });
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
             showToast('Re-scrape failed: ' + (body.detail || 'HTTP ' + res.status), 'error');
