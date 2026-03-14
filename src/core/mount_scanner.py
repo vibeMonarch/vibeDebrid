@@ -74,7 +74,7 @@ _BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
 # Values that look like episode numbers but are resolution/bitrate markers.
 # These must NOT be treated as episode numbers when matched by the bare
 # trailing pattern above.
-_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({480, 576, 720, 1080, 2160, 4320})
+_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({264, 265, 480, 576, 720, 1080, 2160, 4320})
 
 # Detect titles that look like episode markers rather than real show titles.
 # Examples (normalised): "s02e01 beast titan", "s01e01", "e01 prologue".

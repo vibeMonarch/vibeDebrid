@@ -125,7 +125,7 @@ _BARE_EPISODE_RE = re.compile(r"[\s._-][Ee](\d{2,3})(?:\b|[\s._-])")
 # Only matches 1-3 digit numbers at the end of the stem (4-digit years excluded
 # by regex length limit; common resolution values excluded by the set below).
 _BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
-_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({480, 576, 720, 1080, 2160, 4320})
+_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({264, 265, 480, 576, 720, 1080, 2160, 4320})
 
 
 def _parse_episode_from_filename(filename: str) -> int | None:
