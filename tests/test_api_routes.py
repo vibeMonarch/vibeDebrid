@@ -277,7 +277,7 @@ class TestDashboard:
             "email": "test@example.com",
             "points": 1234,
             "type": "premium",
-            "premium": 90,
+            "premium": 90 * 86400,  # RD returns seconds remaining
             "expiration": "2026-06-01T00:00:00.000Z",
         }
         torrents_payload = [
@@ -365,7 +365,7 @@ class TestDashboard:
             "email": "c@c.com",
             "points": 0,
             "type": "premium",
-            "premium": 30,
+            "premium": 30 * 86400,  # RD returns seconds remaining
             "expiration": None,
         }
         mock_get_account_info = AsyncMock(return_value=user_payload)
