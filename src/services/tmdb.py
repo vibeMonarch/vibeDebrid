@@ -141,6 +141,23 @@ class TmdbSeasonDetail(BaseModel):
     episodes: list[TmdbEpisodeInfo] = []
 
 
+class TmdbMovieDetail(BaseModel):
+    """Full movie details from TMDB /movie/{id} endpoint."""
+
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    overview: str = ""
+    poster_path: str | None = None
+    backdrop_path: str | None = None
+    vote_average: float = 0.0
+    runtime: int | None = None  # runtime in minutes
+    genres: list[dict] = []
+    imdb_id: str | None = None
+    original_language: str | None = None
+    original_title: str | None = None  # original_title field from TMDB
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -1334,6 +1351,118 @@ class TmdbClient:
         logger.debug(
             "tmdb.get_season_details: tmdb_id=%d season=%d episodes=%d",
             tmdb_id, season_number, len(episodes),
+        )
+        return result
+
+
+    async def get_movie_details_full(self, tmdb_id: int) -> TmdbMovieDetail | None:
+        """Fetch full movie details including external IDs (IMDB) in one call.
+
+        Uses ``GET /movie/{id}?append_to_response=external_ids`` so that the
+        IMDB ID is available without a second round-trip.
+
+        Args:
+            tmdb_id: The TMDB numeric identifier for the movie.
+
+        Returns:
+            A TmdbMovieDetail with all fields populated, or None on any failure.
+        """
+        if not self._check_configured("get_movie_details_full"):
+            return None
+
+        breaker = get_circuit_breaker("tmdb")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning(
+                "tmdb.get_movie_details_full: circuit open, skipping tmdb_id=%d", tmdb_id
+            )
+            return None
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/movie/{tmdb_id}",
+                params={"append_to_response": "external_ids"},
+            )
+        except httpx.ConnectError as exc:
+            await breaker.record_failure()
+            logger.warning(
+                "tmdb.get_movie_details_full: connection error tmdb_id=%d (%s)", tmdb_id, exc
+            )
+            return None
+        except httpx.TimeoutException as exc:
+            await breaker.record_failure()
+            logger.warning(
+                "tmdb.get_movie_details_full: request timed out tmdb_id=%d (%s)", tmdb_id, exc
+            )
+            return None
+        except httpx.RequestError as exc:
+            await breaker.record_failure()
+            logger.warning(
+                "tmdb.get_movie_details_full: network error tmdb_id=%d (%s)", tmdb_id, exc
+            )
+            return None
+
+        if self._handle_error_status(response, "get_movie_details_full"):
+            if response.status_code == 404:
+                logger.debug("tmdb.get_movie_details_full: not found tmdb_id=%d", tmdb_id)
+            elif response.status_code != 429:
+                await breaker.record_failure()
+            return None
+        await breaker.record_success()
+
+        try:
+            data: dict[str, Any] = response.json()
+        except ValueError as exc:
+            logger.error(
+                "tmdb.get_movie_details_full: malformed JSON tmdb_id=%d (%s)", tmdb_id, exc
+            )
+            return None
+
+        # Parse title and year
+        title: str = data.get("title") or data.get("name") or ""
+        if not title:
+            logger.warning("tmdb.get_movie_details_full: empty title for tmdb_id=%d", tmdb_id)
+            return None
+
+        release_date: str = data.get("release_date") or ""
+        year: int | None = None
+        if release_date and len(release_date) >= 4:
+            try:
+                year = int(release_date[:4])
+            except ValueError:
+                pass
+
+        # Extract IMDB ID from appended external_ids block
+        ext_ids: dict[str, Any] = data.get("external_ids") or {}
+        imdb_id: str | None = ext_ids.get("imdb_id") or None
+
+        # Parse genres
+        raw_genres: list[dict] = data.get("genres") or []
+
+        # Runtime may be None for unreleased films
+        runtime_raw = data.get("runtime")
+        runtime: int | None = int(runtime_raw) if isinstance(runtime_raw, int) and runtime_raw > 0 else None
+
+        result = TmdbMovieDetail(
+            tmdb_id=tmdb_id,
+            title=title,
+            year=year,
+            overview=data.get("overview") or "",
+            poster_path=data.get("poster_path") or None,
+            backdrop_path=data.get("backdrop_path") or None,
+            vote_average=float(data.get("vote_average") or 0.0),
+            runtime=runtime,
+            genres=raw_genres,
+            imdb_id=imdb_id,
+            original_language=data.get("original_language") or None,
+            original_title=data.get("original_title") or None,
+        )
+
+        logger.debug(
+            "tmdb.get_movie_details_full: tmdb_id=%d title=%r imdb_id=%s runtime=%s",
+            tmdb_id, title, imdb_id, runtime,
         )
         return result
 

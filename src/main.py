@@ -1274,6 +1274,7 @@ from src.api.routes.tools import router as tools_router  # noqa: E402
 from src.api.routes.show import router as show_router  # noqa: E402
 from src.api.routes.health import router as health_router  # noqa: E402
 from src.api.routes.omdb import router as omdb_router  # noqa: E402
+from src.api.routes.movie import router as movie_router  # noqa: E402
 
 app.include_router(dashboard_router)
 app.include_router(queue_router, prefix="/api/queue", tags=["queue"])
@@ -1286,6 +1287,7 @@ app.include_router(tools_router, tags=["tools"])
 app.include_router(show_router, prefix="/api/show", tags=["show"])
 app.include_router(health_router)
 app.include_router(omdb_router, prefix="/api/omdb", tags=["omdb"])
+app.include_router(movie_router, prefix="/api/movie", tags=["movie"])
 
 
 # --- Page routes (serve Jinja2 templates) ---
@@ -1343,6 +1345,16 @@ async def discover_page(request: Request) -> HTMLResponse:
 async def show_detail_page(request: Request, tmdb_id: int) -> HTMLResponse:
     """Show detail page for TV shows."""
     return templates.TemplateResponse("show.html", {
+        "request": request,
+        "active_page": "discover",
+        "tmdb_id": tmdb_id,
+    })
+
+
+@app.get("/movie/{tmdb_id}", response_class=HTMLResponse, tags=["pages"])
+async def movie_detail_page(request: Request, tmdb_id: int) -> HTMLResponse:
+    """Movie detail page."""
+    return templates.TemplateResponse("movie.html", {
         "request": request,
         "active_page": "discover",
         "tmdb_id": tmdb_id,

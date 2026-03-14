@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 2193 tests, all passing (as of 2026-03-14)
+- 2211 tests, all passing (as of 2026-03-14)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -71,6 +71,7 @@
 - Issue #22: Extract inline JS to static files (8 page JS files, ~5,300 lines moved) — 2026-03-14
 - Issue #8: Dashboard upcoming episodes card (replaces Active Processing) — 2026-03-14
 - Issues #6+#7: OMDb ratings on show detail page (IMDb, RT, Metascore) — 2026-03-14
+- Movie detail page (`/movie/{tmdb_id}`) with hero, ratings, add flow — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
@@ -85,6 +86,7 @@
 - ~~#22: Extract inline JS to static files~~ resolved — 8 page JS files extracted
 - #18: Dockerization (unblocks #32)
 - #4: Per-episode TV discovery
+- Movie detail page: no queue_status yet (always shows Add button)
 
 ## Remaining Review Findings (not yet fixed)
 - `migration.py` Steps 2-3: bare `except Exception` without savepoints

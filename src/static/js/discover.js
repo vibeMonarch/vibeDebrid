@@ -633,7 +633,7 @@
     });
   }
 
-  // Add to Library — TV shows go to show detail page; movies resolve IMDB and go to search
+  // Add to Library — TV shows go to /show/{id}, movies go to /movie/{id}
   document.addEventListener('click', async function(e) {
     var btn = e.target.closest('.add-btn-action');
     if (!btn) return;
@@ -652,29 +652,11 @@
       return;
     }
 
-    // Movies: resolve IMDB ID and navigate to search page (existing flow)
-    btn.disabled = true;
-    btn.textContent = 'Loading...';
-
-    try {
-      var resp = await fetch('/api/discover/resolve/' + encodeURIComponent(mediaType) + '/' + encodeURIComponent(tmdbId));
-      var data = resp.ok ? await resp.json() : {};
-
-      var params = new URLSearchParams();
-      params.set('query', title);
-      if (data.imdb_id) params.set('imdb_id', data.imdb_id);
-      params.set('media_type', 'movie');
-      params.set('from', 'discover');
-      if (originalLanguage) params.set('original_language', originalLanguage);
-
-      saveDiscoverState();
-      window.location.href = '/search?' + params.toString();
-    } catch (err) {
-      showToast('Failed to resolve: ' + err.message, 'error');
-      btn.disabled = false;
-      btn.textContent = 'Add to Library';
-      btn.className = 'add-btn add-btn-available add-btn-action';
-    }
+    // Movies: navigate to the movie detail page
+    saveDiscoverState();
+    var movieParams = new URLSearchParams({ from: 'discover' });
+    if (originalLanguage) movieParams.set('original_language', originalLanguage);
+    window.location.href = '/movie/' + encodeURIComponent(tmdbId) + '?' + movieParams.toString();
   });
 
   // -----------------------------------------------------------------------

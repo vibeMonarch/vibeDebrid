@@ -376,6 +376,15 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### Movie Detail Page ✅ (2026-03-14)
+- New `/movie/{tmdb_id}` detail page with hero backdrop, poster, metadata, OMDb ratings
+- TMDB `get_movie_details_full()` method (single call with `append_to_response=external_ids`)
+- Discover page now links movies to detail page instead of directly to search
+- Add to Queue button redirects to search with pre-filled params
+- Back link to discover with state preservation
+- 18 new tests
+- Total: 2211 tests, all passing
+
 ### OMDb Ratings Integration ✅ (2026-03-14, Issues #6 + #7)
 - New `src/services/omdb.py`: OMDb client with in-memory TTL cache (7-day default), circuit breaker
 - `GET /api/omdb/{imdb_id}` endpoint — returns IMDb rating, RT Tomatometer, Metascore
