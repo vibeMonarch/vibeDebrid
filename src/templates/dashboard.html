@@ -77,57 +77,30 @@
   </div>
 </div>
 
-<!-- Active Processing Indicator -->
-<div class="mb-8 bg-vd-card border border-vd-border rounded-lg p-5">
-  <div class="flex items-center justify-between mb-4">
-    <h3 class="text-sm font-semibold text-white">Active Processing</h3>
-    <a href="/queue" class="text-xs text-vd-accent hover:text-vd-accent-hover transition-colors">View queue</a>
+<!-- Upcoming Episodes + Queue States -->
+<div class="mb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+  <!-- Upcoming Episodes card -->
+  <div class="bg-vd-card border border-vd-border rounded-lg">
+    <div class="flex items-center justify-between p-4 border-b border-vd-border">
+      <h3 class="text-sm font-semibold text-white">Upcoming Episodes</h3>
+    </div>
+    <div id="upcoming-list" class="divide-y divide-vd-border">
+      <div class="p-8 text-center text-sm text-vd-muted">Loading...</div>
+    </div>
   </div>
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
 
-    <a href="/queue?state=wanted" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-indigo-500/50 hover:bg-white/5 transition-colors">
-      <span class="text-2xl font-bold text-white" id="active-wanted">-</span>
-      <div class="flex items-center gap-1.5">
-        <span class="w-2 h-2 rounded-full badge-wanted"></span>
-        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Wanted</span>
-      </div>
-    </a>
-
-    <a href="/queue?state=scraping" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-amber-500/50 hover:bg-white/5 transition-colors">
-      <span class="text-2xl font-bold text-white" id="active-scraping">-</span>
-      <div class="flex items-center gap-1.5">
-        <span class="w-2 h-2 rounded-full badge-scraping"></span>
-        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Scraping</span>
-      </div>
-    </a>
-
-    <a href="/queue?state=adding" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-orange-500/50 hover:bg-white/5 transition-colors">
-      <span class="text-2xl font-bold text-white" id="active-adding">-</span>
-      <div class="flex items-center gap-1.5">
-        <span class="w-2 h-2 rounded-full badge-adding"></span>
-        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Adding</span>
-      </div>
-    </a>
-
-    <a href="/queue?state=checking" class="group flex flex-col gap-1 p-3 rounded-lg border border-vd-border hover:border-blue-500/50 hover:bg-white/5 transition-colors">
-      <span class="text-2xl font-bold text-white" id="active-checking">-</span>
-      <div class="flex items-center gap-1.5">
-        <span class="w-2 h-2 rounded-full badge-checking"></span>
-        <span class="text-xs text-vd-muted group-hover:text-gray-300 transition-colors">Checking</span>
-      </div>
-    </a>
-
-  </div>
-</div>
-
-<!-- Queue State Cards Grid -->
-<div class="mb-8">
-  <h3 class="text-xs font-semibold uppercase tracking-wider text-vd-muted mb-3">Queue States</h3>
-  <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+  <!-- Queue States card -->
+  <div class="bg-vd-card border border-vd-border rounded-lg">
+    <div class="flex items-center justify-between p-4 border-b border-vd-border">
+      <h3 class="text-sm font-semibold text-white">Queue States</h3>
+      <a href="/queue" class="text-xs text-vd-accent hover:text-vd-accent-hover transition-colors">View queue</a>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-px bg-vd-border">
 
     <!-- Unreleased -->
     <a href="/queue?state=unreleased"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-slate-400/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-unreleased"></span>
         <svg class="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -141,7 +114,7 @@
 
     <!-- Wanted -->
     <a href="/queue?state=wanted"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-indigo-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-wanted"></span>
         <svg class="w-4 h-4 text-indigo-500 group-hover:text-indigo-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -155,7 +128,7 @@
 
     <!-- Scraping -->
     <a href="/queue?state=scraping"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-amber-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-scraping"></span>
         <svg class="w-4 h-4 text-amber-500 group-hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -169,7 +142,7 @@
 
     <!-- Adding -->
     <a href="/queue?state=adding"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-orange-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-adding"></span>
         <svg class="w-4 h-4 text-orange-500 group-hover:text-orange-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -183,7 +156,7 @@
 
     <!-- Checking -->
     <a href="/queue?state=checking"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-blue-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-checking"></span>
         <svg class="w-4 h-4 text-blue-500 group-hover:text-blue-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -197,7 +170,7 @@
 
     <!-- Sleeping -->
     <a href="/queue?state=sleeping"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-purple-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-sleeping"></span>
         <svg class="w-4 h-4 text-purple-500 group-hover:text-purple-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -211,7 +184,7 @@
 
     <!-- Dormant -->
     <a href="/queue?state=dormant"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-gray-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-dormant"></span>
         <svg class="w-4 h-4 text-gray-500 group-hover:text-gray-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -225,7 +198,7 @@
 
     <!-- Complete -->
     <a href="/queue?state=complete"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-green-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-complete"></span>
         <svg class="w-4 h-4 text-green-500 group-hover:text-green-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -239,7 +212,7 @@
 
     <!-- Done -->
     <a href="/queue?state=done"
-       class="group bg-vd-card border border-vd-border rounded-lg p-4 hover:border-emerald-500/50 hover:bg-white/5 transition-colors">
+       class="group bg-vd-card p-4 hover:bg-white/5 transition-colors">
       <div class="flex items-center justify-between mb-3">
         <span class="w-2.5 h-2.5 rounded-full badge-done"></span>
         <svg class="w-4 h-4 text-emerald-500 group-hover:text-emerald-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -251,7 +224,9 @@
       <p class="text-xs text-vd-muted">Done</p>
     </a>
 
+    </div>
   </div>
+
 </div>
 
 <!-- Recent Activity -->

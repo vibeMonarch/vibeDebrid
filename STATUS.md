@@ -376,6 +376,16 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### Dashboard Upcoming Episodes ✅ (2026-03-14, Issue #8)
+- Upcoming Episodes card replaces redundant Active Processing section
+- Two-column layout: Upcoming Episodes (left) + Queue States (right)
+- Queries UNRELEASED items with air_date, sorted ASC, limited to 10
+- Relative date display: Today/Tomorrow/weekday name/short date
+- Click row → show detail page
+- Safe tmdb_id cast (.isdigit() guard) + href escaping
+- 4 new tests (present, empty, limit, ordering)
+- Total: 2175 tests, all passing
+
 ### Extract Inline JS to Static Files ✅ (2026-03-14, Issue #22)
 - 8 page-specific JS files in `src/static/js/`: dashboard, discover, search, settings, show, queue, tools, duplicates
 - ~5,300 lines of inline JS removed from templates

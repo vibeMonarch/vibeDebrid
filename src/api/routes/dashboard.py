@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import httpx
@@ -63,10 +63,22 @@ class HealthStatus(BaseModel):
     rd: RdHealth | None = None
 
 
+class UpcomingEpisode(BaseModel):
+    """A future episode in UNRELEASED state with a known air date."""
+
+    title: str
+    season: int | None = None
+    episode: int | None = None
+    air_date: str | None = None  # ISO date string e.g. "2026-03-18"
+    tmdb_id: int | None = None
+    state: str = ""
+
+
 class StatsResponse(BaseModel):
     status: str = "ok"
     queue: QueueCounts
     health: HealthStatus
+    upcoming: list[UpcomingEpisode] = []
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -150,4 +162,28 @@ async def stats(session: AsyncSession = Depends(get_db)) -> StatsResponse:
 
     health = HealthStatus(mount_available=mount_available, rd=rd_health)
 
-    return StatsResponse(status="ok", queue=queue, health=health)
+    # Query upcoming episodes: UNRELEASED items that have a known air_date
+    upcoming_result = await session.execute(
+        select(MediaItem)
+        .where(
+            MediaItem.state == QueueState.UNRELEASED,
+            MediaItem.air_date.is_not(None),
+        )
+        .order_by(asc(MediaItem.air_date))
+        .limit(10)
+    )
+    upcoming_items = upcoming_result.scalars().all()
+
+    upcoming: list[UpcomingEpisode] = [
+        UpcomingEpisode(
+            title=item.title,
+            season=item.season,
+            episode=item.episode,
+            air_date=item.air_date.isoformat() if item.air_date is not None else None,
+            tmdb_id=int(item.tmdb_id) if item.tmdb_id and item.tmdb_id.isdigit() else None,
+            state=item.state.value,
+        )
+        for item in upcoming_items
+    ]
+
+    return StatsResponse(status="ok", queue=queue, health=health, upcoming=upcoming)

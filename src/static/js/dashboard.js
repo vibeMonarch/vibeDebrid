@@ -19,6 +19,19 @@ function setTextContent(id, value) {
   if (el) el.textContent = value;
 }
 
+function formatRelativeDate(isoDate) {
+  if (!isoDate) return '';
+  var d = new Date(isoDate + 'T00:00:00');
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var diffDays = Math.round((d - today) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Tomorrow';
+  if (diffDays === -1) return 'Yesterday';
+  if (diffDays > 0 && diffDays <= 6) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 function applyStats(data) {
   var queue = data.queue || {};
   var health = data.health || {};
@@ -30,11 +43,36 @@ function applyStats(data) {
     setTextContent(cfg.countId, count);
   }
 
-  // Active processing breakdown
-  setTextContent('active-wanted',   queue.wanted   ?? 0);
-  setTextContent('active-scraping', queue.scraping ?? 0);
-  setTextContent('active-adding',   queue.adding   ?? 0);
-  setTextContent('active-checking', queue.checking ?? 0);
+  // Upcoming episodes
+  var listEl = document.getElementById('upcoming-list');
+  if (listEl) {
+    var upcoming = data.upcoming || [];
+    if (upcoming.length === 0) {
+      listEl.innerHTML = '<div class="p-8 text-center text-sm text-vd-muted">'
+        + '<svg class="w-8 h-8 mx-auto mb-2 text-vd-border" fill="none" stroke="currentColor" viewBox="0 0 24 24">'
+        + '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>'
+        + '</svg>'
+        + 'No upcoming episodes</div>';
+    } else {
+      var html = '';
+      upcoming.forEach(function(ep) {
+        var badge = '';
+        if (ep.season != null && ep.episode != null) {
+          badge = 'S' + String(ep.season).padStart(2, '0') + 'E' + String(ep.episode).padStart(2, '0');
+        }
+        var dateStr = formatRelativeDate(ep.air_date);
+        var link = ep.tmdb_id ? '/show/' + VD.escapeAttr(String(ep.tmdb_id)) : '#';
+        html += '<a href="' + link + '" class="flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors">';
+        html += '<div class="flex items-center gap-3 min-w-0">';
+        html += '<span class="text-sm text-white truncate">' + VD.escapeHtml(ep.title) + '</span>';
+        if (badge) html += '<span class="text-xs text-vd-muted font-mono flex-shrink-0">' + badge + '</span>';
+        html += '</div>';
+        html += '<span class="text-xs text-vd-muted flex-shrink-0 ml-3">' + VD.escapeHtml(dateStr) + '</span>';
+        html += '</a>';
+      });
+      listEl.innerHTML = html;
+    }
+  }
 
   // Health summary cards
   var active = (queue.wanted ?? 0) + (queue.scraping ?? 0)

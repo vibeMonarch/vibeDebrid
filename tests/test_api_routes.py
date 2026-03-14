@@ -414,6 +414,139 @@ class TestDashboard:
         assert rd["premium_type"] == "free"
         assert rd["expiration"] is None
 
+    # -----------------------------------------------------------------------
+    # Upcoming episodes
+    # -----------------------------------------------------------------------
+
+    async def test_stats_upcoming_episodes(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """UNRELEASED items with air_date appear in the upcoming list."""
+        from datetime import date
+
+        item = MediaItem(
+            imdb_id="tt9999001",
+            tmdb_id="12345",
+            title="Future Show",
+            year=2026,
+            media_type=MediaType.SHOW,
+            season=2,
+            episode=3,
+            state=QueueState.UNRELEASED,
+            air_date=date(2026, 3, 18),
+        )
+        session.add(item)
+        await session.flush()
+
+        with patch(
+            "src.api.routes.dashboard.mount_scanner.is_mount_available",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        upcoming = resp.json()["upcoming"]
+        assert len(upcoming) == 1
+        ep = upcoming[0]
+        assert ep["title"] == "Future Show"
+        assert ep["season"] == 2
+        assert ep["episode"] == 3
+        assert ep["air_date"] == "2026-03-18"
+        assert ep["tmdb_id"] == 12345
+        assert ep["state"] == "unreleased"
+
+    async def test_stats_upcoming_episodes_empty(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """No UNRELEASED items means upcoming list is empty."""
+        await _make_item(session, state=QueueState.WANTED, imdb_id="tt9999002")
+        await _make_item(session, state=QueueState.SLEEPING, imdb_id="tt9999003")
+
+        with patch(
+            "src.api.routes.dashboard.mount_scanner.is_mount_available",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        assert resp.json()["upcoming"] == []
+
+    async def test_stats_upcoming_episodes_limit(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """At most 10 upcoming episodes are returned even when more exist."""
+        from datetime import date, timedelta
+
+        base_date = date(2026, 4, 1)
+        for i in range(15):
+            item = MediaItem(
+                imdb_id=f"tt88000{i:02d}",
+                title="Many Episodes Show",
+                year=2026,
+                media_type=MediaType.SHOW,
+                season=1,
+                episode=i + 1,
+                state=QueueState.UNRELEASED,
+                air_date=base_date + timedelta(days=i),
+            )
+            session.add(item)
+        await session.flush()
+
+        with patch(
+            "src.api.routes.dashboard.mount_scanner.is_mount_available",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        assert len(resp.json()["upcoming"]) == 10
+
+    async def test_stats_upcoming_episodes_ordered(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Upcoming episodes are sorted by air_date ascending."""
+        from datetime import date
+
+        dates_and_episodes = [
+            (date(2026, 5, 10), 3),
+            (date(2026, 4, 1), 1),
+            (date(2026, 4, 20), 2),
+        ]
+        for air_date, ep_num in dates_and_episodes:
+            item = MediaItem(
+                imdb_id=f"tt770{ep_num}000",
+                title="Ordered Show",
+                year=2026,
+                media_type=MediaType.SHOW,
+                season=1,
+                episode=ep_num,
+                state=QueueState.UNRELEASED,
+                air_date=air_date,
+            )
+            session.add(item)
+        await session.flush()
+
+        with patch(
+            "src.api.routes.dashboard.mount_scanner.is_mount_available",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        upcoming = resp.json()["upcoming"]
+        assert len(upcoming) == 3
+        # Episodes should appear in chronological order: E01 (Apr 1), E02 (Apr 20), E03 (May 10)
+        assert upcoming[0]["episode"] == 1
+        assert upcoming[0]["air_date"] == "2026-04-01"
+        assert upcoming[1]["episode"] == 2
+        assert upcoming[1]["air_date"] == "2026-04-20"
+        assert upcoming[2]["episode"] == 3
+        assert upcoming[2]["air_date"] == "2026-05-10"
+
 
 # ===========================================================================
 # Queue list — GET /api/queue
