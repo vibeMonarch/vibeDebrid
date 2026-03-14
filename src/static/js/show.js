@@ -107,7 +107,8 @@
     grid.innerHTML = '';
 
     seasons.forEach(s => {
-      const isDisabled = s.status === 'in_library' || s.status === 'in_queue' || s.status === 'upcoming';
+      const airingFullyQueued = s.status === 'airing' && s.queue_item_ids && s.queue_item_ids.length >= s.aired_episodes && s.aired_episodes > 0;
+      const isDisabled = s.status === 'in_library' || s.status === 'in_queue' || s.status === 'upcoming' || airingFullyQueued;
       const checkId = `season-${s.season_number}`;
 
       const wrapper = document.createElement('label');
@@ -122,7 +123,7 @@
       cb.disabled = isDisabled;
       cb.addEventListener('change', updateAddBar);
 
-      const hasCheckIcon = s.status === 'in_library' || s.status === 'in_queue';
+      const hasCheckIcon = s.status === 'in_library' || s.status === 'in_queue' || airingFullyQueued;
       const card = document.createElement('div');
       card.className = `season-card border border-vd-border rounded-lg p-4 select-none ${isDisabled ? 'opacity-60' : ''} ${hasCheckIcon ? 'status-' + s.status : ''}`;
 
@@ -153,12 +154,23 @@
         titleRow.appendChild(checkSvg);
       }
 
+      const badgeWrap = document.createElement('div');
+      badgeWrap.className = 'flex items-center gap-1.5 flex-shrink-0';
+
       const badge = document.createElement('span');
-      badge.className = `text-xs px-2 py-0.5 rounded-full flex-shrink-0 status-badge-${s.status}`;
+      badge.className = `text-xs px-2 py-0.5 rounded-full status-badge-${s.status}`;
       badge.textContent = statusLabel(s.status);
+      badgeWrap.appendChild(badge);
+
+      if (airingFullyQueued) {
+        const monBadge = document.createElement('span');
+        monBadge.className = 'text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400';
+        monBadge.textContent = 'Monitoring';
+        badgeWrap.appendChild(monBadge);
+      }
 
       top.appendChild(titleRow);
-      top.appendChild(badge);
+      top.appendChild(badgeWrap);
 
       const meta = document.createElement('p');
       meta.className = 'text-vd-muted text-xs';
