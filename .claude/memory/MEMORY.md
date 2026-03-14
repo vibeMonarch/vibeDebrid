@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1830 tests, all passing (as of 2026-03-13)
+- 1906 tests, all passing (as of 2026-03-14)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -45,159 +45,63 @@
 - Issue #19: SSE Discover badges use tmdb_id instead of fragile title matching — 2026-03-13
 - Issue #11: Narrow broad except Exception to specific types across 8 files — 2026-03-13
 - Issue #16: Search route error handling (429/502) + bulk remove concurrency fix — 2026-03-13
+- Issue #26: Open source prep (Apache 2.0, CONTRIBUTING.md, config.example.json) — 2026-03-14
+- Issue #23+#32: RD cleanup Zurg safety (live mount verification protection) — 2026-03-14
+- Issue #33: Mount index directory name fallback for season packs — 2026-03-14
+- Issue #14: Circuit breaker + HTTP connection pooling for all 6 services — 2026-03-14
+- Search add flow fix: user season override + TMDB enrichment + multi-season symlink filtering — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
 
 ## Remaining / Future Work
+- Issue #32: Zurg `on_library_update` webhook integration (blocked on dockerization #18)
+- Issue #18: Dockerization (Dockerfile + docker-compose)
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
 - 1 unresolved IMDB ID: tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
-  - tt1088540 was a truncated tt10885406 (Ascendance of a Bookworm) — resolved
-- Docker (Step 3): Dockerfile + docker-compose.yml
+
+## Open Issues (Batch 2+)
+- #24: RD account health metrics on dashboard
+- #22: Extract inline JS to static files
+- #18: Dockerization
+- #17: Fix minor race conditions
+- #13: Security hardening (CSRF, settings validation, SRI)
+- #12: Extract duplicated code into shared modules
+- #8: Dashboard card for upcoming episodes
+- #7: Rotten Tomatoes scores on Discover
+- #6: IMDb ratings on Discover
+- #4: Per-episode TV discovery
 
 ## Remaining Review Findings (not yet fixed)
-- ~~`scrape_pipeline.py:868`: `session.rollback()` mid-pipeline can corrupt ORM state~~ — fixed (issue #9)
-- `migration.py` Steps 2-3 (Remove duplicates, Move): same class of bug — bare `except Exception` without savepoints
+- `migration.py` Steps 2-3: bare `except Exception` without savepoints
 - `settings.py:51`: unvalidated `dict[str,Any]` body allows arbitrary key injection
-- ~~`search.py:430-441`: direct `item.state =` bypasses queue_manager (tech debt)~~ — fixed (issue #16)
-- ~~Services: broad `except Exception` on JSON parsing — should be `except ValueError`~~ — fixed (issue #11)
-- ~~`filter_engine.py:287`: regex compiled inside hot loop~~ — fixed (issue #15)
 - Frontend: no CSRF protection, duplicated `escapeHtml`/`formatBytes`
 - `queue.py` rescrape endpoint: no server-side state validation (frontend guards only)
-- `filter_engine.py`: `_score_original_language` double-penalty stacking (-30 for dubbed + no tags)
-- `filter_engine.py`: `original_language` param accepts ISO or name but only name matches torrent tags
-- `tmdb.py`: `ISO_639_1_TO_LANGUAGE` only covers 11 languages (Hindi, Arabic, Thai etc. missing)
+- `filter_engine.py`: `_score_original_language` double-penalty stacking
+- `filter_engine.py`: `original_language` param accepts ISO or name but only name matches
+- `tmdb.py`: `ISO_639_1_TO_LANGUAGE` only covers 11 languages
 - `scrape_pipeline.py`: `force_original_language` flag cleared before pipeline success
 
-## XEM Negative Cache — 2026-03-08
-- In-memory `_empty_response_cache: dict[int, float]` on XemMapper instance (not class-level — breaks tests)
-- 5-minute TTL prevents cascading 429s when processing many items for same show
-- Only deletes stale DB entries when new data arrives; returns stale entries on empty/failed response
-- Cleared on successful API response with data
+## Circuit Breaker + HTTP Pooling — 2026-03-14
+- `src/services/http_client.py`: shared `httpx.AsyncClient` pool + `CircuitBreaker` class
+- Per-service circuit breakers (keyed by service name), 5 failure threshold, 60s recovery
+- 429 rate limits excluded from circuit breaking (RD, TMDB, XEM all handle correctly)
+- `close_all()` in main.py shutdown hook
+- Known limitation: pooled clients bake in API key at creation time (config changes need restart)
 
-## Bulk Remove Concurrency — 2026-03-08
-- Collects unique `rd_id` set during item loop, deletes concurrently via `asyncio.gather`
-- `asyncio.Semaphore(5)` limits concurrent RD API calls
-- Failed RD deletions reported in `BulkResponse.errors`
-- Loading spinner on "Remove Selected" button (`bulkRemoving` state)
-
-## Mount Scan Optimization (Issue #25) — 2026-03-09
-- Skip-unchanged: compare `(filename, filesize)`, batch `UPDATE last_seen_at`
-- Stat-skip: `_load_known_files()` pre-loads DB; known files skip `is_dir()` + `stat()`
-- Startup scan skipped when DB has data; `scan_directory()` always stats (targeted scans small)
-
-## Fast CHECKING Resolution (Step 0.5) — 2026-03-04
-- `mount_scanner.py`: `_scandir_walk()` + `_upsert_records()` batch helper + `scan_directory()` targeted scan
-- `main.py`: captures `rd_info["filename"]` → `torrent.filename`, targeted scan fallback in CHECKING
-- Timeouts: 120s full scan, 30s targeted
-
-## Plex Integration (Step 1a) — 2026-03-04
-- Stateless PlexClient, per-request httpx, OAuth PIN flow, targeted scan after COMPLETE
-- `config_lock` in `src/config.py` for race-safe config.json writes
-- Frontend: popup OAuth, library checkboxes, token omitted from save payload
-
-## Search Architecture — 2026-03-06
-- Two-fetch pattern: Zilean (fast) + Torrentio (slow, parallel)
-- `_cacheStatusMap` persists RD cache results across re-renders
-- `_cacheCheckGeneration` prevents stale writes
-- Torrentio timeout: 10s (reduced from 30s due to 522 errors)
-- Both pipeline and search strip `realdebrid=` from Torrentio opts (`include_debrid_key=False`) — see Torrentio RD Key Stripping
-
-## Fuzzy Directory Match + Path-Prefix Fallback — 2026-03-07
-- `_is_word_subsequence()` for fuzzy mount directory matching
-- `lookup()`: 3-tier strategy: exact → forward word-subsequence → reverse containment (issue #30)
-- Reverse containment (tier 3): `func.instr(literal(normalized), parsed_title) > 0` with 3-word min guard
-- `lookup_by_path_prefix()`: WHERE filepath LIKE '{prefix}/%' with escape
-- `ScanDirectoryResult(files_indexed, matched_dir_path)` for CHECKING fallback chain
-- `symlink_health._find_mount_match()`: same bidirectional lookup (phase 1 LIKE + phase 2 reverse)
-
-## SSE Feature Notes
-- Event bus: module singleton, `put_nowait()`, maxsize=64 per client
-- Publishing: inline imports in queue_manager to avoid circular deps
-- Discover SSE: tmdb_id-based matching via QueueEvent.tmdb_id (issue #19)
-
-## Sticky Headers — 2026-03-07
-- `main { height: 100dvh; overflow-y: auto }` for CSS sticky
-- `.page-header` in `base.html` (single source of truth)
-- Touch: `@media (hover: hover)`, `_touchMoved` flag, `scroll-margin-top`
-
-## Library Migration Tool — 2026-03-07
-- `src/core/migration.py`: 4 parsing patterns, IMDB extraction, symlink detection
-- Two-phase UI: preview → execute, 85 tests
-- Shared `config_lock`, `_migration_lock` for concurrency
-
-## Bugs Fixed
-- Naive vs aware datetime in CHECKING timeout — normalize to tz-aware UTC
-- Season pack duplicate add + XEM scrape mapping (2026-03-08) — see Season Pack Dedup section
-- Language filter Cyrillic bypass (2026-03-08): added Cyrillic char detection + abbreviated tokens
-- Single-file mount scan (2026-03-08): `_scan_single_file()` for single-file RD torrents
-- Season pack false positive (2026-03-08): `_SEASON_DASH_EP_RE` regex fallback for anime `S2 - 06`
-- Anime CHECKING failures (2026-03-08): `_ANIME_DASH_EP_RE` regex + absolute episode range mapping
-- Search add: silent failure UX, check_cached race condition, missing year/tmdb_id (2026-03-09)
-- Episode mismatch (2026-03-13): [details](episode-mismatch-filter.md)
-
-## Season Pack Split — 2026-03-08
-- When no season packs available, auto-splits into individual episode queue items
-- `scrape_pipeline.py:_split_season_pack_to_episodes()`: queries TMDB for episode count, creates individual WANTED items
-- Triggers when: `item.is_season_pack` and scrapers returned results (`total_count > 0`) but `best is None` after filtering
-- Dedup: uses `tmdb_id` (not `imdb_id`) to find existing episode items — SQL `NULL=NULL` is FALSE
-- Parent item transitions to COMPLETE (not DONE — SCRAPING→DONE is invalid)
-- Created items: `source="season_pack_split"`, inherit all IDs from parent, `is_season_pack=False`
-- 22 tests in `tests/test_season_pack_split.py`
-
-## Season Pack Dedup + XEM Scrape Fix — 2026-03-08
-Three interrelated bugs when adding anime with XEM scene seasons:
-1. **XEM absolute fallback** (`xem_mapper.py`): `get_scene_numbering_for_item` now
-   falls back to `get_absolute_scene_map` when TVDB season/episode lookup fails.
-   Fixes TMDB continuous seasons (e.g., S01E29) mapping to scene (S02E01).
-2. **Hash-based dedup** (`scrape_pipeline.py`): After filter+rank, checks
-   `check_local_duplicate(info_hash)` BEFORE cache check. If hash already in
-   dedup registry, skips all RD API calls and transitions directly to CHECKING.
-3. **Torrent lookup fallback** (`main.py`): `_find_torrent_for_item()` helper —
-   direct media_item_id lookup → scrape_log info_hash → RdTorrent by hash.
-   Used in ADDING and CHECKING stages for shared season pack torrents.
-
-## Discovery Feature Notes
-- TMDB client stateless, 7 API endpoints under `/api/discover/`
-- State preservation: sessionStorage cache + one-shot restore
+## Multi-Season Symlink Handling — 2026-03-14
+- Search add: user's season input takes priority over PTN-parsed season from torrent title
+- TMDB enrichment: `add_torrent` fetches canonical title/year from TMDB when tmdb_id is provided
+- CHECKING stage: detects multi-season torrents (distinct `parsed_season` values), re-filters to requested season
+- `create_symlink(episode_offset=N)`: remaps absolute episode numbers to season-relative (ep 26 with offset 25 → E01)
+- Mount index: falls back to parent directory name when filename parse yields only episode title
 
 ## Agent Routing Patterns
 - Backend: backend-dev (sequential, shared state)
 - Frontend: frontend-dev (after backend)
-- Tests: test-writer (after implementation)
+- Tests: test-writer needs bash access → use backend-dev instead
 - Review: code-reviewer (final pass) — always run, catches real bugs
-
-## Language Filter — 2026-03-08
-- `FiltersConfig.preferred_languages: list[str]` — ordered list, e.g. ["English", "Japanese"]
-- Tier 1: hard-reject results with detected languages not in preferred list
-- Untagged results assumed English; Multi passes when `allow_multi_audio=True`
-- Tier 2: `_score_language()` — 15pts 1st preferred, 12 2nd, 9 3rd, etc. Multi=10pts fallback
-- Legacy `required_language` still works when `preferred_languages` is empty
-- Settings UI: comma-separated input in Filters section
-- Available languages: English, French, German, Spanish, Portuguese, Italian, Dutch, Russian, Japanese, Korean, Chinese
-
-## Plex Symlink Naming — 2026-03-08
-- `SymlinkNamingConfig.plex_naming: bool = False` — overrides date_prefix/year/resolution
-- Show dir: `Title (Year) {tmdb-XXXXX}/Season XX/`
-- Show file: `Title (Year) - S01E01.ext` (metadata-driven, not raw torrent name)
-- Movie file: `Title (Year).ext`
-- Season packs: `_parse_episode_from_filename()` extracts ep number from source filename via PTN + regex
-- `_find_existing_show_dir` strips `{tmdb|tvdb|imdb-XXX}` tags before matching
-- tmdb_id validated as digits-only before embedding in path
-- Settings UI: toggle in Symlink Naming card, dims other toggles when active
-
-## Torrentio RD Key Stripping — 2026-03-08
-- `realdebrid=<key>` in opts pre-filters to cached-only → stripped for pipeline/search (`include_debrid_key=False`)
-- Settings test endpoint keeps default `True` (tests user's configured opts work)
-
-## Plex Watchlist Sync — 2026-03-09
-- discover.provider.plex.tv (NOT metadata), JSON, paginated, `includeGuids=1`
-- Batch dedup (tmdb_id + imdb_id IN query), per-item savepoints
-- Movies: WANTED; Shows: S1 pack + monitoring + immediate `_check_single_show`
-
-## TMDB ID Backfill — 2026-03-09
-- Startup background task, Semaphore(10), batch UPDATE by imdb_id
-- `show_manager._check_single_show`: or_ query fallback for imdb_id when tmdb_id is NULL
+- Worktree cleanup: worktrees are deleted when agent completes — merge before dispatching dependent agents
 
 ## Key Conventions
 - Commit style: imperative summary, bullet details, `Co-Authored-By: Claude Opus 4.6`

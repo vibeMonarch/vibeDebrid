@@ -70,11 +70,18 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Mount index lookup before creating items (catches content already in RD)
 
 **Tools**
-- Library migration: import existing libraries from other tools with preview → execute flow
-- TMDB ID backfill: resolve tmdb_id for all items with only imdb_id
-- RD Bridge: link Real-Debrid account torrents to migrated items by matching symlink paths to RD filenames
-- Smart Cleanup: liveness-aware duplicate removal — checks actual filesystem state (LIVE/BRIDGED/DEAD) before deciding what to keep, with RD torrent cleanup
-- RD Account Cleanup: scan entire RD account, categorize torrents as Protected/Dead/Stale/Orphaned/Duplicate, selective removal with safety checks
+- **Library Migration**: import existing libraries from other tools (cli_debrid, etc.) with a two-phase preview → execute flow. Parses 4 directory naming patterns, extracts IMDB IDs, detects existing symlinks, and creates queue items with proper metadata.
+- **TMDB ID Backfill**: resolve tmdb_id for all items that only have imdb_id — runs automatically on startup as a background task.
+- **RD Bridge**: link Real-Debrid account torrents to migrated items by matching symlink source paths to RD torrent filenames (exact + normalized fallback). Handles shared season pack torrents via hash-based dedup.
+- **Smart Cleanup**: liveness-aware duplicate removal — checks actual filesystem state (LIVE/BRIDGED/DEAD) before deciding what to keep. Removes RD torrents for dead duplicates.
+- **RD Account Cleanup**: scan entire RD account, categorize every torrent as Protected/Dead/Stale/Orphaned/Duplicate. Includes live mount verification to protect Zurg auto-recovered torrents (checks filesystem existence of symlink targets). Selective removal with safety checks — Protected torrents are never deletable.
+- **Symlink Health Check**: verify all symlinks still point to valid mount targets, report broken links with actionable status.
+
+## Known Limitations
+
+**Zurg auto-recovery and rd_id drift**: Zurg has an auto-repair feature that replaces CDN-dropped files with different RD torrents while keeping mount paths stable. After recovery, vibeDebrid's stored rd_ids may be stale (returning 404 from the RD API). This does not affect playback or symlinks — those go through the Zurg mount. The RD Account Cleanup tool handles this safely via live mount verification, and will warn about stale rd_ids in scan results. Full rd_id reconciliation will be available after Zurg webhook integration (requires dockerization).
+
+**Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
 ## Prerequisites
 
@@ -184,7 +191,7 @@ src/
 
 - **Async-first**: all I/O uses async/await (aiosqlite, httpx, asyncio.to_thread for filesystem)
 - **SQLite with WAL**: single-file database, concurrent reads, no external DB dependency
-- **Stateless services**: fresh httpx client per call, config changes take effect without restart
+- **Connection pooling + circuit breaker**: shared httpx clients with per-service circuit breakers (5 failure threshold, 60s recovery). 429 rate limits are excluded from circuit breaking.
 - **APScheduler**: periodic mount scanning, queue processing, symlink verification, show monitoring
 
 ## Infrastructure Context
