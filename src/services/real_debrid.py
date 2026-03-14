@@ -303,6 +303,54 @@ class RealDebridClient:
         logger.debug("get_user: username=%s type=%s", data.get("username"), data.get("type"))
         return data
 
+    async def get_account_info(self) -> dict[str, Any]:
+        """Return current account info from GET /user using the pooled client.
+
+        Unlike get_user(), this method goes through the circuit breaker and uses
+        the shared connection pool. Intended for dashboard health metrics.
+
+        Returns:
+            Parsed JSON dict conforming to RdUser schema.
+
+        Raises:
+            RealDebridAuthError: If the API key is invalid.
+            RealDebridRateLimitError: If the rate limit is exceeded (not recorded
+                                      as a circuit breaker failure).
+            RealDebridError: On other API failures.
+            CircuitOpenError: If the circuit breaker is open.
+        """
+        breaker = get_circuit_breaker("real_debrid")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError as exc:
+            logger.warning("get_account_info: %s", exc)
+            raise
+
+        try:
+            client = await self._get_client()
+            response = await client.get("/user")
+        except (httpx.RequestError, TimeoutError) as exc:
+            await breaker.record_failure()
+            logger.warning("get_account_info: network error (%s)", exc)
+            raise
+        try:
+            self._raise_for_status(response)
+        except RealDebridRateLimitError:
+            # 429 is expected — do not penalise the circuit breaker.
+            raise
+        except RealDebridError:
+            await breaker.record_failure()
+            raise
+        data: dict[str, Any] = response.json()
+        await breaker.record_success()
+        logger.debug(
+            "get_account_info: username=%s type=%s premium=%s",
+            data.get("username"),
+            data.get("type"),
+            data.get("premium"),
+        )
+        return data
+
     async def add_magnet(self, magnet_uri: str) -> dict[str, Any]:
         """Add a torrent to the RD account via magnet link.
 

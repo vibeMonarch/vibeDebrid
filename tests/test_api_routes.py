@@ -21,11 +21,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import src.api.routes.dashboard as dashboard_module
 from src.api.deps import get_db
 from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
+from src.services.http_client import CircuitOpenError
 from src.services.real_debrid import CacheCheckResult, RealDebridAuthError, RealDebridError
 
 
@@ -253,6 +255,186 @@ class TestDashboard:
         assert queue["adding"] == 1
         assert queue["checking"] == 1
         assert queue["done"] == 1
+
+    # -----------------------------------------------------------------------
+    # RD health metrics
+    # -----------------------------------------------------------------------
+
+    @pytest.fixture(autouse=True)
+    def reset_rd_cache(self):
+        """Reset the module-level RD health cache before every test in this class."""
+        dashboard_module._rd_health_cache["data"] = None
+        dashboard_module._rd_health_cache["fetched_at"] = 0.0
+        yield
+        dashboard_module._rd_health_cache["data"] = None
+        dashboard_module._rd_health_cache["fetched_at"] = 0.0
+
+    async def test_stats_rd_health_present(self, http: AsyncClient) -> None:
+        """When RD API calls succeed, health.rd is populated with correct fields."""
+        user_payload = {
+            "id": 1,
+            "username": "testuser",
+            "email": "test@example.com",
+            "points": 1234,
+            "type": "premium",
+            "premium": 90,
+            "expiration": "2026-06-01T00:00:00.000Z",
+        }
+        torrents_payload = [
+            {"id": "T1", "bytes": 4_000_000_000},
+            {"id": "T2", "bytes": 2_000_000_000},
+        ]
+
+        with (
+            patch(
+                "src.api.routes.dashboard.mount_scanner.is_mount_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.get_account_info",
+                new_callable=AsyncMock,
+                return_value=user_payload,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.list_torrents",
+                new_callable=AsyncMock,
+                return_value=torrents_payload,
+            ),
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        rd = resp.json()["health"]["rd"]
+        assert rd is not None
+        assert rd["username"] == "testuser"
+        assert rd["premium_type"] == "premium"
+        assert rd["days_remaining"] == 90
+        assert rd["expiration"] == "2026-06-01T00:00:00.000Z"
+        assert rd["points"] == 1234
+        assert rd["torrent_count"] == 2
+        assert rd["total_bytes"] == 6_000_000_000
+
+    async def test_stats_rd_health_unavailable(self, http: AsyncClient) -> None:
+        """When RD raises RealDebridError, health.rd is None and the rest of stats is ok."""
+        with (
+            patch(
+                "src.api.routes.dashboard.mount_scanner.is_mount_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.get_account_info",
+                new_callable=AsyncMock,
+                side_effect=RealDebridError("Service unavailable", status_code=503),
+            ),
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["health"]["rd"] is None
+
+    async def test_stats_rd_health_circuit_open(self, http: AsyncClient) -> None:
+        """When circuit breaker is open, health.rd is None and the rest of stats is ok."""
+        with (
+            patch(
+                "src.api.routes.dashboard.mount_scanner.is_mount_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.get_account_info",
+                new_callable=AsyncMock,
+                side_effect=CircuitOpenError("real_debrid"),
+            ),
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["health"]["rd"] is None
+
+    async def test_stats_rd_health_cached(self, http: AsyncClient) -> None:
+        """RD client is called only once when two requests are made within TTL."""
+        user_payload = {
+            "id": 1,
+            "username": "cacheduser",
+            "email": "c@c.com",
+            "points": 0,
+            "type": "premium",
+            "premium": 30,
+            "expiration": None,
+        }
+        mock_get_account_info = AsyncMock(return_value=user_payload)
+        mock_list_torrents = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "src.api.routes.dashboard.mount_scanner.is_mount_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.get_account_info",
+                mock_get_account_info,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.list_torrents",
+                mock_list_torrents,
+            ),
+        ):
+            resp1 = await http.get("/api/stats")
+            resp2 = await http.get("/api/stats")
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        # Both responses should have rd health
+        assert resp1.json()["health"]["rd"]["username"] == "cacheduser"
+        assert resp2.json()["health"]["rd"]["username"] == "cacheduser"
+        # RD client should only have been called once (second request uses cache)
+        assert mock_get_account_info.call_count == 1
+        assert mock_list_torrents.call_count == 1
+
+    async def test_stats_rd_health_expired(self, http: AsyncClient) -> None:
+        """A user with premium=0 has days_remaining=0."""
+        user_payload = {
+            "id": 2,
+            "username": "freeuser",
+            "email": "free@example.com",
+            "points": 0,
+            "type": "free",
+            "premium": 0,
+            "expiration": None,
+        }
+
+        with (
+            patch(
+                "src.api.routes.dashboard.mount_scanner.is_mount_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.get_account_info",
+                new_callable=AsyncMock,
+                return_value=user_payload,
+            ),
+            patch(
+                "src.api.routes.dashboard.rd_client.list_torrents",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            resp = await http.get("/api/stats")
+
+        assert resp.status_code == 200
+        rd = resp.json()["health"]["rd"]
+        assert rd is not None
+        assert rd["days_remaining"] == 0
+        assert rd["premium_type"] == "free"
+        assert rd["expiration"] is None
 
 
 # ===========================================================================

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from src.services.http_client import CircuitBreaker
+from src.services.http_client import CircuitBreaker, CircuitOpenError
 from src.services.real_debrid import (
     CacheCheckResult,
     RealDebridAuthError,
@@ -855,3 +855,58 @@ async def test_check_cached_batch_keep_if_cached_true(client: RealDebridClient) 
     assert result[hash_a].rd_id == "RD_A"
     assert result[hash_b].cached is False
     assert result[hash_b].rd_id is None
+
+
+# ---------------------------------------------------------------------------
+# get_account_info
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_account_info_success(client: RealDebridClient) -> None:
+    """get_account_info returns the parsed dict on a successful 200 response."""
+    payload = {
+        "id": 99999,
+        "username": "pooleduser",
+        "email": "pooled@example.com",
+        "points": 500,
+        "locale": "en",
+        "avatar": "",
+        "type": "premium",
+        "premium": 180,
+        "expiration": "2026-09-01T00:00:00.000Z",
+    }
+    responses = [_make_response(200, payload)]
+
+    with _patch_client(client, responses):
+        result = await client.get_account_info()
+
+    assert result["username"] == "pooleduser"
+    assert result["type"] == "premium"
+    assert result["premium"] == 180
+    assert result["expiration"] == "2026-09-01T00:00:00.000Z"
+
+
+@pytest.mark.asyncio
+async def test_get_account_info_auth_error(client: RealDebridClient) -> None:
+    """get_account_info raises RealDebridAuthError on HTTP 401."""
+    responses = [_make_response(401, {"error": "Bad token", "error_code": 8})]
+
+    with _patch_client(client, responses):
+        with pytest.raises(RealDebridAuthError):
+            await client.get_account_info()
+
+
+@pytest.mark.asyncio
+async def test_get_account_info_circuit_open(client: RealDebridClient) -> None:
+    """get_account_info raises CircuitOpenError when the circuit breaker is open."""
+    open_breaker = CircuitBreaker("test_open", failure_threshold=1, recovery_timeout=9999.0)
+    # Trip the breaker by exceeding failure threshold
+    await open_breaker.record_failure()
+
+    with patch(
+        "src.services.real_debrid.get_circuit_breaker",
+        side_effect=lambda *a, **k: open_breaker,
+    ):
+        with pytest.raises(CircuitOpenError):
+            await client.get_account_info()

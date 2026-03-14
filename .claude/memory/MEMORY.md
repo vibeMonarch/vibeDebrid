@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 2053 tests, all passing (as of 2026-03-14)
+- 2061 tests, all passing (as of 2026-03-14)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -66,6 +66,7 @@
 - Sequential RD cache check: check-and-stop replaces batch (2-3 API calls vs 12 per episode) — 2026-03-14
 - XEM scene season packs: TMDB anchor metadata, pipeline remap, CHECKING episode range filter — 2026-03-14
 - Issue #34: Alternative title fallback for Zilean (original_title + TMDB alt titles, lazy fetch, capped at 5) — 2026-03-14
+- Issue #24: RD account health dashboard card (premium status, days remaining, torrent count, storage) — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
@@ -77,7 +78,6 @@
 - 1 unresolved IMDB ID: tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
 
 ## Open Issues
-- #24: RD account health metrics on dashboard
 - #22: Extract inline JS to static files
 - #18: Dockerization (unblocks #32)
 - #12: Extract duplicated code into shared modules

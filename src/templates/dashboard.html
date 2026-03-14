@@ -27,7 +27,7 @@
 <!-- Health Status Card -->
 <div class="mb-8">
   <h3 class="text-xs font-semibold uppercase tracking-wider text-vd-muted mb-3">System Health</h3>
-  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
 
     <!-- Mount health -->
     <div id="health-mount" class="bg-vd-card border border-vd-border rounded-lg p-4 flex items-center gap-3">
@@ -62,6 +62,16 @@
       <div class="min-w-0">
         <p class="text-xs text-vd-muted">Completed</p>
         <p id="health-done-label" class="text-sm font-medium text-gray-400">Checking...</p>
+      </div>
+    </div>
+
+    <!-- Real-Debrid account health -->
+    <div id="health-rd" class="bg-vd-card border border-vd-border rounded-lg p-4 flex items-center gap-3">
+      <div id="health-rd-dot" class="w-3 h-3 rounded-full bg-gray-500 flex-shrink-0"></div>
+      <div class="min-w-0">
+        <p class="text-xs text-vd-muted">Real-Debrid</p>
+        <p id="health-rd-label" class="text-sm font-medium text-gray-400">Checking...</p>
+        <p id="health-rd-detail" class="text-xs text-vd-muted mt-0.5"></p>
       </div>
     </div>
 
@@ -277,6 +287,14 @@
     done:       { countId: 'count-done'       },
   };
 
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
   function setTextContent(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
@@ -320,6 +338,46 @@
       mountDot.className   = 'w-3 h-3 rounded-full bg-vd-danger flex-shrink-0';
       mountLabel.className = 'text-sm font-medium text-red-400';
       mountLabel.textContent = 'Unavailable';
+    }
+
+    // Real-Debrid account health
+    const rdDot    = document.getElementById('health-rd-dot');
+    const rdLabel  = document.getElementById('health-rd-label');
+    const rdDetail = document.getElementById('health-rd-detail');
+    const rd = health.rd;
+    if (rd) {
+      const days = rd.days_remaining ?? 0;
+      const isPremium = rd.premium_type === 'premium';
+      let dotClass, labelClass, labelText;
+      if (!isPremium) {
+        dotClass   = 'w-3 h-3 rounded-full bg-vd-danger flex-shrink-0';
+        labelClass = 'text-sm font-medium text-red-400';
+        labelText  = 'Free';
+      } else if (days >= 30) {
+        dotClass   = 'w-3 h-3 rounded-full bg-vd-success flex-shrink-0';
+        labelClass = 'text-sm font-medium text-green-400';
+        labelText  = 'Premium \u2014 ' + days + 'd left';
+      } else if (days >= 7) {
+        dotClass   = 'w-3 h-3 rounded-full bg-vd-warning flex-shrink-0';
+        labelClass = 'text-sm font-medium text-yellow-400';
+        labelText  = 'Premium \u2014 ' + days + 'd left';
+      } else {
+        dotClass   = 'w-3 h-3 rounded-full bg-vd-danger flex-shrink-0';
+        labelClass = 'text-sm font-medium text-red-400';
+        labelText  = days > 0 ? 'Premium \u2014 ' + days + 'd left' : 'Expired';
+      }
+      rdDot.className   = dotClass;
+      rdLabel.className = labelClass;
+      rdLabel.textContent = labelText;
+      const count   = rd.torrent_count ?? 0;
+      const countStr = count >= 2500 ? '2500+' : String(count);
+      const storage = formatBytes(rd.total_bytes ?? 0);
+      rdDetail.textContent = countStr + ' torrent' + (count !== 1 ? 's' : '') + ' \u2014 ' + storage;
+    } else {
+      rdDot.className     = 'w-3 h-3 rounded-full bg-gray-500 flex-shrink-0';
+      rdLabel.className   = 'text-sm font-medium text-gray-400';
+      rdLabel.textContent = 'Unavailable';
+      rdDetail.textContent = '';
     }
 
     // Update refresh timestamp

@@ -376,6 +376,15 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### RD Account Health Dashboard ✅ (2026-03-14, Issue #24)
+- New `get_account_info()` method on RD client (pooled client + circuit breaker)
+- Dashboard card: premium status, days remaining, torrent count, total storage
+- Color-coded dot: green (30+ days), yellow (7-30), red (<7/expired/free), gray (unavailable)
+- In-memory cache with 15-min TTL; graceful fallback to null on any RD failure
+- `list_torrents(limit=2500)` for aggregate stats; UI shows "2500+" when capped
+- 8 new tests (3 RD client + 5 dashboard)
+- Total: 2061 tests, all passing
+
 ### Alternative Title Fallback ✅ (2026-03-14, Issue #34)
 - When Zilean returns 0 results with the TMDB English title, retries with alternative titles
 - Tier 1: TMDB `original_title`/`original_name` from existing detail response (free — no extra API call)
