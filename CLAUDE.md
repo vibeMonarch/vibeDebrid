@@ -65,9 +65,11 @@ When fixing a bug:
 3. Fix the issue
 4. Verify the test passes
 
-## Git Policy
+## Workflow Policy
 
+- **Always confirm approach before implementing.** Present a plan and get user approval before writing code.
 - **Never commit or push without explicit user command.** Always stage and present changes for review first.
+- **Never push without explicit user consent.** Committing and pushing are separate approvals.
 
 ## Docker Context
 

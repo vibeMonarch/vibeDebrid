@@ -1,6 +1,6 @@
 # vibeDebrid — Project Status
 
-## Last Updated: 2026-03-13
+## Last Updated: 2026-03-14
 
 ## Completed
 
@@ -354,6 +354,27 @@
   - `_ANIME_BARE_DASH_EP_RE`: parses "Title - 29" → E29
   - Both feed into the episode mismatch filter so anime-named results are correctly rejected
 - Total: 1789 tests, all passing
+
+### Security Hardening ✅ (2026-03-14, Issue #13)
+- CSRF double-submit cookie middleware (`src/middleware/csrf.py`)
+  - Sets `csrf_token` cookie (SameSite=Strict, HttpOnly=False) on GET responses
+  - Rejects mutation requests (POST/PUT/DELETE/PATCH) without matching `X-CSRF-Token` header
+  - Exempts `/health` and `/api/events` (SSE)
+- `csrfFetch()` wrapper in `base.html`, all mutation `fetch()` calls updated across all templates
+- `SettingsUpdate` Pydantic model with `extra="forbid"` rejects unknown settings keys (422)
+- `RequestValidationError` handler strips submitted values from 422 error responses
+- Tailwind CDN pinned to 3.4.17 with SRI hash
+- `backdrop_url` validated against `https://image.tmdb.org/` origin
+- API key masking reduced to last 4 chars only (`***WXYZ`)
+- 27 new tests (11 CSRF + 16 settings security)
+
+### Race Conditions + Performance ✅ (2026-03-14, Issue #17)
+- Bulk remove + single-item remove: DB commit before RD deletion (prevents orphaned DB refs)
+- Symlink verification: single batch `asyncio.to_thread` instead of per-symlink dispatches
+- TMDB season fetches: `asyncio.gather` with `Semaphore(5)` + `return_exceptions=True` for anime scene seasons
+- Mount scanner: `rowcount` instead of `fetchall()` for stale entry count
+- 17 new tests
+- Total: 1950 tests, all passing
 
 ## Remaining / Future Work
 
