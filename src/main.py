@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
@@ -33,7 +34,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-templates.env.globals["js_version"] = "1"
+templates.env.globals["js_version"] = str(int(time.time()))
 scheduler = AsyncIOScheduler()
 
 # Module-level reference to the background backfill task.  Storing it prevents

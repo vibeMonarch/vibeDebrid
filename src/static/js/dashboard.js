@@ -107,7 +107,7 @@ function applyStats(data) {
   }
 }
 
-function fetchStats() {
+window.fetchStats = function() {
   fetch('/api/stats')
     .then(function(res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -118,17 +118,17 @@ function fetchStats() {
       console.error('Failed to fetch stats:', err);
       setTextContent('last-refresh', 'fetch failed');
     });
-}
+};
 
 // Initial fetch on load
-fetchStats();
+window.fetchStats();
 
 // SSE-driven refresh (primary), fallback poll every 60s
 var _dashDebounce = null;
 VD_SSE.onStateChange(function() {
   if (_dashDebounce) clearTimeout(_dashDebounce);
-  _dashDebounce = setTimeout(fetchStats, 1000);
+  _dashDebounce = setTimeout(window.fetchStats, 1000);
 });
-setInterval(fetchStats, 60000);
+setInterval(window.fetchStats, 60000);
 
 })();

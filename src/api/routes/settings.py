@@ -160,11 +160,12 @@ async def test_realdebrid() -> TestResult:
     try:
         user = await rd_client.get_user()
         username = user.get("username", "unknown")
-        premium = user.get("premium", 0)
-        expiration = user.get("expiration", "unknown")
+        days_left = int(user.get("premium") or 0) // 86400
+        raw_exp = user.get("expiration", "")
+        expires = raw_exp.split("T")[0] if raw_exp else "unknown"
         return TestResult(
             status="ok",
-            message=f"Connected as {username} (premium={premium}, expires={expiration})",
+            message=f"Connected as {username} ({days_left}d remaining, expires {expires})",
         )
     except RealDebridAuthError as exc:
         return TestResult(status="error", message=f"Authentication failed: {exc}")
