@@ -391,10 +391,11 @@ class SymlinkManager:
                 ``season``, and ``episode`` populated.
             source_path: Absolute path to the actual file inside the Zurg mount
                 (the symlink will *point to* this path).
-            episode_offset: Number to subtract from the parsed episode number
-                when generating plex_naming filenames for season packs.  Used
-                for absolute-numbered shows where episode 26 in the torrent
-                corresponds to S02E01 (offset=25).  Defaults to 0 (no remapping).
+            episode_offset: When non-zero, subtracted from the episode number
+                parsed from the source filename.  Used for multi-season torrents
+                that use absolute episode numbering (e.g. episode 26 of a
+                collection maps to S02E02 when offset=24).  Defaults to 0
+                (no adjustment — backward-compatible with all existing callers).
 
         Returns:
             The newly created (or found-existing) ``Symlink`` ORM object,
@@ -463,13 +464,12 @@ class SymlinkManager:
                     ep_episode = _parse_episode_from_filename(
                         os.path.basename(source_path)
                     )
-                    # Apply episode offset for absolute-numbered shows.
-                    # Example: a torrent with absolute episode 26 belongs to
-                    # S02E01 when the first season had 25 episodes (offset=25).
+                    # Apply offset for multi-season torrents with absolute
+                    # episode numbering.  When a collection stores all episodes
+                    # as e.g. 1-52 and the caller knows S02 starts at ep 27,
+                    # episode_offset=26 remaps ep 27 → S02E01.
                     if ep_episode is not None and episode_offset > 0:
                         ep_episode = ep_episode - episode_offset
-                        if ep_episode <= 0:
-                            ep_episode = None  # invalid after offset, fall back to raw filename
 
                 if ep_episode is not None:
                     filename = f"{safe_title}{year_part} - S{ep_season:02d}E{ep_episode:02d}{ext}"

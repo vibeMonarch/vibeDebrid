@@ -1,9 +1,9 @@
-"""Tests for issue #16 fixes and subsequent search-add / symlink improvements:
+"""Tests for issue #16 fixes and search-add / symlink flow improvements:
   - check_cached returns 429 on RD rate limit (not 500)
   - check_cached returns 502 on RD connection failure (not 500)
   - Items added via search have state_changed_at set via queue_manager
   - Concurrent list mutation in bulk_remove is eliminated
-  - TMDB enrichment in add_torrent (tmdb_id → canonical title/year)
+  - TMDB enrichment in add_torrent (title/year overridden from TMDB, fallback on failure)
   - episode_offset parameter in create_symlink for absolute-numbered shows
   - Multi-season file filtering in CHECKING stage relaxed fallback
 """
@@ -502,11 +502,11 @@ class TestBulkRemoveConcurrency:
 
 
 def _valid_hash_new(char: str = "a") -> str:
-    """Return a valid 40-character hex info hash (avoids collision with existing helpers)."""
+    """Return a valid 40-character hex info hash (unique char avoids collision)."""
     return char * 40
 
 
-def _make_source_file(tmp_path: Path, filename: str = "video.mkv") -> str:
+def _make_test_source_file(tmp_path: Path, filename: str = "video.mkv") -> str:
     """Create a real file under tmp_path and return its absolute path string."""
     p = tmp_path / filename
     p.write_bytes(b"fake video content")
@@ -543,7 +543,7 @@ def _make_session_factory_new(session: AsyncSession):
     return _factory
 
 
-def _patch_add_externals_new(rd_id: str = "RD001"):
+def _patch_add_externals_new(rd_id: str = "RD_NEW_001"):
     """Standard mock stack for all external calls in POST /api/add."""
     return (
         patch(
@@ -585,15 +585,13 @@ class TestTmdbEnrichmentInAdd:
             seasons=[TmdbSeasonInfo(season_number=1, episode_count=13)],
         )
 
-        add_mocks = _patch_add_externals_new()
-        with (
-            *add_mocks,
-            patch(
-                "src.api.routes.search.tmdb_client.get_show_details",
-                new_callable=AsyncMock,
-                return_value=fake_show,
-            ),
-        ):
+        add_magnet, select_files, register = _patch_add_externals_new()
+        tmdb_patch = patch(
+            "src.services.tmdb.tmdb_client.get_show_details",
+            new_callable=AsyncMock,
+            return_value=fake_show,
+        )
+        with add_magnet, select_files, register, tmdb_patch:
             resp = await http.post(
                 "/api/add",
                 json={
@@ -610,7 +608,6 @@ class TestTmdbEnrichmentInAdd:
         from sqlalchemy import select as sa_select
 
         items = (await session.execute(sa_select(MediaItem))).scalars().all()
-        # The most recently created item is the one from this request
         item = max(items, key=lambda i: i.id)
         assert item.title == "Canonical Show Name"
         assert item.year == 2021
@@ -628,15 +625,13 @@ class TestTmdbEnrichmentInAdd:
             media_type="movie",
         )
 
-        add_mocks = _patch_add_externals_new()
-        with (
-            *add_mocks,
-            patch(
-                "src.api.routes.search.tmdb_client.get_movie_details",
-                new_callable=AsyncMock,
-                return_value=fake_movie,
-            ),
-        ):
+        add_magnet, select_files, register = _patch_add_externals_new()
+        tmdb_patch = patch(
+            "src.services.tmdb.tmdb_client.get_movie_details",
+            new_callable=AsyncMock,
+            return_value=fake_movie,
+        )
+        with add_magnet, select_files, register, tmdb_patch:
             resp = await http.post(
                 "/api/add",
                 json={
@@ -659,15 +654,13 @@ class TestTmdbEnrichmentInAdd:
         self, http: AsyncClient, session: AsyncSession
     ) -> None:
         """When TMDB raises an exception the add succeeds using caller-supplied values."""
-        add_mocks = _patch_add_externals_new()
-        with (
-            *add_mocks,
-            patch(
-                "src.api.routes.search.tmdb_client.get_show_details",
-                new_callable=AsyncMock,
-                side_effect=Exception("TMDB timeout"),
-            ),
-        ):
+        add_magnet, select_files, register = _patch_add_externals_new()
+        tmdb_patch = patch(
+            "src.services.tmdb.tmdb_client.get_show_details",
+            new_callable=AsyncMock,
+            side_effect=Exception("TMDB timeout"),
+        )
+        with add_magnet, select_files, register, tmdb_patch:
             resp = await http.post(
                 "/api/add",
                 json={
@@ -693,18 +686,12 @@ class TestTmdbEnrichmentInAdd:
         self, http: AsyncClient, session: AsyncSession
     ) -> None:
         """When tmdb_id is not provided, no TMDB call is made and caller values are used."""
-        add_mocks = _patch_add_externals_new()
-        with (
-            *add_mocks,
-            patch(
-                "src.api.routes.search.tmdb_client.get_show_details",
-                new_callable=AsyncMock,
-            ) as mock_show,
-            patch(
-                "src.api.routes.search.tmdb_client.get_movie_details",
-                new_callable=AsyncMock,
-            ) as mock_movie,
-        ):
+        add_magnet, select_files, register = _patch_add_externals_new()
+        mock_show = AsyncMock()
+        mock_movie = AsyncMock()
+        p_show = patch("src.services.tmdb.tmdb_client.get_show_details", mock_show)
+        p_movie = patch("src.services.tmdb.tmdb_client.get_movie_details", mock_movie)
+        with add_magnet, select_files, register, p_show, p_movie:
             resp = await http.post(
                 "/api/add",
                 json={
@@ -729,15 +716,13 @@ class TestTmdbEnrichmentInAdd:
         self, http: AsyncClient, session: AsyncSession
     ) -> None:
         """When TMDB returns None (e.g. not configured), caller values are preserved."""
-        add_mocks = _patch_add_externals_new()
-        with (
-            *add_mocks,
-            patch(
-                "src.api.routes.search.tmdb_client.get_show_details",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
+        add_magnet, select_files, register = _patch_add_externals_new()
+        tmdb_patch = patch(
+            "src.services.tmdb.tmdb_client.get_show_details",
+            new_callable=AsyncMock,
+            return_value=None,
+        )
+        with add_magnet, select_files, register, tmdb_patch:
             resp = await http.post(
                 "/api/add",
                 json={
@@ -781,7 +766,7 @@ class TestEpisodeOffsetInCreateSymlink:
         mount_dir = tmp_path / "mount"
         mount_dir.mkdir()
 
-        source = _make_source_file(mount_dir, "Show.Name.E05.mkv")
+        source = _make_test_source_file(mount_dir, "Show.Name.E05.mkv")
 
         item = MediaItem(
             title="Anime Show",
@@ -798,10 +783,8 @@ class TestEpisodeOffsetInCreateSymlink:
         await session.flush()
 
         manager = SymlinkManager()
-        with (
-            patch("src.core.symlink_manager.settings") as mock_settings,
-            patch("src.core.symlink_manager._find_existing_show_dir", return_value=None),
-        ):
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
             mock_settings.paths.library_shows = str(shows_dir)
             mock_settings.paths.library_movies = str(tmp_path / "movies")
             mock_settings.symlink_naming = self._NAMING_PLEX
@@ -826,7 +809,7 @@ class TestEpisodeOffsetInCreateSymlink:
         mount_dir = tmp_path / "mount"
         mount_dir.mkdir()
 
-        source = _make_source_file(mount_dir, "Anime.Show.E26.mkv")
+        source = _make_test_source_file(mount_dir, "Anime.Show.E26.mkv")
 
         item = MediaItem(
             title="Anime Show",
@@ -843,10 +826,8 @@ class TestEpisodeOffsetInCreateSymlink:
         await session.flush()
 
         manager = SymlinkManager()
-        with (
-            patch("src.core.symlink_manager.settings") as mock_settings,
-            patch("src.core.symlink_manager._find_existing_show_dir", return_value=None),
-        ):
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
             mock_settings.paths.library_shows = str(shows_dir)
             mock_settings.paths.library_movies = str(tmp_path / "movies")
             mock_settings.symlink_naming = self._NAMING_PLEX
@@ -867,7 +848,7 @@ class TestEpisodeOffsetInCreateSymlink:
         mount_dir = tmp_path / "mount"
         mount_dir.mkdir()
 
-        source = _make_source_file(mount_dir, "Show.E14.mkv")
+        source = _make_test_source_file(mount_dir, "Show.E14.mkv")
 
         item = MediaItem(
             title="Show",
@@ -883,10 +864,8 @@ class TestEpisodeOffsetInCreateSymlink:
         await session.flush()
 
         manager = SymlinkManager()
-        with (
-            patch("src.core.symlink_manager.settings") as mock_settings,
-            patch("src.core.symlink_manager._find_existing_show_dir", return_value=None),
-        ):
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
             mock_settings.paths.library_shows = str(shows_dir)
             mock_settings.paths.library_movies = str(tmp_path / "movies")
             mock_settings.symlink_naming = self._NAMING_PLEX
@@ -912,7 +891,7 @@ class TestEpisodeOffsetInCreateSymlink:
         mount_dir.mkdir()
 
         raw_filename = "Show.E26.1080p.mkv"
-        source = _make_source_file(mount_dir, raw_filename)
+        source = _make_test_source_file(mount_dir, raw_filename)
 
         item = MediaItem(
             title="Show",
@@ -931,10 +910,8 @@ class TestEpisodeOffsetInCreateSymlink:
             date_prefix=False, release_year=True, resolution=False, plex_naming=False
         )
         manager = SymlinkManager()
-        with (
-            patch("src.core.symlink_manager.settings") as mock_settings,
-            patch("src.core.symlink_manager._find_existing_show_dir", return_value=None),
-        ):
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._find_existing_show_dir", return_value=None):
             mock_settings.paths.library_shows = str(shows_dir)
             mock_settings.paths.library_movies = str(tmp_path / "movies")
             mock_settings.symlink_naming = no_plex
@@ -962,8 +939,11 @@ class TestMultiSeasonFiltering:
     ) -> None:
         """Files from S01 and S02 with item.season=2 → only S02 files symlinked.
 
-        The relaxed season=None fallback must detect multiple distinct parsed_season
-        values and re-apply the item.season filter before creating symlinks.
+        Setup: the season-filtered path-prefix lookup returns nothing (simulating
+        a torrent where files lack season markers in individual filenames).  This
+        forces the relaxed season=None fallback, which returns all 4 files.  The
+        multi-season guard detects distinct parsed_season values {1, 2} and must
+        re-apply the item.season=2 filter so only the two S02 entries survive.
         """
         from src.main import _job_queue_processor
 
@@ -980,12 +960,21 @@ class TestMultiSeasonFiltering:
         session.add(item)
         await session.flush()
 
+        # All four files — parsed_season set on each so the guard can distinguish them.
         all_files = [
             _mount_entry("/mnt/show/S01E01.mkv", parsed_episode=1, parsed_season=1),
             _mount_entry("/mnt/show/S01E02.mkv", parsed_episode=2, parsed_season=1),
             _mount_entry("/mnt/show/S02E01.mkv", parsed_episode=1, parsed_season=2),
             _mount_entry("/mnt/show/S02E02.mkv", parsed_episode=2, parsed_season=2),
         ]
+
+        # lookup_by_path_prefix side_effect:
+        #   - Called with season=2  → [] (simulates no season-2-specific match)
+        #   - Called with season=None → all_files (relaxed fallback)
+        async def _prefix_lookup(_session, _prefix, *, season=None, episode=None):
+            if season is None:
+                return all_files
+            return []
 
         mock_create_symlink = AsyncMock()
         mock_scan = MagicMock()
@@ -1001,8 +990,7 @@ class TestMultiSeasonFiltering:
             ),
             patch(
                 "src.main.mount_scanner.lookup_by_path_prefix",
-                new_callable=AsyncMock,
-                return_value=all_files,
+                side_effect=_prefix_lookup,
             ),
             patch(
                 "src.main.mount_scanner.scan_directory",
@@ -1035,7 +1023,11 @@ class TestMultiSeasonFiltering:
     async def test_single_season_torrent_passes_all_files(
         self, session: AsyncSession
     ) -> None:
-        """A single-season torrent: all matching files pass through without re-filtering."""
+        """A single-season torrent: all 3 files pass through without re-filtering.
+
+        When the relaxed fallback returns files all from the same season,
+        distinct_seasons has only one entry so the guard does not apply.
+        """
         from src.main import _job_queue_processor
 
         item = MediaItem(
@@ -1057,6 +1049,13 @@ class TestMultiSeasonFiltering:
             _mount_entry("/mnt/show/S01E03.mkv", parsed_episode=3, parsed_season=1),
         ]
 
+        # The season-filtered lookup returns nothing, so the relaxed fallback runs
+        # and returns all_files.  Since all files are S01, guard doesn't filter.
+        async def _prefix_lookup(_session, _prefix, *, season=None, episode=None):
+            if season is None:
+                return all_files
+            return []
+
         mock_create_symlink = AsyncMock()
         mock_scan = MagicMock()
         mock_scan.files_indexed = 0
@@ -1071,8 +1070,7 @@ class TestMultiSeasonFiltering:
             ),
             patch(
                 "src.main.mount_scanner.lookup_by_path_prefix",
-                new_callable=AsyncMock,
-                return_value=all_files,
+                side_effect=_prefix_lookup,
             ),
             patch(
                 "src.main.mount_scanner.scan_directory",
@@ -1104,7 +1102,8 @@ class TestMultiSeasonFiltering:
         """Files with parsed_season=None (no season marker) all pass through.
 
         Anime episodes often have no season marker.  When distinct_seasons is
-        empty the multi-season guard must not drop any files.
+        empty (all parsed_season are None) the multi-season guard must not drop
+        any files — all 3 should be symlinked.
         """
         from src.main import _job_queue_processor
 
@@ -1127,6 +1126,14 @@ class TestMultiSeasonFiltering:
             _mount_entry("/mnt/anime/07.mkv", parsed_episode=7, parsed_season=None),
         ]
 
+        # Season-filtered lookup returns [] → relaxed fallback returns all_files.
+        # None of the files have a season marker, so distinct_seasons is empty
+        # and the guard lets all files through.
+        async def _prefix_lookup(_session, _prefix, *, season=None, episode=None):
+            if season is None:
+                return all_files
+            return []
+
         mock_create_symlink = AsyncMock()
         mock_scan = MagicMock()
         mock_scan.files_indexed = 0
@@ -1141,8 +1148,7 @@ class TestMultiSeasonFiltering:
             ),
             patch(
                 "src.main.mount_scanner.lookup_by_path_prefix",
-                new_callable=AsyncMock,
-                return_value=all_files,
+                side_effect=_prefix_lookup,
             ),
             patch(
                 "src.main.mount_scanner.scan_directory",

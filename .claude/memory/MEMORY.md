@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 1789 tests, all passing (as of 2026-03-13)
+- 1830 tests, all passing (as of 2026-03-13)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -39,6 +39,15 @@
 - Issue #10: DB indexes on foreign keys + BigInteger filesize — 2026-03-12
 - Issue #9: session.rollback() → savepoints in scrape_pipeline + migration — 2026-03-12
 - [Episode mismatch filter + retry cleanup](episode-mismatch-filter.md) — 2026-03-13
+- Issue #20: /health endpoint for monitoring + Docker health checks — 2026-03-13
+- Issue #21: Replace hardcoded developer paths with empty defaults + startup warnings — 2026-03-13
+- Issue #15: Pre-compile regex patterns in filter_engine hot loops — 2026-03-13
+- Issue #19: SSE Discover badges use tmdb_id instead of fragile title matching — 2026-03-13
+- Issue #11: Narrow broad except Exception to specific types across 8 files — 2026-03-13
+- Issue #16: Search route error handling (429/502) + bulk remove concurrency fix — 2026-03-13
+
+## Critical Domain Knowledge
+- [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
 
 ## Remaining / Future Work
 - Plex watchlist removal sync (remove from watchlist on COMPLETE/DONE)
@@ -50,9 +59,9 @@
 - ~~`scrape_pipeline.py:868`: `session.rollback()` mid-pipeline can corrupt ORM state~~ — fixed (issue #9)
 - `migration.py` Steps 2-3 (Remove duplicates, Move): same class of bug — bare `except Exception` without savepoints
 - `settings.py:51`: unvalidated `dict[str,Any]` body allows arbitrary key injection
-- `search.py:430-441`: direct `item.state =` bypasses queue_manager (tech debt)
-- Services: broad `except Exception` on JSON parsing — should be `except ValueError`
-- `filter_engine.py:287`: regex compiled inside hot loop
+- ~~`search.py:430-441`: direct `item.state =` bypasses queue_manager (tech debt)~~ — fixed (issue #16)
+- ~~Services: broad `except Exception` on JSON parsing — should be `except ValueError`~~ — fixed (issue #11)
+- ~~`filter_engine.py:287`: regex compiled inside hot loop~~ — fixed (issue #15)
 - Frontend: no CSRF protection, duplicated `escapeHtml`/`formatBytes`
 - `queue.py` rescrape endpoint: no server-side state validation (frontend guards only)
 - `filter_engine.py`: `_score_original_language` double-penalty stacking (-30 for dubbed + no tags)
@@ -105,7 +114,7 @@
 ## SSE Feature Notes
 - Event bus: module singleton, `put_nowait()`, maxsize=64 per client
 - Publishing: inline imports in queue_manager to avoid circular deps
-- Discover SSE: title-based matching (limitation: needs tmdb_id in QueueEvent)
+- Discover SSE: tmdb_id-based matching via QueueEvent.tmdb_id (issue #19)
 
 ## Sticky Headers — 2026-03-07
 - `main { height: 100dvh; overflow-y: auto }` for CSS sticky

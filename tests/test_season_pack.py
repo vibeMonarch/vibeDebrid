@@ -901,7 +901,7 @@ class TestSeasonPackCheckingDedup:
 
         captured_paths: list[str] = []
 
-        async def _capture_symlink(sess, media_item, source_path: str):
+        async def _capture_symlink(sess, media_item, source_path: str, episode_offset: int = 0):
             captured_paths.append(source_path)
 
         with (

@@ -884,18 +884,26 @@
     if (!infoHash || !_lastSearchPayload) return;
 
     const isSeasonPack = btn.dataset.seasonPack === 'true';
-    // Prefer user-supplied season/episode from the search form over PTN-parsed
-    // values from the torrent title.  For a torrent like "S01-S04 COMPLETE",
-    // PTN would parse season=1 even when the user searched for season=2.
-    const ptnSeason = btn.dataset.season !== 'null' && btn.dataset.season !== 'undefined' ? parseInt(btn.dataset.season, 10) : null;
-    const ptnEpisode = btn.dataset.episode !== 'null' && btn.dataset.episode !== 'undefined' ? parseInt(btn.dataset.episode, 10) : null;
-    const season = (_lastSearchPayload.season != null) ? _lastSearchPayload.season : ptnSeason;
-    const episode = isSeasonPack ? null : ((_lastSearchPayload.episode != null) ? _lastSearchPayload.episode : ptnEpisode);
+    // Prefer user-supplied season/episode (from the search form) over the
+    // PTN-parsed value from the torrent title.  For multi-season packs like
+    // "S01-S04 COMPLETE", PTN reports season=1 which would override the user's
+    // intent (e.g. "season 2").  Fall back to the button dataset only when the
+    // user did not supply a value.
+    const userSeason = (_lastSearchPayload.season != null) ? _lastSearchPayload.season : null;
+    const btnSeason = btn.dataset.season !== 'null' && btn.dataset.season !== 'undefined' ? parseInt(btn.dataset.season, 10) : null;
+    const season = (userSeason !== null) ? userSeason : btnSeason;
+
+    const userEpisode = (_lastSearchPayload.episode != null) ? _lastSearchPayload.episode : null;
+    const btnEpisode = isSeasonPack ? null : (btn.dataset.episode !== 'null' && btn.dataset.episode !== 'undefined' ? parseInt(btn.dataset.episode, 10) : null);
+    const episode = isSeasonPack ? null : ((userEpisode !== null) ? userEpisode : btnEpisode);
+
     const releaseTitle = btn.dataset.title || null;
 
     const payload = {
       magnet_or_hash:    infoHash,
-      // Prefer TMDB-resolved canonical title when available; fall back to raw query.
+      // Prefer the TMDB-resolved canonical title over the raw search query so
+      // the queue item title is accurate.  Fall back to the query string when
+      // TMDB resolution was not performed.
       title:             _lastSearchPayload.tmdb_title || _lastSearchPayload.query,
       release_title:     releaseTitle,
       imdb_id:           _lastSearchPayload.imdb_id || null,

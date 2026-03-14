@@ -363,11 +363,11 @@ async def _job_queue_processor() -> None:
 
         for item in checking_items:
             try:
-                # Track episode offset for absolute-numbered shows.  Set to a
-                # non-zero value only when the absolute episode fallback is used
-                # so that plex_naming can remap episode 26 → E01 for S02.
-                _abs_episode_offset: int = 0
                 if item.is_season_pack:
+                    # Tracks episode offset for absolute-numbered multi-season torrents.
+                    # Set to (start_ep - 1) when the absolute episode fallback is used so
+                    # that symlink_manager can remap absolute numbers to per-season numbers.
+                    _season_pack_episode_offset: int = 0
                     # Season packs: look up ALL episodes (episode=None) and symlink each match
                     matches = await mount_scanner.lookup(
                         session,
@@ -463,16 +463,17 @@ async def _job_queue_processor() -> None:
                                                 if f.parsed_episode is not None and start_ep <= f.parsed_episode <= end_ep
                                             ]
                                             if matches:
+                                                # Record offset so symlink_manager can remap
+                                                # absolute episode numbers to per-season numbers.
+                                                # e.g. if S02 starts at ep 27, offset=26 maps
+                                                # file ep 27 → S02E01, ep 28 → S02E02, etc.
+                                                _season_pack_episode_offset = start_ep - 1
                                                 logger.info(
                                                     "CHECKING season pack id=%d: absolute episode fallback matched %d files "
-                                                    "(absolute range %d-%d for S%02d)",
+                                                    "(absolute range %d-%d for S%02d, offset=%d)",
                                                     item.id, len(matches), start_ep, end_ep, item.season,
+                                                    _season_pack_episode_offset,
                                                 )
-                                                # Record offset so plex_naming remaps absolute
-                                                # episode numbers back to per-season numbers.
-                                                # E.g. S02 starts at episode 26 → offset=25,
-                                                # so episode 26 becomes E01 in the symlink name.
-                                                _abs_episode_offset = start_ep - 1
                                 except Exception as exc:
                                     logger.warning(
                                         "CHECKING season pack id=%d: absolute episode fallback failed: %s",
@@ -482,35 +483,43 @@ async def _job_queue_processor() -> None:
                             # (e.g. "28. Episode Title.mp4" with no S02 prefix).
                             # The path prefix already constrains to the correct
                             # torrent directory, so dropping season is safe.
-                            # Guard: for multi-season torrents, dropping the season
-                            # filter would mix all seasons together.  Only fall
-                            # through when the files are genuinely unseasoned.
+                            # Guard against multi-season torrents: if files span
+                            # multiple distinct season values, re-apply the season
+                            # filter so only the requested season's files are used.
                             if not matches and scan_result.matched_dir_path:
-                                _relaxed = await mount_scanner.lookup_by_path_prefix(
+                                unfiltered = await mount_scanner.lookup_by_path_prefix(
                                     session,
                                     scan_result.matched_dir_path,
                                     season=None,
                                     episode=None,
                                 )
-                                if _relaxed and item.season is not None:
-                                    distinct_seasons = set(
-                                        f.parsed_season for f in _relaxed if f.parsed_season is not None
-                                    )
+                                if unfiltered and item.season is not None:
+                                    distinct_seasons = {
+                                        f.parsed_season for f in unfiltered
+                                        if f.parsed_season is not None
+                                    }
                                     if len(distinct_seasons) > 1:
-                                        # Multi-season torrent: re-apply season filter
-                                        # so only the requested season's files are used.
+                                        # Multi-season torrent: re-filter to requested season only.
                                         logger.info(
-                                            "CHECKING season pack id=%d: relaxed query found %d distinct "
-                                            "seasons %s — re-filtering to season %d",
-                                            item.id, len(distinct_seasons), sorted(distinct_seasons), item.season,
+                                            "CHECKING season pack id=%d: relaxed fallback found multi-season "
+                                            "torrent (%s), re-filtering to S%02d",
+                                            item.id, sorted(distinct_seasons), item.season,
                                         )
                                         matches = [
-                                            f for f in _relaxed if f.parsed_season == item.season
+                                            f for f in unfiltered
+                                            if f.parsed_season == item.season
                                         ]
+                                        if not matches:
+                                            logger.warning(
+                                                "CHECKING season pack id=%d: re-filtered multi-season set is empty "
+                                                "for S%02d — leaving matches empty",
+                                                item.id, item.season,
+                                            )
                                     else:
-                                        matches = _relaxed
+                                        # Single season or no season markers: trust all files.
+                                        matches = unfiltered
                                 else:
-                                    matches = _relaxed or []
+                                    matches = unfiltered
                     # Auto-correct: season packs must be shows
                     if matches and item.media_type == MediaType.MOVIE:
                         logger.info(
@@ -581,7 +590,7 @@ async def _job_queue_processor() -> None:
                         try:
                             symlink = await symlink_manager.create_symlink(
                                 session, item, match.filepath,
-                                episode_offset=_abs_episode_offset,
+                                episode_offset=_season_pack_episode_offset,
                             )
                             created += 1
                         except Exception:
