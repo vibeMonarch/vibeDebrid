@@ -1392,3 +1392,237 @@ class TestAnimeBatchPackParsing:
         assert result.is_season_pack is True
         assert result.season == 2
         assert result.episode is None
+
+
+# ---------------------------------------------------------------------------
+# PTN list-value normalisation (Bug 1 & Bug 2)
+# ---------------------------------------------------------------------------
+
+
+class TestPTNListNormalisation:
+    """Tests that PTN list returns for episode and season are normalised to int.
+
+    PTN can return ``episode`` or ``season`` as a list when it encounters
+    multi-episode or multi-season titles.  _parse_entry must collapse these
+    to the first element.
+    """
+
+    def _entry_for(
+        self,
+        raw_title: str,
+        info_hash: str = "a" * 40,
+        seasons: list[int] | None = None,
+        episodes: list[int] | None = None,
+        resolution: str = "",
+        codec: str = "",
+        quality: str = "",
+        group: str | None = None,
+    ) -> dict:
+        """Build a minimal Zilean entry."""
+        return _make_zilean_entry(
+            info_hash=info_hash,
+            raw_title=raw_title,
+            seasons=seasons if seasons is not None else [],
+            episodes=episodes if episodes is not None else [],
+            resolution=resolution,
+            codec=codec,
+            quality=quality,
+            group=group,
+        )
+
+    def test_ptn_episode_list_takes_first_element(
+        self, client: ZileanClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns episode as [1, 2], the result must store episode=1.
+
+        This simulates what PTN does for multi-episode titles.
+        Zilean has no seasons/episodes in its structured arrays, so PTN is used.
+        """
+        import src.services.zilean as zilean_mod
+
+        original_parse = zilean_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict:
+            data = original_parse(title)
+            data["episode"] = [1, 2]
+            return data
+
+        monkeypatch.setattr(zilean_mod.PTN, "parse", _mock_parse)
+
+        entry = self._entry_for(
+            "Show.S01E01E02.1080p.WEB-DL-GROUP",
+            resolution="",
+            codec="",
+            quality="",
+            group=None,
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.episode == 1
+
+    def test_ptn_episode_empty_list_becomes_none(
+        self, client: ZileanClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns episode as [], the result must store episode=None."""
+        import src.services.zilean as zilean_mod
+
+        original_parse = zilean_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict:
+            data = original_parse(title)
+            data["episode"] = []
+            return data
+
+        monkeypatch.setattr(zilean_mod.PTN, "parse", _mock_parse)
+
+        entry = self._entry_for(
+            "Show.S01.1080p.WEB-DL-GROUP",
+            resolution="",
+            codec="",
+            quality="",
+            group=None,
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.episode is None
+
+    def test_ptn_season_list_takes_first_element(
+        self, client: ZileanClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns season as [1, 2, 3, 4], the result must store season=1.
+
+        This simulates what PTN does for multi-season packs like
+        "Show.S01-S04.Complete".
+        """
+        import src.services.zilean as zilean_mod
+
+        original_parse = zilean_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict:
+            data = original_parse(title)
+            data["season"] = [1, 2, 3, 4]
+            data.pop("episode", None)
+            return data
+
+        monkeypatch.setattr(zilean_mod.PTN, "parse", _mock_parse)
+
+        entry = self._entry_for(
+            "Show.S01-S04.Complete.1080p.WEB-DL-GROUP",
+            resolution="",
+            codec="",
+            quality="",
+            group=None,
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 1
+
+    def test_ptn_season_empty_list_becomes_none(
+        self, client: ZileanClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns season as [], the result must store season=None."""
+        import src.services.zilean as zilean_mod
+
+        original_parse = zilean_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict:
+            data = original_parse(title)
+            data["season"] = []
+            data.pop("episode", None)
+            return data
+
+        monkeypatch.setattr(zilean_mod.PTN, "parse", _mock_parse)
+
+        entry = self._entry_for(
+            "Show.Complete.1080p.WEB-DL-GROUP",
+            resolution="",
+            codec="",
+            quality="",
+            group=None,
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season is None
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: PTN called for season/episode even when top-level metadata is set
+# ---------------------------------------------------------------------------
+
+
+class TestZileanPTNAlwaysCalledForSeasonEpisode:
+    """Tests that Zilean calls PTN to extract season/episode even when top-level
+    metadata fields (resolution, codec, quality, group) are already populated.
+
+    Bug: the original guard ``if not any([resolution, codec, quality, ...])``
+    prevented PTN from being called when any metadata field was present, so
+    season/episode were silently lost when Zilean provided resolution but no
+    seasons/episodes arrays.
+    """
+
+    def test_season_extracted_via_ptn_when_resolution_set(
+        self, client: ZileanClient
+    ) -> None:
+        """An entry with resolution from top-level fields but no seasons array
+        must still extract season from the raw_title via PTN.
+        """
+        entry = _make_zilean_entry(
+            raw_title="Show.Name.S02E05.1080p.WEB-DL.x264-GROUP",
+            resolution="1080p",  # top-level metadata populated
+            codec="x264",
+            quality="WEB-DL",
+            group="GROUP",
+            seasons=[],   # no structured season array
+            episodes=[],  # no structured episode array
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 2
+        assert result.episode == 5
+
+    def test_episode_extracted_via_ptn_when_codec_set(
+        self, client: ZileanClient
+    ) -> None:
+        """An entry with codec from top-level fields but no episodes array
+        must still extract episode from the raw_title via PTN.
+        """
+        entry = _make_zilean_entry(
+            raw_title="Some.Show.S01E03.720p.BluRay.x265-RARBG",
+            resolution="720p",
+            codec="x265",
+            quality="BluRay",
+            group="RARBG",
+            seasons=[],
+            episodes=[],
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 1
+        assert result.episode == 3
+
+    def test_structured_arrays_take_priority_over_ptn(
+        self, client: ZileanClient
+    ) -> None:
+        """When structured seasons/episodes arrays ARE populated, their values
+        take priority over PTN — even when the raw_title has a different season.
+        """
+        entry = _make_zilean_entry(
+            raw_title="Show.S99E99.1080p.WEB-DL-GROUP",  # PTN would return 99
+            resolution="1080p",
+            codec="x264",
+            quality="WEB-DL",
+            group="GROUP",
+            seasons=[3],   # structured array says season 3
+            episodes=[7],  # structured array says episode 7
+        )
+        result = client._parse_entry(entry)
+
+        assert result is not None
+        assert result.season == 3
+        assert result.episode == 7

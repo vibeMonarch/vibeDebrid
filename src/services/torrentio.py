@@ -552,7 +552,11 @@ class TorrentioClient:
         quality: str | None = ptn_data.get("quality")
         release_group: str | None = ptn_data.get("group")
         ptn_season: int | None = ptn_data.get("season")
+        if isinstance(ptn_season, list):
+            ptn_season = ptn_season[0] if ptn_season else None
         ptn_episode: int | None = ptn_data.get("episode")
+        if isinstance(ptn_episode, list):
+            ptn_episode = ptn_episode[0] if ptn_episode else None
 
         # Fallback: PTN doesn't handle dash-separated anime notation like "S2 - 06"
         if ptn_episode is None:

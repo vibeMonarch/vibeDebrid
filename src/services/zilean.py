@@ -430,8 +430,15 @@ class ZileanClient:
         quality: str | None = entry.get("quality") or None
         release_group: str | None = entry.get("group") or None
 
-        if not any([resolution, codec, quality, release_group]):
-            ptn_data: dict[str, Any] = {}
+        # PTN is always called for season/episode extraction — Zilean's structured
+        # metadata fields (resolution, codec, etc.) are populated independently and
+        # their presence does not imply that season/episode are also populated.
+        # PTN is also used as a fallback for resolution/codec/quality/group when
+        # those top-level fields are absent.
+        ptn_data: dict[str, Any] = {}
+        if not any([resolution, codec, quality, release_group]) or (
+            season is None and episode is None
+        ):
             try:
                 ptn_data = PTN.parse(raw_title) or {}
             except (ValueError, TypeError, KeyError) as exc:
@@ -440,15 +447,23 @@ class ZileanClient:
                     raw_title,
                     exc,
                 )
+
+        if not any([resolution, codec, quality, release_group]):
             resolution = resolution or ptn_data.get("resolution")
             codec = codec or ptn_data.get("codec")
             quality = quality or ptn_data.get("quality")
             release_group = release_group or ptn_data.get("group")
 
-            if season is None:
-                season = ptn_data.get("season")
-            if episode is None:
-                episode = ptn_data.get("episode")
+        if season is None:
+            ptn_season = ptn_data.get("season")
+            if isinstance(ptn_season, list):
+                ptn_season = ptn_season[0] if ptn_season else None
+            season = ptn_season
+        if episode is None:
+            ptn_episode = ptn_data.get("episode")
+            if isinstance(ptn_episode, list):
+                ptn_episode = ptn_episode[0] if ptn_episode else None
+            episode = ptn_episode
 
         # Fallback: PTN doesn't handle dash-separated anime notation like "S2 - 06"
         if episode is None:

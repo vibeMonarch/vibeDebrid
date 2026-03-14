@@ -1633,3 +1633,124 @@ class TestAnimeBatchPackParsing:
         assert result.is_season_pack is True
         assert result.season == 2
         assert result.episode is None
+
+
+# ---------------------------------------------------------------------------
+# PTN list-value normalisation (Bug 1 & Bug 2)
+# ---------------------------------------------------------------------------
+
+
+class TestPTNListNormalisation:
+    """Tests that PTN list returns for episode and season are normalised to int.
+
+    PTN can return ``episode`` or ``season`` as a list when it encounters
+    multi-episode titles like ``"Show.S01E01E02.1080p"`` or multi-season packs
+    like ``"Show.S01-S04.Complete"``.  The parser must collapse these to the
+    first element so that downstream int comparisons work correctly.
+    """
+
+    def _stream_for(self, release_name: str, info_hash: str = "a" * 40) -> dict[str, Any]:
+        """Build a minimal Torrentio stream dict for the given release name."""
+        return {
+            "name": "Torrentio\n1080p",
+            "title": f"{release_name}\n\U0001f464 10 \U0001f4be 8.0 GB \u2699\ufe0f TPB",
+            "infoHash": info_hash,
+        }
+
+    def test_ptn_episode_list_takes_first_element(
+        self, client: TorrentioClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns episode as [1, 2], the result must store episode=1.
+
+        This simulates what PTN does for titles like "Show.S01E01E02.1080p".
+        """
+        import src.services.torrentio as torrentio_mod
+
+        original_parse = torrentio_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict[str, Any]:
+            data = original_parse(title)
+            # Override episode with a list to simulate PTN list return.
+            data["episode"] = [1, 2]
+            return data
+
+        monkeypatch.setattr(torrentio_mod.PTN, "parse", _mock_parse)
+
+        release = "Show.S01E01E02.1080p.WEB-DL-GROUP"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.episode == 1
+
+    def test_ptn_episode_empty_list_becomes_none(
+        self, client: TorrentioClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns episode as [], the result must store episode=None."""
+        import src.services.torrentio as torrentio_mod
+
+        original_parse = torrentio_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict[str, Any]:
+            data = original_parse(title)
+            data["episode"] = []
+            return data
+
+        monkeypatch.setattr(torrentio_mod.PTN, "parse", _mock_parse)
+
+        release = "Show.S01.1080p.WEB-DL-GROUP"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.episode is None
+
+    def test_ptn_season_list_takes_first_element(
+        self, client: TorrentioClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns season as [1, 2, 3, 4], the result must store season=1.
+
+        This simulates what PTN does for multi-season packs like
+        "Show.S01-S04.Complete".
+        """
+        import src.services.torrentio as torrentio_mod
+
+        original_parse = torrentio_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict[str, Any]:
+            data = original_parse(title)
+            data["season"] = [1, 2, 3, 4]
+            data.pop("episode", None)
+            return data
+
+        monkeypatch.setattr(torrentio_mod.PTN, "parse", _mock_parse)
+
+        release = "Show.S01-S04.Complete.1080p.WEB-DL-GROUP"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.season == 1
+
+    def test_ptn_season_empty_list_becomes_none(
+        self, client: TorrentioClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PTN returns season as [], the result must store season=None."""
+        import src.services.torrentio as torrentio_mod
+
+        original_parse = torrentio_mod.PTN.parse
+
+        def _mock_parse(title: str) -> dict[str, Any]:
+            data = original_parse(title)
+            data["season"] = []
+            data.pop("episode", None)
+            return data
+
+        monkeypatch.setattr(torrentio_mod.PTN, "parse", _mock_parse)
+
+        release = "Show.Complete.1080p.WEB-DL-GROUP"
+        stream = self._stream_for(release)
+        result = client._parse_stream(stream)
+
+        assert result is not None
+        assert result.season is None
