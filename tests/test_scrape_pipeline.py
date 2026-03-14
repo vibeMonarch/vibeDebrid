@@ -1499,3 +1499,868 @@ class TestHashBasedDedup:
 
         # Pipeline continued past the hash dedup step — add_magnet was called
         m.rd_add.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Group 10: Zilean Alt-Title Retry (Issue #34)
+# ---------------------------------------------------------------------------
+#
+# Patch targets for TMDB inline imports inside scrape_pipeline._run_pipeline
+# and _step_zilean.  Both use ``from src.services.tmdb import tmdb_client``
+# internally, so patching the singleton attributes on the imported module is
+# the correct approach.
+#
+_PATCH_TARGETS_WITH_TMDB = {
+    **_PATCH_TARGETS,
+    "tmdb_get_movie_details": "src.services.tmdb.tmdb_client.get_movie_details",
+    "tmdb_get_show_details": "src.services.tmdb.tmdb_client.get_show_details",
+    "tmdb_get_alt_titles": "src.services.tmdb.tmdb_client.get_alternative_titles",
+}
+
+
+class _MocksWithTmdb(_Mocks):
+    tmdb_get_movie_details: AsyncMock
+    tmdb_get_show_details: AsyncMock
+    tmdb_get_alt_titles: AsyncMock
+
+
+@asynccontextmanager
+async def _all_mocks_with_tmdb(
+    mock_rd_torrent: RdTorrent | None = None,
+) -> AsyncGenerator[_MocksWithTmdb, None]:
+    """Like _all_mocks but also patches TMDB client methods.
+
+    Yields a _MocksWithTmdb namespace with defaults that simulate TMDB
+    returning no original_title and no alternative titles.
+    """
+    mocks = _MocksWithTmdb()
+    patchers = {
+        name: patch(target)
+        for name, target in _PATCH_TARGETS_WITH_TMDB.items()
+    }
+
+    started: dict[str, MagicMock] = {}
+    try:
+        for name, patcher in patchers.items():
+            started[name] = patcher.start()
+    except Exception:
+        for p in patchers.values():
+            try:
+                p.stop()
+            except RuntimeError:
+                pass
+        raise
+
+    # Re-use the same defaults as _all_mocks
+    mocks.mount_scanner_available = started["mount_scanner_available"]
+    mocks.mount_scanner_available.return_value = True
+
+    mocks.mount_scanner_lookup = started["mount_scanner_lookup"]
+    mocks.mount_scanner_lookup.return_value = []
+
+    mocks.dedup_check = started["dedup_check"]
+    mocks.dedup_check.return_value = None
+
+    mocks.dedup_register = started["dedup_register"]
+    mocks.dedup_register.return_value = mock_rd_torrent or MagicMock(spec=RdTorrent)
+
+    mocks.zilean_search = started["zilean_search"]
+    mocks.zilean_search.return_value = []
+
+    mocks.torrentio_movie = started["torrentio_movie"]
+    mocks.torrentio_movie.return_value = []
+
+    mocks.torrentio_episode = started["torrentio_episode"]
+    mocks.torrentio_episode.return_value = []
+
+    mocks.rd_add = started["rd_add"]
+    mocks.rd_add.return_value = {"id": "RD123", "uri": "magnet:?xt=urn:btih:" + "a" * 40}
+
+    mocks.rd_select = started["rd_select"]
+    mocks.rd_select.return_value = None
+
+    mocks.rd_get_torrent_info = started["rd_get_torrent_info"]
+    mocks.rd_get_torrent_info.return_value = {"id": "RD123", "status": "magnet_conversion", "files": []}
+
+    mocks.rd_delete = started["rd_delete"]
+    mocks.rd_delete.return_value = None
+
+    mocks.filter_rank = started["filter_rank"]
+    mocks.filter_rank.return_value = []
+
+    mocks.queue_transition = started["queue_transition"]
+    mocks.queue_transition.side_effect = None
+    mocks.queue_transition.return_value = MagicMock(spec=MediaItem)
+
+    # TMDB defaults: return a minimal detail object with no original_title,
+    # and no alternative titles.
+    _mock_detail = MagicMock()
+    _mock_detail.original_language = None
+    _mock_detail.original_title = None
+
+    mocks.tmdb_get_movie_details = started["tmdb_get_movie_details"]
+    mocks.tmdb_get_movie_details.return_value = _mock_detail
+
+    mocks.tmdb_get_show_details = started["tmdb_get_show_details"]
+    mocks.tmdb_get_show_details.return_value = _mock_detail
+
+    mocks.tmdb_get_alt_titles = started["tmdb_get_alt_titles"]
+    mocks.tmdb_get_alt_titles.return_value = []
+
+    try:
+        yield mocks
+    finally:
+        for p in patchers.values():
+            p.stop()
+
+
+def _make_item_with_tmdb_id(
+    session_unused,
+    *,
+    tmdb_id: str = "456",
+    title: str = "Spirited Away",
+    media_type: MediaType = MediaType.MOVIE,
+    imdb_id: str = "tt0245429",
+    year: int = 2001,
+) -> MediaItem:
+    """Build an in-memory MediaItem with a tmdb_id set (not persisted)."""
+    return MediaItem(
+        imdb_id=imdb_id,
+        tmdb_id=tmdb_id,
+        title=title,
+        year=year,
+        media_type=media_type,
+        state=QueueState.WANTED,
+        state_changed_at=None,
+        retry_count=0,
+    )
+
+
+class TestZileanAltTitleRetry:
+    """Zilean retries with original title and TMDB alternative titles on zero results.
+
+    Tests exercise the fallback chain introduced in Issue #34:
+      1. Primary title search → no results
+      2. original_title from TMDB detail (Step 0) → try next
+      3. Additional titles from get_alternative_titles() → try each in order
+      4. Stop at first title that returns results
+    """
+
+    async def test_step_zilean_no_retry_when_primary_succeeds(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When primary title returns results, get_alternative_titles is never called."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        # Enable TMDB in settings so the alt-title path is active
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        zilean_result = _make_zilean_result()
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary title returns results immediately
+            m.zilean_search.return_value = [zilean_result]
+            m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+
+            item = _make_item_with_tmdb_id(session, tmdb_id="123")
+            # Give item a DB id by inserting it
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # Zilean called exactly once (primary title)
+        assert m.zilean_search.call_count == 1
+        # get_alternative_titles never needed
+        m.tmdb_get_alt_titles.assert_not_called()
+
+    async def test_step_zilean_retries_with_original_title(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Primary returns [], original_title from TMDB detail returns results on retry."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        zilean_result = _make_zilean_result()
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary title returns nothing; second call (original_title) returns results
+            m.zilean_search.side_effect = [[], [zilean_result]]
+            m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+
+            # TMDB detail returns an original_title different from primary
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = "Sen to Chihiro no Kamikakushi"
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="129",
+                title="Spirited Away",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Zilean called twice: first with primary, then with original_title
+        assert m.zilean_search.call_count == 2
+        # Verify second call used the original title
+        second_call_kwargs = m.zilean_search.call_args_list[1][1]
+        assert second_call_kwargs.get("query") == "Sen to Chihiro no Kamikakushi"
+        # Pipeline proceeded with the results from the retry
+        assert result.action != "no_results"
+
+    async def test_step_zilean_retries_with_alt_titles(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Primary and original_title return [], TMDB alt titles fetched, one succeeds."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        zilean_result = _make_zilean_result()
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary returns nothing; "Alt Title" also returns nothing; "Second Alt" succeeds
+            m.zilean_search.side_effect = [[], [], [zilean_result]]
+            m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+
+            # No original_title in TMDB detail (so alt_titles from Step 0 is empty)
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # get_alternative_titles returns two candidates
+            m.tmdb_get_alt_titles.return_value = ["Alt Title", "Second Alt"]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="555",
+                title="Main English Title",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # get_alternative_titles was called once (lazy fetch)
+        m.tmdb_get_alt_titles.assert_called_once()
+        # Zilean called 3 times total: primary + first alt (no results) + second alt (results)
+        assert m.zilean_search.call_count == 3
+        # Pipeline used the results from the third call
+        assert result.action != "no_results"
+
+    async def test_step_zilean_no_alt_titles_without_tmdb_id(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When item has no tmdb_id, alt-title retry is skipped gracefully."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary returns nothing
+            m.zilean_search.return_value = []
+
+            # Item with NO tmdb_id
+            item = MediaItem(
+                imdb_id="tt9999999",
+                tmdb_id=None,  # no tmdb_id
+                title="Obscure Movie",
+                year=2010,
+                media_type=MediaType.MOVIE,
+                state=QueueState.WANTED,
+                state_changed_at=None,
+                retry_count=0,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Zilean called exactly once (primary only — no tmdb_id to fetch alt titles)
+        assert m.zilean_search.call_count == 1
+        # get_alternative_titles never called
+        m.tmdb_get_alt_titles.assert_not_called()
+        # Outcome is no_results since everything returned empty
+        assert result.action == "no_results"
+
+    async def test_step_zilean_skips_duplicate_title(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An alt title identical to the primary title (case-insensitive) is skipped."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary returns nothing
+            m.zilean_search.return_value = []
+
+            # No original_title in TMDB detail
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # get_alternative_titles returns only the same title as primary (different case)
+            m.tmdb_get_alt_titles.return_value = ["SPIRITED AWAY", "Spirited Away"]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="129",
+                title="Spirited Away",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Alt titles "SPIRITED AWAY" and "Spirited Away" are both case-insensitively
+        # equal to the primary "Spirited Away" and must be skipped.
+        # So Zilean is only called once (the primary search).
+        assert m.zilean_search.call_count == 1
+        # Outcome is no_results since only duplicate titles were available
+        assert result.action == "no_results"
+
+    async def test_step_zilean_all_alt_titles_exhausted_returns_no_results(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All alt titles tried but all return [], pipeline falls through to no_results."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            # All searches return nothing
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # Alt titles that also return nothing
+            m.tmdb_get_alt_titles.return_value = ["Alt A", "Alt B"]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="777",
+                title="Totally Obscure Film",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Pipeline gracefully returns no_results
+        assert result.action == "no_results"
+
+    async def test_step_zilean_get_alt_titles_failure_graceful(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """get_alternative_titles raising does not crash the pipeline."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # TMDB alt titles fetch fails
+            m.tmdb_get_alt_titles.side_effect = RuntimeError("TMDB unavailable")
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="888",
+                title="Some Movie",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Pipeline survived the error — must return a valid action, not raise
+        assert result.action in ("no_results", "error", "added_to_rd", "dedup_hit", "mount_hit")
+
+    async def test_step_zilean_original_title_same_as_primary_not_retried(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When TMDB original_title equals item.title (case-insensitive), no retry is made."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            # original_title is same as the item title — must not be added to alt_titles
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = "Spirited Away"  # identical to item.title
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # get_alternative_titles also returns nothing meaningful
+            m.tmdb_get_alt_titles.return_value = []
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="129",
+                title="Spirited Away",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # Zilean called once (primary only); original_title == primary so no extra call
+        assert m.zilean_search.call_count == 1
+
+    async def test_step_zilean_original_title_same_case_insensitive(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """original_title differing only by case from item.title is also skipped."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            # original_title differs only in case
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = "SPIRITED AWAY"
+            m.tmdb_get_movie_details.return_value = detail_mock
+            m.tmdb_get_alt_titles.return_value = []
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="129",
+                title="Spirited Away",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # The case-insensitive match is caught in the _run_pipeline _alt_titles guard
+        # (line: if _tmdb_original_title.lower() != item.title.lower())
+        # → no extra Zilean call from the original_title path
+        assert m.zilean_search.call_count == 1
+
+    async def test_step_zilean_max_five_alt_title_candidates(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At most 5 alt-title candidates are tried regardless of how many TMDB returns."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            # All searches return nothing
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # Return 10 distinct alt titles — only 5 should be tried
+            m.tmdb_get_alt_titles.return_value = [
+                f"Alt Title {i}" for i in range(1, 11)
+            ]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="999",
+                title="Main Title",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # Primary (1) + at most 5 alt titles = at most 6 Zilean calls total
+        assert m.zilean_search.call_count <= 6
+
+    async def test_step_zilean_alt_title_search_raises_continues_to_next(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Zilean exception on one alt-title search skips that title and tries the next."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        zilean_result = _make_zilean_result()
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary returns nothing; first alt raises; second alt succeeds
+            m.zilean_search.side_effect = [
+                [],                                        # primary — no results
+                RuntimeError("zilean connection reset"),   # first alt — raises
+                [zilean_result],                           # second alt — succeeds
+            ]
+            m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+            m.tmdb_get_alt_titles.return_value = ["First Alt", "Second Alt"]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="111",
+                title="Original Title",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Three Zilean calls: primary + first alt (raised, skipped) + second alt (success)
+        assert m.zilean_search.call_count == 3
+        # Pipeline proceeded with the successful result from the third call
+        assert result.action != "no_results"
+
+    async def test_step_zilean_tmdb_disabled_skips_alt_title_fallback(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When TMDB is disabled, the alt-title retry block is never entered."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = False   # TMDB disabled
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            item = MediaItem(
+                imdb_id="tt1111111",
+                tmdb_id="123",
+                title="Some Movie",
+                year=2020,
+                media_type=MediaType.MOVIE,
+                state=QueueState.WANTED,
+                state_changed_at=None,
+                retry_count=0,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # TMDB disabled → Step 0 never called, alt-title guard never entered
+        m.tmdb_get_movie_details.assert_not_called()
+        m.tmdb_get_alt_titles.assert_not_called()
+        assert m.zilean_search.call_count == 1
+        assert result.action == "no_results"
+
+    async def test_step_zilean_alt_title_tv_show_passes_tv_media_type(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """For a TV show item, get_alternative_titles is called with media_type='tv'."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        zilean_result = _make_zilean_result()
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary returns nothing; alt title returns results
+            m.zilean_search.side_effect = [[], [zilean_result]]
+            m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_show_details.return_value = detail_mock
+
+            m.tmdb_get_alt_titles.return_value = ["Boku no Hero Academia"]
+
+            # TV show item
+            item = MediaItem(
+                imdb_id="tt5626028",
+                tmdb_id="65930",
+                title="My Hero Academia",
+                year=2016,
+                media_type=MediaType.SHOW,
+                season=1,
+                episode=1,
+                state=QueueState.WANTED,
+                state_changed_at=None,
+                retry_count=0,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # get_alternative_titles must be called with "tv" as media_type
+        m.tmdb_get_alt_titles.assert_called_once()
+        call_args = m.tmdb_get_alt_titles.call_args
+        passed_media_type = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("media_type")
+        assert passed_media_type == "tv"
+
+    async def test_step_zilean_tmdb_no_api_key_skips_alt_title_fallback(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When TMDB api_key is blank, the alt-title retry block is never entered."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = ""   # no API key
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.zilean_search.return_value = []
+            m.torrentio_movie.return_value = []
+
+            item = MediaItem(
+                imdb_id="tt2222222",
+                tmdb_id="456",
+                title="Another Movie",
+                year=2021,
+                media_type=MediaType.MOVIE,
+                state=QueueState.WANTED,
+                state_changed_at=None,
+                retry_count=0,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # No api_key → neither Step 0 nor the alt-title fallback should make TMDB calls
+        m.tmdb_get_movie_details.assert_not_called()
+        m.tmdb_get_alt_titles.assert_not_called()
+        assert m.zilean_search.call_count == 1
+        assert result.action == "no_results"
+
+    async def test_step_zilean_alt_title_dedup_from_tmdb_fetch(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Alt titles from TMDB that duplicate a caller-supplied original_title are not retried twice."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary returns nothing; original_title also returns nothing
+            # TMDB alt titles list includes original_title again — must be deduped
+            m.zilean_search.side_effect = [[], [], []]  # all fail
+            m.torrentio_movie.return_value = []
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = "Sen to Chihiro"
+            m.tmdb_get_movie_details.return_value = detail_mock
+
+            # get_alternative_titles returns the same string as original_title
+            m.tmdb_get_alt_titles.return_value = [
+                "Sen to Chihiro",   # duplicate of original_title already in candidates
+                "Chihiro's Journey",
+            ]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="129",
+                title="Spirited Away",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # Calls: primary + "Sen to Chihiro" + "Chihiro's Journey"
+        # "Sen to Chihiro" appears once in candidates (deduped), so 3 calls total
+        assert m.zilean_search.call_count == 3
+
+    async def test_step_zilean_alt_title_hit_logged_with_primary_query(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When an alt title wins, the ScrapeLog query_params includes 'primary_query'."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+        import json as _json  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "test-key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        zilean_result = _make_zilean_result()
+
+        async with _all_mocks_with_tmdb() as m:
+            # Primary empty; alt title succeeds
+            m.zilean_search.side_effect = [[], [zilean_result]]
+            m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+
+            detail_mock = MagicMock()
+            detail_mock.original_language = None
+            detail_mock.original_title = None
+            m.tmdb_get_movie_details.return_value = detail_mock
+            m.tmdb_get_alt_titles.return_value = ["Winning Alt Title"]
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="222",
+                title="English Title",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+            await session.flush()
+
+        # Check the ScrapeLog for the zilean row that corresponds to the alt-title hit
+        from sqlalchemy import select as _select  # noqa: PLC0415
+
+        logs_result = await session.execute(
+            _select(ScrapeLog).where(
+                ScrapeLog.media_item_id == item.id,
+                ScrapeLog.scraper == "zilean",
+            )
+        )
+        zilean_logs = logs_result.scalars().all()
+        assert len(zilean_logs) == 1, (
+            f"Expected exactly one zilean ScrapeLog; got {len(zilean_logs)}"
+        )
+        params = _json.loads(zilean_logs[0].query_params)
+        assert "primary_query" in params, (
+            f"Expected 'primary_query' key in query_params when alt title wins; got {params}"
+        )
+        assert params["query"] == "Winning Alt Title"
+        assert params["primary_query"] == "English Title"

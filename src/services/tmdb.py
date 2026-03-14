@@ -66,6 +66,7 @@ class TmdbItem(BaseModel):
     vote_average: float = 0.0
     imdb_id: str | None = None  # only populated when external IDs are fetched
     original_language: str | None = None
+    original_title: str | None = None  # original_title (movie) or original_name (tv)
 
 
 class TmdbExternalIds(BaseModel):
@@ -120,6 +121,7 @@ class TmdbShowDetail(BaseModel):
     next_episode_to_air: TmdbEpisodeAirInfo | None = None
     last_episode_to_air: TmdbEpisodeAirInfo | None = None
     original_language: str | None = None
+    original_title: str | None = None  # original_name field from TMDB
 
 
 class TmdbEpisodeInfo(BaseModel):
@@ -204,9 +206,11 @@ class TmdbClient:
         if mt == "movie":
             title = raw.get("title") or raw.get("name") or ""
             date_field = raw.get("release_date") or ""
+            original_title: str | None = raw.get("original_title") or None
         else:
             title = raw.get("name") or raw.get("title") or ""
             date_field = raw.get("first_air_date") or ""
+            original_title = raw.get("original_name") or None
 
         if not title:
             return None
@@ -233,6 +237,7 @@ class TmdbClient:
             poster_path=poster_path,
             vote_average=vote_average,
             original_language=original_language,
+            original_title=original_title,
         )
 
     def _handle_error_status(self, response: httpx.Response, context: str) -> bool:
@@ -980,6 +985,7 @@ class TmdbClient:
             next_episode_to_air=next_episode_to_air,
             last_episode_to_air=last_episode_to_air,
             original_language=data.get("original_language") or None,
+            original_title=data.get("original_name") or None,
         )
 
         logger.debug(
@@ -1137,6 +1143,114 @@ class TmdbClient:
             return None
 
         return self._parse_item(data, media_type="movie")
+
+    async def get_alternative_titles(
+        self, tmdb_id: int, media_type: str
+    ) -> list[str]:
+        """Fetch alternative/localized titles for a movie or TV show from TMDB.
+
+        Uses GET /{media_type}/{tmdb_id}/alternative_titles.  For movies the
+        response key is ``titles`` with each entry containing a ``title`` field;
+        for TV the key is ``results`` with the same ``title`` field per entry.
+
+        Args:
+            tmdb_id: The TMDB numeric identifier.
+            media_type: ``"movie"`` or ``"tv"``.
+
+        Returns:
+            A deduplicated list of alternative title strings, or an empty list
+            on any failure or when TMDB is not configured.
+        """
+        if not self._check_configured("get_alternative_titles"):
+            return []
+
+        breaker = get_circuit_breaker("tmdb")
+        try:
+            await breaker.before_request()
+        except CircuitOpenError:
+            logger.warning(
+                "tmdb.get_alternative_titles: circuit open, skipping "
+                "tmdb_id=%d media_type=%s",
+                tmdb_id,
+                media_type,
+            )
+            return []
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/{media_type}/{tmdb_id}/alternative_titles"
+            )
+        except httpx.ConnectError as exc:
+            await breaker.record_failure()
+            logger.warning(
+                "tmdb.get_alternative_titles: connection error "
+                "tmdb_id=%d media_type=%s (%s)",
+                tmdb_id,
+                media_type,
+                exc,
+            )
+            return []
+        except httpx.TimeoutException as exc:
+            await breaker.record_failure()
+            logger.warning(
+                "tmdb.get_alternative_titles: request timed out "
+                "tmdb_id=%d media_type=%s (%s)",
+                tmdb_id,
+                media_type,
+                exc,
+            )
+            return []
+        except httpx.RequestError as exc:
+            await breaker.record_failure()
+            logger.warning(
+                "tmdb.get_alternative_titles: network error "
+                "tmdb_id=%d media_type=%s (%s)",
+                tmdb_id,
+                media_type,
+                exc,
+            )
+            return []
+
+        if self._handle_error_status(response, "get_alternative_titles"):
+            if response.status_code != 429:
+                await breaker.record_failure()
+            return []
+        await breaker.record_success()
+
+        try:
+            data: dict[str, Any] = response.json()
+        except ValueError as exc:
+            logger.error(
+                "tmdb.get_alternative_titles: malformed JSON "
+                "tmdb_id=%d media_type=%s (%s)",
+                tmdb_id,
+                media_type,
+                exc,
+            )
+            return []
+
+        # Movies use "titles" key; TV uses "results" key.
+        if media_type == "movie":
+            raw_list: list[dict[str, Any]] = data.get("titles") or []
+        else:
+            raw_list = data.get("results") or []
+
+        seen: set[str] = set()
+        titles: list[str] = []
+        for entry in raw_list:
+            t = entry.get("title") or ""
+            if t and t not in seen:
+                seen.add(t)
+                titles.append(t)
+
+        logger.debug(
+            "tmdb.get_alternative_titles: tmdb_id=%d media_type=%s found=%d",
+            tmdb_id,
+            media_type,
+            len(titles),
+        )
+        return titles
 
     async def get_season_details(self, tmdb_id: int, season_number: int) -> TmdbSeasonDetail | None:
         """Fetch detailed season info including episode air dates.

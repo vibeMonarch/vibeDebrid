@@ -190,17 +190,15 @@ class ScrapePipeline:
             A PipelineResult describing the outcome.
         """
         # ------------------------------------------------------------------
-        # Step 0 — Backfill original_language from TMDB if missing
-        # Only runs when prefer_original_language is enabled AND TMDB is
-        # configured — avoids unnecessary API calls when the feature is off.
+        # Step 0 — Fetch TMDB details for original_language backfill and
+        # alternative title collection (used by Zilean fallback).
+        # Runs whenever tmdb_id is present and TMDB is configured.
+        # original_language backfill only writes when prefer_original_language
+        # is enabled — avoids mutating the item without the feature on.
         # ------------------------------------------------------------------
-        if (
-            item.original_language is None
-            and item.tmdb_id
-            and settings.filters.prefer_original_language
-            and settings.tmdb.enabled
-            and settings.tmdb.api_key
-        ):
+        _tmdb_original_title: str | None = None  # populated below when available
+
+        if item.tmdb_id and settings.tmdb.enabled and settings.tmdb.api_key:
             try:
                 from src.services.tmdb import tmdb_client as _tmdb_client
 
@@ -209,16 +207,24 @@ class ScrapePipeline:
                     _detail = await _tmdb_client.get_movie_details(tmdb_id_int)
                 else:
                     _detail = await _tmdb_client.get_show_details(tmdb_id_int)
-                if _detail is not None and _detail.original_language:
-                    item.original_language = _detail.original_language
-                    logger.debug(
-                        "scrape_pipeline: backfilled original_language=%r for item id=%d",
-                        item.original_language,
-                        item.id,
-                    )
+                if _detail is not None:
+                    if (
+                        item.original_language is None
+                        and settings.filters.prefer_original_language
+                        and _detail.original_language
+                    ):
+                        item.original_language = _detail.original_language
+                        logger.debug(
+                            "scrape_pipeline: backfilled original_language=%r for item id=%d",
+                            item.original_language,
+                            item.id,
+                        )
+                    _tmdb_original_title = _detail.original_title or None
             except Exception as exc:
                 logger.debug(
-                    "original_language backfill failed for item %d: %s", item.id, exc
+                    "scrape_pipeline: TMDB detail fetch failed for item id=%d: %s",
+                    item.id,
+                    exc,
                 )
 
         # ------------------------------------------------------------------
@@ -304,9 +310,20 @@ class ScrapePipeline:
 
         # ------------------------------------------------------------------
         # Step 4 — Zilean scrape
+        # Build alt_titles list: start with original_title from TMDB detail
+        # (already fetched in Step 0).  The _step_zilean method will lazily
+        # call get_alternative_titles() if original_title also returns 0.
         # ------------------------------------------------------------------
+        _alt_titles: list[str] = []
+        if _tmdb_original_title and _tmdb_original_title.lower() != item.title.lower():
+            _alt_titles.append(_tmdb_original_title)
+
         zilean_results, zilean_duration_ms = await self._step_zilean(
-            session, item, scene_season=scene_season, scene_episode=scene_episode
+            session,
+            item,
+            scene_season=scene_season,
+            scene_episode=scene_episode,
+            alt_titles=_alt_titles,
         )
 
         # ------------------------------------------------------------------
@@ -756,8 +773,15 @@ class ScrapePipeline:
         *,
         scene_season: int | None = None,
         scene_episode: int | None = None,
+        alt_titles: list[str] | None = None,
     ) -> tuple[list[ZileanResult], int]:
-        """Query Zilean for results.
+        """Query Zilean for results, retrying with alternative titles on zero results.
+
+        When the primary title search returns no results and ``alt_titles`` is
+        non-empty, each alternative title is tried in order (skipping any that
+        match the primary title case-insensitively).  The first title that
+        returns results wins.  If those are also exhausted, ``get_alternative_titles``
+        is lazily called from TMDB (capped at 5 additional candidates total).
 
         Errors are caught and logged; an empty list is returned so the pipeline
         continues to Torrentio.
@@ -769,6 +793,8 @@ class ScrapePipeline:
                 not provided).
             scene_episode: Pre-resolved scene episode from XEM (or item.episode
                 if not provided).
+            alt_titles: Pre-computed alternative titles to try on zero results
+                (e.g. original_title from the TMDB detail call in Step 0).
 
         Returns:
             2-tuple of (results, duration_ms).
@@ -813,6 +839,91 @@ class ScrapePipeline:
                 item.id,
                 exc,
             )
+
+        # Alternative title fallback: try when primary title returned nothing.
+        if not results and item.tmdb_id and settings.tmdb.enabled and settings.tmdb.api_key:
+            # Build the candidate list: caller-supplied alt_titles first, then
+            # lazily fetched from TMDB /alternative_titles.  Cap total at 5 to
+            # avoid excessive Zilean queries.
+            _MAX_ALT = 5
+            candidates: list[str] = list(alt_titles or [])
+
+            # Lazily fetch additional alternative titles from TMDB.
+            try:
+                from src.services.tmdb import tmdb_client as _tmdb_client
+
+                tmdb_id_int = int(item.tmdb_id)
+                media_type_str = (
+                    "movie" if item.media_type == MediaType.MOVIE else "tv"
+                )
+                extra = await _tmdb_client.get_alternative_titles(
+                    tmdb_id_int, media_type_str
+                )
+                for t in extra:
+                    if t not in candidates:
+                        candidates.append(t)
+            except Exception as exc:
+                logger.debug(
+                    "scrape_pipeline: get_alternative_titles failed for item id=%d: %s",
+                    item.id,
+                    exc,
+                )
+
+            primary_lower = item.title.lower()
+            tried: list[str] = []
+            for alt in candidates[:_MAX_ALT]:
+                if alt.lower() == primary_lower:
+                    continue  # skip if same as primary (case-insensitive)
+                tried.append(alt)
+                try:
+                    alt_results = await zilean_client.search(
+                        query=alt,
+                        season=scene_season,
+                        episode=scene_episode,
+                        year=item.year,
+                        imdb_id=item.imdb_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "scrape_pipeline: Zilean alt-title search failed for "
+                        "item id=%d alt=%r: %s",
+                        item.id,
+                        alt,
+                        exc,
+                    )
+                    continue
+                if alt_results:
+                    logger.info(
+                        "scrape_pipeline: Zilean alt-title hit for item id=%d — "
+                        "primary=%r alt=%r returned=%d",
+                        item.id,
+                        item.title,
+                        alt,
+                        len(alt_results),
+                    )
+                    results = alt_results
+                    query_params = json.dumps(
+                        {
+                            "query": alt,
+                            "primary_query": item.title,
+                            "season": item.season,
+                            "episode": item.episode,
+                            "scene_season": scene_season,
+                            "scene_episode": scene_episode,
+                            "year": item.year,
+                            "imdb_id": item.imdb_id,
+                        }
+                    )
+                    break
+            else:
+                if tried:
+                    logger.debug(
+                        "scrape_pipeline: Zilean alt-title fallback exhausted for "
+                        "item id=%d — tried %d titles: %s",
+                        item.id,
+                        len(tried),
+                        tried,
+                    )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
 

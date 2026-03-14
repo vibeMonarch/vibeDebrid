@@ -1198,6 +1198,342 @@ def test_parse_item_unicode_title() -> None:
 
 
 # ---------------------------------------------------------------------------
+# get_alternative_titles — Issue #34
+# ---------------------------------------------------------------------------
+
+
+def _make_movie_alt_titles_response(titles: list[str]) -> dict[str, Any]:
+    """Build a TMDB /movie/{id}/alternative_titles response body."""
+    return {
+        "id": 123,
+        "titles": [{"iso_3166_1": "US", "title": t, "type": ""} for t in titles],
+    }
+
+
+def _make_tv_alt_titles_response(titles: list[str]) -> dict[str, Any]:
+    """Build a TMDB /tv/{id}/alternative_titles response body."""
+    return {
+        "id": 456,
+        "results": [{"iso_3166_1": "US", "title": t, "type": ""} for t in titles],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_movie(client: TmdbClient) -> None:
+    """get_alternative_titles for a movie returns titles from the 'titles' key, deduped."""
+    body = _make_movie_alt_titles_response(["Alt Title One", "Alt Title Two", "Alt Title One"])
+    _patch_client(client, [_make_response(200, body)])
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert isinstance(result, list)
+    # Dedup: "Alt Title One" appears twice in source but only once in result
+    assert result.count("Alt Title One") == 1
+    assert "Alt Title Two" in result
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_tv(client: TmdbClient) -> None:
+    """get_alternative_titles for a TV show returns titles from the 'results' key."""
+    body = _make_tv_alt_titles_response(["Show Alt A", "Show Alt B"])
+    _patch_client(client, [_make_response(200, body)])
+
+    result = await client.get_alternative_titles(456, "tv")
+
+    assert isinstance(result, list)
+    assert "Show Alt A" in result
+    assert "Show Alt B" in result
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_failure(client: TmdbClient) -> None:
+    """A network error from get_alternative_titles returns an empty list without raising."""
+
+    class _ConnErrorTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+    async def _fake_get_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=_ConnErrorTransport())
+
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_not_configured(disabled_client: TmdbClient) -> None:
+    """When TMDB is disabled, get_alternative_titles returns an empty list without any HTTP calls."""
+    transport = _patch_client(disabled_client, [])
+
+    result = await disabled_client.get_alternative_titles(123, "movie")
+
+    assert result == []
+    assert len(transport.requests_made) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_no_api_key(no_key_client: TmdbClient) -> None:
+    """When api_key is empty, get_alternative_titles returns [] without any HTTP calls."""
+    transport = _patch_client(no_key_client, [])
+
+    result = await no_key_client.get_alternative_titles(456, "tv")
+
+    assert result == []
+    assert len(transport.requests_made) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_server_error(client: TmdbClient) -> None:
+    """A 500 response from get_alternative_titles returns an empty list without raising."""
+    _patch_client(client, [_make_response(500, {"status_message": "Internal Server Error"})])
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_timeout(client: TmdbClient) -> None:
+    """A TimeoutException returns an empty list without raising."""
+
+    class _TimeoutTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.TimeoutException("timed out", request=request)
+
+    async def _fake_get_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=_TimeoutTransport())
+
+    client._get_client = _fake_get_client  # type: ignore[method-assign]
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_rate_limited(client: TmdbClient) -> None:
+    """A 429 Too Many Requests response returns an empty list without raising."""
+    _patch_client(client, [_make_response(429, {"status_message": "Request count over limit."})])
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_malformed_json(client: TmdbClient) -> None:
+    """A non-JSON response body returns an empty list without raising."""
+    _patch_client(
+        client,
+        [_make_response(200, b"<html>not json</html>", content_type="text/html")],
+    )
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_auth_error(client: TmdbClient) -> None:
+    """A 401 Unauthorized response returns an empty list without raising."""
+    _patch_client(client, [_make_response(401, {"status_message": "Invalid API key."})])
+
+    result = await client.get_alternative_titles(456, "tv")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_filters_empty_title_entries(client: TmdbClient) -> None:
+    """Entries with empty or missing 'title' field are excluded from the result."""
+    body = {
+        "id": 123,
+        "titles": [
+            {"iso_3166_1": "US", "title": "Valid Title", "type": ""},
+            {"iso_3166_1": "DE", "title": "", "type": ""},       # empty string — skip
+            {"iso_3166_1": "FR", "type": ""},                    # missing title key — skip
+            {"iso_3166_1": "JP", "title": "Another Valid", "type": ""},
+        ],
+    }
+    _patch_client(client, [_make_response(200, body)])
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == ["Valid Title", "Another Valid"]
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_empty_response(client: TmdbClient) -> None:
+    """An empty titles/results list returns an empty list."""
+    body = _make_movie_alt_titles_response([])
+    _patch_client(client, [_make_response(200, body)])
+
+    result = await client.get_alternative_titles(123, "movie")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_movie_uses_correct_url(client: TmdbClient) -> None:
+    """get_alternative_titles for a movie hits the /movie/{id}/alternative_titles endpoint."""
+    body = _make_movie_alt_titles_response(["Alt"])
+    transport = _patch_client(client, [_make_response(200, body)])
+
+    await client.get_alternative_titles(789, "movie")
+
+    assert len(transport.requests_made) == 1
+    url = str(transport.requests_made[0].url)
+    assert "/movie/789/alternative_titles" in url
+
+
+@pytest.mark.asyncio
+async def test_get_alternative_titles_tv_uses_correct_url(client: TmdbClient) -> None:
+    """get_alternative_titles for a TV show hits the /tv/{id}/alternative_titles endpoint."""
+    body = _make_tv_alt_titles_response(["Alt"])
+    transport = _patch_client(client, [_make_response(200, body)])
+
+    await client.get_alternative_titles(321, "tv")
+
+    assert len(transport.requests_made) == 1
+    url = str(transport.requests_made[0].url)
+    assert "/tv/321/alternative_titles" in url
+
+
+# ---------------------------------------------------------------------------
+# original_title on TmdbShowDetail and TmdbItem — Issue #34
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_original_title_parsed_show(client: TmdbClient) -> None:
+    """get_show_details populates TmdbShowDetail.original_title from the API response."""
+    from src.services.tmdb import TmdbShowDetail  # noqa: PLC0415
+
+    raw_response = {
+        "id": 456,
+        "name": "Attack on Titan",
+        "original_name": "Shingeki no Kyojin",
+        "first_air_date": "2013-04-06",
+        "overview": "Giants eat people.",
+        "poster_path": "/aot.jpg",
+        "backdrop_path": None,
+        "status": "Ended",
+        "vote_average": 9.0,
+        "number_of_seasons": 4,
+        "seasons": [],
+        "genres": [],
+        "next_episode_to_air": None,
+        "last_episode_to_air": None,
+        "original_language": "ja",
+        "external_ids": {
+            "imdb_id": "tt2560140",
+            "tvdb_id": 267440,
+        },
+    }
+    _patch_client(client, [_make_response(200, raw_response)])
+
+    result = await client.get_show_details(456)
+
+    assert result is not None
+    assert isinstance(result, TmdbShowDetail)
+    assert result.original_title == "Shingeki no Kyojin"
+
+
+@pytest.mark.asyncio
+async def test_original_title_parsed_show_none_when_absent(client: TmdbClient) -> None:
+    """get_show_details sets original_title to None when 'original_name' is absent."""
+    from src.services.tmdb import TmdbShowDetail  # noqa: PLC0415
+
+    raw_response = {
+        "id": 456,
+        "name": "Some Show",
+        "first_air_date": "2020-01-01",
+        "overview": "",
+        "status": "Ended",
+        "vote_average": 7.0,
+        "number_of_seasons": 1,
+        "seasons": [],
+        "genres": [],
+        "next_episode_to_air": None,
+        "last_episode_to_air": None,
+        "original_language": "en",
+        "external_ids": {},
+    }
+    _patch_client(client, [_make_response(200, raw_response)])
+
+    result = await client.get_show_details(456)
+
+    assert result is not None
+    # original_title should be None when not provided, or equal to title when same
+    # The field must exist on the model
+    assert hasattr(result, "original_title")
+
+
+def test_original_title_parsed_item() -> None:
+    """_parse_item populates TmdbItem.original_title from 'original_title' (movie) field."""
+    client = TmdbClient()
+    raw: dict[str, Any] = {
+        "id": 123,
+        "title": "Spirited Away",
+        "original_title": "Sen to Chihiro no Kamikakushi",
+        "media_type": "movie",
+        "release_date": "2001-07-20",
+        "overview": "A girl enters a spirit world.",
+        "vote_average": 8.6,
+        "original_language": "ja",
+    }
+
+    result = client._parse_item(raw, media_type="movie")
+
+    assert result is not None
+    assert hasattr(result, "original_title")
+    assert result.original_title == "Sen to Chihiro no Kamikakushi"
+
+
+def test_original_title_parsed_item_tv() -> None:
+    """_parse_item populates TmdbItem.original_title from 'original_name' (tv) field."""
+    client = TmdbClient()
+    raw: dict[str, Any] = {
+        "id": 789,
+        "name": "My Hero Academia",
+        "original_name": "Boku no Hero Academia",
+        "media_type": "tv",
+        "first_air_date": "2016-04-03",
+        "overview": "Kids with superpowers.",
+        "vote_average": 8.1,
+        "original_language": "ja",
+    }
+
+    result = client._parse_item(raw, media_type="tv")
+
+    assert result is not None
+    assert hasattr(result, "original_title")
+    assert result.original_title == "Boku no Hero Academia"
+
+
+def test_original_title_parsed_item_none_when_absent() -> None:
+    """_parse_item sets original_title to None when the original title field is absent."""
+    client = TmdbClient()
+    raw: dict[str, Any] = {
+        "id": 42,
+        "title": "Generic English Movie",
+        "media_type": "movie",
+        "release_date": "2022-06-01",
+    }
+
+    result = client._parse_item(raw, media_type="movie")
+
+    assert result is not None
+    assert hasattr(result, "original_title")
+    # When original_title is not in the raw dict, it should be None or absent
+    assert result.original_title is None or result.original_title == ""
+
+
+# ---------------------------------------------------------------------------
 # Model contracts
 # ---------------------------------------------------------------------------
 

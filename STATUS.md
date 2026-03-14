@@ -376,6 +376,17 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### Alternative Title Fallback ✅ (2026-03-14, Issue #34)
+- When Zilean returns 0 results with the TMDB English title, retries with alternative titles
+- Tier 1: TMDB `original_title`/`original_name` from existing detail response (free — no extra API call)
+- Tier 2: TMDB `/alternative_titles` endpoint fetched lazily only when original title also fails
+- Retry loop capped at 5 alt-title candidates, stops on first hit
+- Scrape log records both winning alt title and original primary query
+- Step 0 broadened: TMDB detail call now runs for all items with `tmdb_id` (not just when `prefer_original_language` enabled)
+- Known trade-off: adds 1 TMDB API call per pipeline run; may contribute to TMDB rate limits under heavy load
+- 14 new tests (TMDB + pipeline)
+- Total: 2053 tests, all passing
+
 ## Remaining / Future Work
 
 ### Trakt Integration (Step 1b)

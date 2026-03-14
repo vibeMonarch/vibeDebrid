@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 2009 tests, all passing (as of 2026-03-14)
+- 2053 tests, all passing (as of 2026-03-14)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -63,6 +63,9 @@
 - Mount scanner re-parse: files with parsed_episode=NULL re-parsed on scan (picks up new parser fallbacks) — 2026-03-14
 - Tailwind SRI removed: Play CDN is dynamic JIT, SRI hashes unreliable — 2026-03-14
 - H.264/H.265 codec exclusion: 264/265 added to _NON_EPISODE_NUMBERS set — 2026-03-14
+- Sequential RD cache check: check-and-stop replaces batch (2-3 API calls vs 12 per episode) — 2026-03-14
+- XEM scene season packs: TMDB anchor metadata, pipeline remap, CHECKING episode range filter — 2026-03-14
+- Issue #34: Alternative title fallback for Zilean (original_title + TMDB alt titles, lazy fetch, capped at 5) — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety

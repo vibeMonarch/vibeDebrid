@@ -30,6 +30,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Anime batch detection: recognizes `[BATCH]`, episode ranges (`01~13`), and `Season N` keywords as season packs
 - Season pack auto-split into individual episodes when no packs are available
 - Zilean title-only fallback: retries without IMDB/season/episode filters when strict query returns 0
+- Alternative title fallback: retries Zilean with TMDB original/alternative titles when English title returns 0 (critical for anime)
 - Sequential RD cache checking: checks top result first, stops on cache hit (2-3 API calls vs 12)
 - Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
 
@@ -95,7 +96,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
-**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), Zilean searches may return 0 results. A title-only fallback helps, but shows indexed only under their original-language title (e.g., "Saiunkoku Monogatari" vs "The Story of Saiunkoku") may not be found automatically. Manual search with the original title works as a workaround. See [#34](https://github.com/hkny/vibeDebrid/issues/34).
+**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). However, if no TMDB alternative title matches what release groups use, manual search with the correct title is still needed. Note: the alt-title feature adds one TMDB detail API call per pipeline run (for items with a tmdb_id); if you hit TMDB rate limits, this is a contributing factor.
 
 ## Prerequisites
 
