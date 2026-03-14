@@ -193,9 +193,16 @@ class ShowManager:
                 return season_num, await tmdb_client.get_season_details(tmdb_id, season_num)
 
         fetch_results = await asyncio.gather(
-            *[_fetch_season_detail(s.season_number) for s in non_special_seasons]
+            *[_fetch_season_detail(s.season_number) for s in non_special_seasons],
+            return_exceptions=True,
         )
-        season_detail_map = {snum: detail for snum, detail in fetch_results}
+        season_detail_map = {}
+        for result in fetch_results:
+            if isinstance(result, Exception):
+                logger.warning("show_manager._derive_scene_seasons: TMDB fetch failed: %s", result)
+                continue
+            snum, detail = result
+            season_detail_map[snum] = detail
 
         # Compute a running absolute offset across TMDB seasons so that
         # multi-season TMDB shows also map correctly.  Seasons must be

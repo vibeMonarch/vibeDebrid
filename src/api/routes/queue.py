@@ -473,21 +473,13 @@ async def remove_item(
     # Remove symlinks from disk and the symlinks table
     symlinks_removed = await symlink_manager.remove_symlink(session, item_id)
 
-    # Delete associated RD torrents from the RD account and then from the DB
+    # Collect RD IDs before deletion, then commit DB first (safe ordering)
     torrents_result = await session.execute(
         select(RdTorrent).where(RdTorrent.media_item_id == item_id)
     )
     rd_torrents = torrents_result.scalars().all()
+    rd_ids_to_delete = [t.rd_id for t in rd_torrents if t.rd_id]
     for torrent in rd_torrents:
-        if torrent.rd_id:
-            try:
-                await rd_client.delete_torrent(torrent.rd_id)
-            except Exception as exc:
-                logger.warning(
-                    "remove_item: failed to delete rd torrent rd_id=%s: %s",
-                    torrent.rd_id,
-                    exc,
-                )
         await session.delete(torrent)
 
     # Delete scrape logs
@@ -500,6 +492,17 @@ async def remove_item(
     # Delete the media item itself
     await session.delete(item)
     await session.commit()
+
+    # Fire-and-forget RD cleanup after DB is committed
+    for rd_id in rd_ids_to_delete:
+        try:
+            await rd_client.delete_torrent(rd_id)
+        except Exception as exc:
+            logger.warning(
+                "remove_item: failed to delete rd torrent rd_id=%s: %s",
+                rd_id,
+                exc,
+            )
 
     logger.info(
         "remove_item: deleted id=%d symlinks_removed=%d torrents_removed=%d",

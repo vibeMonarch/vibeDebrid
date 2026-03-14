@@ -41,9 +41,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Known top-level settings fields. Keys not in this set are rejected.
-_KNOWN_SETTINGS_KEYS: frozenset[str] = frozenset(Settings.model_fields.keys())
-
-
 class SettingsUpdate(BaseModel):
     """Validated subset of Settings that the PUT endpoint accepts.
 
@@ -83,6 +80,10 @@ class SettingsUpdate(BaseModel):
     def to_partial_dict(self) -> dict[str, Any]:
         """Return only the fields that were explicitly provided."""
         return self.model_dump(exclude_none=True)
+
+
+# Known keys derived from SettingsUpdate (not Settings) to exclude database_url etc.
+_KNOWN_SETTINGS_KEYS: frozenset[str] = frozenset(SettingsUpdate.model_fields.keys())
 
 
 # Pydantic schemas
@@ -136,9 +137,9 @@ async def update_settings(body: SettingsUpdate) -> dict[str, Any]:
         # Final validation by constructing a full Settings instance
         try:
             Settings(**merged)
-        except Exception as exc:
-            # Do not echo back submitted values — log detail internally only
-            logger.warning("Settings validation failed: %s", exc)
+        except (ValueError, TypeError) as exc:
+            logger.warning("Settings validation failed on fields: %s",
+                           [e["loc"] for e in exc.errors()] if hasattr(exc, "errors") else str(type(exc).__name__))
             raise HTTPException(status_code=422, detail="Invalid settings: validation failed") from exc
 
         # Write to config.json
