@@ -269,18 +269,6 @@
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0;
-    let value = bytes;
-    while (value >= 1024 && i < units.length - 1) {
-      value /= 1024;
-      i++;
-    }
-    return value.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
-  }
-
   function scoreColorClass(score) {
     if (score >= 70) return 'score-bar-high';
     if (score >= 40) return 'score-bar-mid';
@@ -291,12 +279,6 @@
     if (score >= 70) return 'text-green-400';
     if (score >= 40) return 'text-yellow-400';
     return 'text-red-400';
-  }
-
-  function escapeHtml(str) {
-    const d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
   }
 
   // ─── Show/hide season+episode fields ────────────────────────────────────────
@@ -714,7 +696,7 @@
           Checking&hellip;
         </span>`;
     }
-    return `<button class="check-rd-btn inline-flex items-center gap-1 text-xs font-semibold px-3 py-1 rounded-full bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors" data-hash="${escapeHtml(item.info_hash)}">
+    return `<button class="check-rd-btn inline-flex items-center gap-1 text-xs font-semibold px-3 py-1 rounded-full bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors" data-hash="${VD.escapeHtml(item.info_hash)}">
     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
     Check RD
   </button>`;
@@ -729,7 +711,7 @@
     const scoreBarClass  = scoreColorClass(score);
     const scoreTextClass = scoreTextColor(score);
     const barWidth       = Math.min(100, score).toFixed(1);
-    const sizeFormatted  = formatBytes(item.size_bytes);
+    const sizeFormatted  = VD.formatBytes(item.size_bytes);
 
     const breakdown    = item.score_breakdown || {};
     const breakdownStr = Object.entries(breakdown)
@@ -751,11 +733,11 @@
 
         <!-- Title + badges -->
         <div class="min-w-0">
-          <p class="text-sm text-white font-medium truncate" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</p>
+          <p class="text-sm text-white font-medium truncate" title="${VD.escapeHtml(item.title)}">${VD.escapeHtml(item.title)}</p>
           <div class="flex items-center gap-2 mt-1 flex-wrap">
-            ${item.resolution ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded ${resBadgeColor}">${escapeHtml(item.resolution)}</span>` : ''}
-            ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${escapeHtml(item.codec)}</span>` : ''}
-            ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${escapeHtml(item.quality)}</span>` : ''}
+            ${item.resolution ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded ${resBadgeColor}">${VD.escapeHtml(item.resolution)}</span>` : ''}
+            ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${VD.escapeHtml(item.codec)}</span>` : ''}
+            ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${VD.escapeHtml(item.quality)}</span>` : ''}
             ${item.is_season_pack ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Season Pack</span>` : ''}
           </div>
         </div>
@@ -775,7 +757,7 @@
 
         <!-- Size -->
         <div class="text-right">
-          <span class="text-sm text-gray-300 tabular-nums">${escapeHtml(sizeFormatted)}</span>
+          <span class="text-sm text-gray-300 tabular-nums">${VD.escapeHtml(sizeFormatted)}</span>
         </div>
 
         <!-- Cached badge -->
@@ -789,7 +771,7 @@
           <div class="w-full h-1.5 rounded-full bg-vd-bg overflow-hidden">
             <div class="score-bar-fill h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
           </div>
-          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${escapeHtml(breakdownStr)}</p>` : ''}
+          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${VD.escapeHtml(breakdownStr)}</p>` : ''}
         </div>
 
         <!-- Add button -->
@@ -798,8 +780,8 @@
             class="add-btn inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg
                    bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                    focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-1 focus:ring-offset-vd-card"
-            data-hash="${escapeHtml(item.info_hash)}"
-            data-title="${escapeHtml(item.title)}"
+            data-hash="${VD.escapeHtml(item.info_hash)}"
+            data-title="${VD.escapeHtml(item.title)}"
             data-season="${item.season}"
             data-episode="${item.episode}"
             data-season-pack="${item.is_season_pack}"
@@ -820,11 +802,11 @@
       <div class="md:hidden px-4 py-4 space-y-3">
         <!-- Title + badges -->
         <div>
-          <p class="text-sm text-white font-medium break-all">${escapeHtml(item.title)}</p>
+          <p class="text-sm text-white font-medium break-all">${VD.escapeHtml(item.title)}</p>
           <div class="flex items-center gap-2 mt-1.5 flex-wrap">
-            ${item.resolution ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded ${resBadgeColor}">${escapeHtml(item.resolution)}</span>` : ''}
-            ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${escapeHtml(item.codec)}</span>` : ''}
-            ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${escapeHtml(item.quality)}</span>` : ''}
+            ${item.resolution ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded ${resBadgeColor}">${VD.escapeHtml(item.resolution)}</span>` : ''}
+            ${item.codec ? `<span class="inline-block text-xs font-semibold px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-gray-300">${VD.escapeHtml(item.codec)}</span>` : ''}
+            ${item.quality ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-vd-bg border border-vd-border text-vd-muted">${VD.escapeHtml(item.quality)}</span>` : ''}
             ${item.is_season_pack ? `<span class="inline-block text-xs px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/50 text-amber-300">Season Pack</span>` : ''}
             <span class="cache-badge">${badgeHtml}</span>
           </div>
@@ -832,7 +814,7 @@
 
         <!-- Stats row -->
         <div class="flex items-center gap-4 text-xs text-vd-muted flex-wrap">
-          <span>${escapeHtml(sizeFormatted)}</span>
+          <span>${VD.escapeHtml(sizeFormatted)}</span>
           ${item.season != null ? `<span class="text-gray-300">${'S' + String(item.season).padStart(2, '0')}${item.is_season_pack ? ' Full Season' : (item.episode != null ? 'E' + String(item.episode).padStart(2, '0') : '')}</span>` : ''}
         </div>
 
@@ -845,7 +827,7 @@
           <div class="w-full h-1.5 rounded-full bg-vd-bg overflow-hidden">
             <div class="score-bar-fill h-full rounded-full ${scoreBarClass}" style="width: ${barWidth}%"></div>
           </div>
-          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${escapeHtml(breakdownStr)}</p>` : ''}
+          ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${VD.escapeHtml(breakdownStr)}</p>` : ''}
         </div>
 
         <!-- Add button -->
@@ -853,8 +835,8 @@
           class="add-btn w-full inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-lg
                  bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
                  focus:outline-none focus:ring-2 focus:ring-vd-accent"
-          data-hash="${escapeHtml(item.info_hash)}"
-          data-title="${escapeHtml(item.title)}"
+          data-hash="${VD.escapeHtml(item.info_hash)}"
+          data-title="${VD.escapeHtml(item.title)}"
           data-season="${item.season}"
           data-episode="${item.episode}"
           data-season-pack="${item.is_season_pack}"

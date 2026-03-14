@@ -1,7 +1,7 @@
 # vibeDebrid — Memory
 
 ## Project State
-- 2061 tests, all passing (as of 2026-03-14)
+- 2171 tests, all passing (as of 2026-03-14)
 - Python 3.14, FastAPI, SQLite async, htmx frontend
 - Test runner: `.venv/bin/python -m pytest tests/ -q`
 
@@ -66,7 +66,8 @@
 - Sequential RD cache check: check-and-stop replaces batch (2-3 API calls vs 12 per episode) — 2026-03-14
 - XEM scene season packs: TMDB anchor metadata, pipeline remap, CHECKING episode range filter — 2026-03-14
 - Issue #34: Alternative title fallback for Zilean (original_title + TMDB alt titles, lazy fetch, capped at 5) — 2026-03-14
-- Issue #24: RD account health dashboard card (premium status, days remaining, torrent count, storage) — 2026-03-14
+- Issue #24: RD account health dashboard card (premium status, days remaining) — 2026-03-14
+- Issue #12: Extract duplicated code (torrent_parser.py shared module + utils.js) — 2026-03-14
 
 ## Critical Domain Knowledge
 - [Zurg auto-recovery](zurg-autorecovery.md) — Zurg replaces CDN-dropped files with different RD torrents, keeps mount paths stable; causes hash drift affecting cleanup safety
@@ -78,9 +79,8 @@
 - 1 unresolved IMDB ID: tt0203082 (Rurouni Trust&Betrayal) — not in TMDB
 
 ## Open Issues
-- #22: Extract inline JS to static files
+- #22: Extract inline JS to static files (partially done by #12 — shared utils extracted, large inline blocks remain)
 - #18: Dockerization (unblocks #32)
-- #12: Extract duplicated code into shared modules
 - #8: Dashboard card for upcoming episodes
 - #7: Rotten Tomatoes scores on Discover
 - #6: IMDb ratings on Discover
@@ -88,14 +88,14 @@
 
 ## Remaining Review Findings (not yet fixed)
 - `migration.py` Steps 2-3: bare `except Exception` without savepoints
-- Frontend: duplicated `escapeHtml`/`formatBytes` (see #22)
+- ~~Frontend: duplicated `escapeHtml`/`formatBytes`~~ resolved by #12 (utils.js)
 - `queue.py` rescrape endpoint: no server-side state validation (frontend guards only)
 - `filter_engine.py`: `_score_original_language` double-penalty stacking
 - `filter_engine.py`: `original_language` param accepts ISO or name but only name matches
 - `tmdb.py`: `ISO_639_1_TO_LANGUAGE` only covers 11 languages
 - `scrape_pipeline.py`: `force_original_language` flag cleared before pipeline success
-- ~150 lines duplicated regex/parsing between torrentio.py and zilean.py (see #12)
-- Inconsistent fallback chains across 4 parsers (mount_scanner, symlink_manager, torrentio, zilean)
+- ~~150 lines duplicated regex/parsing~~ resolved by #12 (torrent_parser.py)
+- ~~Inconsistent fallback chains across 4 parsers~~ resolved by #12 (shared parse_episode_fallbacks)
 - `search.py` bare `except Exception` in _scrape_torrentio/_scrape_zilean
 - CHECKING no-filter fallback can match wrong single file (no episode verification)
 

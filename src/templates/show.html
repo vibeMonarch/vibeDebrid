@@ -505,14 +505,6 @@
     }
   };
 
-  function showToast(msg) {
-    const toast = document.createElement('div');
-    toast.className = 'fixed bottom-20 left-1/2 -translate-x-1/2 bg-vd-card border border-vd-border text-white text-sm px-4 py-2 rounded-lg shadow-xl z-50 max-w-xs text-center';
-    toast.textContent = msg;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4000);
-  }
-
   // Kick off load
   loadShow();
 }());

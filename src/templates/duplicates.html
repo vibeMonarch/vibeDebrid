@@ -167,18 +167,6 @@
 
   // ─── Utilities ─────────────────────────────────────────────────────────────
 
-  function formatBytes(bytes) {
-    if (bytes === null || bytes === undefined || bytes === 0) return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let value = bytes;
-    let unitIndex = 0;
-    while (value >= 1024 && unitIndex < units.length - 1) {
-      value /= 1024;
-      unitIndex++;
-    }
-    return value.toFixed(unitIndex === 0 ? 0 : 1) + '\u00a0' + units[unitIndex];
-  }
-
   function resBadgeClass(resolution) {
     if (!resolution) return 'badge-res-other';
     const r = resolution.toLowerCase();
@@ -435,7 +423,7 @@
     // Size cell
     const tdSize = document.createElement('td');
     tdSize.className = 'px-2 py-3 text-right text-gray-300 font-mono text-xs whitespace-nowrap';
-    tdSize.textContent = formatBytes(torrent.filesize);
+    tdSize.textContent = VD.formatBytes(torrent.filesize);
 
     // Status cell
     const tdStatus = document.createElement('td');
@@ -509,7 +497,7 @@
 
         document.getElementById('summary-groups').textContent = data.total_groups ?? duplicates.length;
         document.getElementById('summary-extras').textContent = totalExtras;
-        document.getElementById('summary-wasted').textContent = formatBytes(wastedBytes);
+        document.getElementById('summary-wasted').textContent = VD.formatBytes(wastedBytes);
         document.getElementById('summary-bar').classList.remove('hidden');
 
         const resolveAllBtn = document.getElementById('btn-resolve-all');
@@ -671,7 +659,7 @@
 
     document.getElementById('summary-groups').textContent = remaining;
     document.getElementById('summary-extras').textContent = totalExtras;
-    document.getElementById('summary-wasted').textContent = formatBytes(wastedBytes);
+    document.getElementById('summary-wasted').textContent = VD.formatBytes(wastedBytes);
     document.getElementById('page-subtitle').textContent =
       remaining + ' duplicate group' + (remaining !== 1 ? 's' : '') + ' remaining';
   }

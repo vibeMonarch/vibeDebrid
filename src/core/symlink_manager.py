@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.models.media_item import MediaItem, MediaType
 from src.models.symlink import Symlink
+from src.services.torrent_parser import parse_episode_from_filename as _parse_episode_from_filename_impl
 
 logger = logging.getLogger(__name__)
 
@@ -116,58 +117,10 @@ _RESOLUTION_SUFFIX_RE = re.compile(r"\s+\d{3,4}p$", re.IGNORECASE)
 _TMDB_TAG_RE = re.compile(r"\s*\{(?:tmdb|tvdb|imdb)-[^}]+\}")
 
 
-# Regex patterns for extracting episode numbers from filenames (season pack use)
-_EPISODE_RE = re.compile(r"[Ss]\d{1,2}[Ee](\d{1,3})")
-_BARE_EPISODE_RE = re.compile(r"[\s._-][Ee](\d{2,3})(?:\b|[\s._-])")
-
-# Last-resort bare trailing number for anime naming conventions, e.g.:
-#   "Wolf's Rain 01.mkv" → episode 1
-# Only matches 1-3 digit numbers at the end of the stem (4-digit years excluded
-# by regex length limit; common resolution values excluded by the set below).
-_BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
-_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({264, 265, 480, 576, 720, 1080, 2160, 4320})
-
-
-def _parse_episode_from_filename(filename: str) -> int | None:
-    """Extract episode number from a filename using PTN then regex fallback.
-
-    Used for season pack files where the media item has no episode number set,
-    so the episode must be inferred from the individual file's name.
-
-    Args:
-        filename: Basename of the source file (e.g. ``"Show.S01E05.mkv"``).
-
-    Returns:
-        The episode number as an integer, or ``None`` when no episode number
-        could be parsed.
-    """
-    try:
-        import PTN  # type: ignore[import-untyped]
-
-        parsed = PTN.parse(filename)
-        if parsed and parsed.get("episode") is not None:
-            return int(parsed["episode"])
-    except Exception:
-        pass
-
-    # Regex fallback: SxxExx pattern first, then bare E-prefixed number.
-    match = _EPISODE_RE.search(filename)
-    if match:
-        return int(match.group(1))
-    match = _BARE_EPISODE_RE.search(filename)
-    if match:
-        return int(match.group(1))
-
-    # Last-resort: bare trailing number for anime naming conventions, e.g.
-    # "Wolf's Rain 01.mkv" → episode 1.  Excludes known resolution values.
-    stem = os.path.splitext(filename)[0]
-    trailing_match = _BARE_TRAILING_EP_RE.search(stem)
-    if trailing_match:
-        candidate = int(trailing_match.group(1))
-        if candidate not in _NON_EPISODE_NUMBERS:
-            return candidate
-
-    return None
+# _parse_episode_from_filename is imported from torrent_parser (shared module)
+# and re-exported here for backward compatibility with callers that import it
+# from this module (including existing tests).
+_parse_episode_from_filename = _parse_episode_from_filename_impl
 
 
 def sanitize_name(name: str) -> str:

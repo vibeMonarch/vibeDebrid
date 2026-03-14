@@ -1071,7 +1071,7 @@
       document.querySelectorAll('.settings-card').forEach(el => el.classList.remove('hidden'));
     } catch (err) {
       document.getElementById('settings-loading').innerHTML =
-        '<p class="text-red-400 text-sm">Failed to load settings: ' + escapeHtml(err.message) + '</p>';
+        '<p class="text-red-400 text-sm">Failed to load settings: ' + VD.escapeHtml(err.message) + '</p>';
     }
   }
 
@@ -1274,15 +1274,15 @@
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.status === 'ok') {
         resultEl.className   = 'test-result text-sm text-green-400 flex items-center gap-1';
-        resultEl.innerHTML   = checkIcon() + escapeHtml(data.message || 'Connected');
+        resultEl.innerHTML   = checkIcon() + VD.escapeHtml(data.message || 'Connected');
       } else {
         const msg = data.message || data.detail || ('HTTP ' + res.status);
         resultEl.className   = 'test-result text-sm text-red-400 flex items-center gap-1';
-        resultEl.innerHTML   = crossIcon() + escapeHtml(msg);
+        resultEl.innerHTML   = crossIcon() + VD.escapeHtml(msg);
       }
     } catch (err) {
       resultEl.className   = 'test-result text-sm text-red-400 flex items-center gap-1';
-      resultEl.innerHTML   = crossIcon() + escapeHtml(err.message);
+      resultEl.innerHTML   = crossIcon() + VD.escapeHtml(err.message);
     } finally {
       btn.disabled = false;
       icon.classList.remove('hidden');
@@ -1302,13 +1302,6 @@
            '</svg>';
   }
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
 
   // ---------------------------------------------------------------------------
   // Symlink naming live preview
@@ -1362,8 +1355,8 @@
       const showDir = showParts.join(' ');
       const epPrefix = dp ? ts + ' ' : '';
 
-      movieLine = 'movies/' + escapeHtml(movieDir) + '/The.Matrix.1999.2160p.mkv';
-      showLine  = 'shows/' + escapeHtml(showDir) + '/Season 01/' + epPrefix + 'Breaking.Bad.S01E01.mkv';
+      movieLine = 'movies/' + VD.escapeHtml(movieDir) + '/The.Matrix.1999.2160p.mkv';
+      showLine  = 'shows/' + VD.escapeHtml(showDir) + '/Season 01/' + epPrefix + 'Breaking.Bad.S01E01.mkv';
     }
 
     preview.innerHTML =
@@ -1456,7 +1449,7 @@
         html += `<label class="flex items-center gap-2 text-sm text-gray-300 mb-1 cursor-pointer">
           <input type="checkbox" class="plex-movie-section" value="${s.section_id}" ${checked}
                  onchange="updatePlexSectionIds()" />
-          ${escapeHtml(s.title)} <span class="text-vd-muted text-xs">(ID: ${s.section_id})</span>
+          ${VD.escapeHtml(s.title)} <span class="text-vd-muted text-xs">(ID: ${s.section_id})</span>
         </label>`;
       }
       html += '</div>';
@@ -1469,7 +1462,7 @@
         html += `<label class="flex items-center gap-2 text-sm text-gray-300 mb-1 cursor-pointer">
           <input type="checkbox" class="plex-show-section" value="${s.section_id}" ${checked}
                  onchange="updatePlexSectionIds()" />
-          ${escapeHtml(s.title)} <span class="text-vd-muted text-xs">(ID: ${s.section_id})</span>
+          ${VD.escapeHtml(s.title)} <span class="text-vd-muted text-xs">(ID: ${s.section_id})</span>
         </label>`;
       }
       html += '</div>';

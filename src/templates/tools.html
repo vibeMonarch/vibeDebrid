@@ -801,14 +801,7 @@
   // ---------------------------------------------------------------------------
   // HTML escaping
   // ---------------------------------------------------------------------------
-  function esc(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  function esc(s) { return VD.escapeHtml(s); }
 
   // ---------------------------------------------------------------------------
   // Summary stat card helper
@@ -1553,26 +1546,9 @@
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-  function escRd(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  function escRd(s) { return VD.escapeHtml(s); }
 
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return '0 B';
-    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var i = 0;
-    var val = bytes;
-    while (val >= 1024 && i < units.length - 1) {
-      val /= 1024;
-      i++;
-    }
-    return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
-  }
+  function formatBytes(bytes) { return VD.formatBytes(bytes); }
 
   function statCardRd(label, value, sub, colorClass) {
     return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +
@@ -1984,14 +1960,7 @@
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-  function escSh(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  function escSh(s) { return VD.escapeHtml(s); }
 
   function statCardSh(label, value, colorClass) {
     return '<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3">' +

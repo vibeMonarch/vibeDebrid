@@ -761,11 +761,7 @@
       },
 
       formatBytes(bytes) {
-        if (!bytes) return '';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let v = bytes, u = 0;
-        while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
-        return v.toFixed(1) + ' ' + units[u];
+        return VD.formatBytes(bytes);
       },
 
       // Map ISO 639-1 code to human-readable language name

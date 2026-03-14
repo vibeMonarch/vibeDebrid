@@ -35,6 +35,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.models.mount_index import MountIndex
+from src.services.torrent_parser import ANIME_BARE_DASH_EP_RE as _ANIME_DASH_EP_RE
+from src.services.torrent_parser import BARE_TRAILING_EP_RE as _BARE_TRAILING_EP_RE
+from src.services.torrent_parser import NON_EPISODE_NUMBERS as _NON_EPISODE_NUMBERS
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ _TV_N_EP_RE = re.compile(r"TV-(\d{1,2})\s*[-–]\s*(\d{1,3})")
 #   "[Anime Time] Attack on Titan - 01.mkv"
 #   "[ASW] Show Name - 05 [1080p HEVC][ABCD1234].mkv"
 # Captures the episode number after " - " (space-dash-space).
-_ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
+# Imported from torrent_parser as _ANIME_DASH_EP_RE (see imports above).
 
 # Leading number naming convention for season pack episodes, e.g.:
 #   "28. Prelude to the Impending Fight.mp4"
@@ -63,18 +66,7 @@ _ANIME_DASH_EP_RE = re.compile(r"\s-\s(\d{1,3})(?:\s|$|\[|\()")
 # Matches a number at the very start of the filename.
 _LEADING_EP_RE = re.compile(r"^(\d{1,3})(?:\.|(?:\s*[-–]\s))")
 
-# Bare trailing number naming convention (last-resort anime fallback), e.g.:
-#   "Wolf's Rain 01.mkv" → episode 1
-#   "Wolf's Rain 26.mkv" → episode 26
-# Matches 1-3 digit numbers preceded by a space or dot at the end of the stem.
-# Explicitly excludes 4-digit numbers (years like 2003) and common
-# resolution/bitrate values (480, 720, 1080, 2160, 4320).
-_BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
-
-# Values that look like episode numbers but are resolution/bitrate markers.
-# These must NOT be treated as episode numbers when matched by the bare
-# trailing pattern above.
-_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({264, 265, 480, 576, 720, 1080, 2160, 4320})
+# Bare trailing number and NON_EPISODE_NUMBERS are imported from torrent_parser.
 
 # Detect titles that look like episode markers rather than real show titles.
 # Examples (normalised): "s02e01 beast titan", "s01e01", "e01 prologue".

@@ -376,6 +376,16 @@
 - 17 new tests
 - Total: 1950 tests, all passing
 
+### Extract Duplicated Code ✅ (2026-03-14, Issue #12)
+- New `src/services/torrent_parser.py`: shared torrent-name parsing (11 regexes, language detection, 4 functions)
+- Eliminated ~150 lines duplication between `torrentio.py` and `zilean.py` (regexes, language detection, anime fallback chain)
+- Eliminated shared regexes from `mount_scanner.py` and `symlink_manager.py`
+- New `src/static/js/utils.js`: `VD.formatBytes()`, `VD.escapeHtml()`, `VD.escapeAttr()`
+- Removed inline JS copies from 7 templates (search, duplicates, queue, tools, settings, discover, show)
+- Removed shadowed `showToast` from show.html (uses global from base.html)
+- 110 new tests for shared parser module
+- Total: 2171 tests, all passing
+
 ### RD Account Health Dashboard ✅ (2026-03-14, Issue #24)
 - New `get_account_info()` method on RD client (pooled client + circuit breaker)
 - Dashboard card: premium status, days remaining, torrent count, total storage

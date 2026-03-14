@@ -737,7 +737,7 @@
       }
     } catch (err) {
       if (!append) {
-        genreGrid.innerHTML = '<p class="text-red-400 text-sm py-4 col-span-full">Failed to load: ' + escHtml(err.message) + '</p>';
+        genreGrid.innerHTML = '<p class="text-red-400 text-sm py-4 col-span-full">Failed to load: ' + VD.escapeHtml(err.message) + '</p>';
       }
     }
   }
@@ -888,12 +888,12 @@
     // Poster image
     var imgSrc = item.poster_url || '';
     var imgTag = imgSrc
-      ? '<img src="' + escAttr(imgSrc) + '" alt="' + escAttr(item.title) + '" loading="lazy">'
+      ? '<img src="' + VD.escapeAttr(imgSrc) + '" alt="' + VD.escapeAttr(item.title) + '" loading="lazy">'
       : '<div class="w-full h-full flex items-center justify-center text-vd-muted text-xs">No Poster</div>';
 
     // Overview overlay
     var overview = item.overview
-      ? '<div class="poster-overlay">' + escHtml(item.overview) + '</div>'
+      ? '<div class="poster-overlay">' + VD.escapeHtml(item.overview) + '</div>'
       : '';
 
     // Rating
@@ -904,36 +904,36 @@
     if (item.queue_status === 'in_library') {
       if (item.media_type === 'tv') {
         addBtn = '<button class="add-btn add-btn-library add-btn-action" ' +
-          'data-tmdb-id="' + escAttr(String(item.tmdb_id)) + '" ' +
+          'data-tmdb-id="' + VD.escapeAttr(String(item.tmdb_id)) + '" ' +
           'data-media-type="tv" ' +
-          'data-title="' + escAttr(item.title) + '" ' +
-          'data-year="' + escAttr(String(item.year || '')) + '">View Seasons</button>';
+          'data-title="' + VD.escapeAttr(item.title) + '" ' +
+          'data-year="' + VD.escapeAttr(String(item.year || '')) + '">View Seasons</button>';
       } else {
         addBtn = '<button class="add-btn add-btn-library" disabled>In Library</button>';
       }
     } else if (item.queue_status === 'in_queue') {
       if (item.media_type === 'tv') {
         addBtn = '<button class="add-btn add-btn-queue add-btn-action" ' +
-          'data-tmdb-id="' + escAttr(String(item.tmdb_id)) + '" ' +
+          'data-tmdb-id="' + VD.escapeAttr(String(item.tmdb_id)) + '" ' +
           'data-media-type="tv" ' +
-          'data-title="' + escAttr(item.title) + '" ' +
-          'data-year="' + escAttr(String(item.year || '')) + '">View Seasons</button>';
+          'data-title="' + VD.escapeAttr(item.title) + '" ' +
+          'data-year="' + VD.escapeAttr(String(item.year || '')) + '">View Seasons</button>';
       } else {
         addBtn = '<button class="add-btn add-btn-queue" disabled>In Queue</button>';
       }
     } else {
       addBtn = '<button class="add-btn add-btn-available add-btn-action" ' +
-        'data-tmdb-id="' + escAttr(String(item.tmdb_id)) + '" ' +
-        'data-media-type="' + escAttr(item.media_type) + '" ' +
-        'data-title="' + escAttr(item.title) + '" ' +
-        'data-year="' + escAttr(String(item.year || '')) + '" ' +
-        'data-original-language="' + escAttr(item.original_language || '') + '">Add to Library</button>';
+        'data-tmdb-id="' + VD.escapeAttr(String(item.tmdb_id)) + '" ' +
+        'data-media-type="' + VD.escapeAttr(item.media_type) + '" ' +
+        'data-title="' + VD.escapeAttr(item.title) + '" ' +
+        'data-year="' + VD.escapeAttr(String(item.year || '')) + '" ' +
+        'data-original-language="' + VD.escapeAttr(item.original_language || '') + '">Add to Library</button>';
     }
 
     // Language badge — shown when original_language is non-English and set
     var langBadge = '';
     if (item.original_language && item.original_language !== 'en') {
-      langBadge = '<span style="margin-left:auto;font-size:0.6rem;font-weight:700;letter-spacing:0.04em;padding:0.1rem 0.35rem;border-radius:0.25rem;background:rgba(99,102,241,0.25);color:#a5b4fc;border:1px solid rgba(99,102,241,0.4);text-transform:uppercase;">' + escHtml(item.original_language.toUpperCase()) + '</span>';
+      langBadge = '<span style="margin-left:auto;font-size:0.6rem;font-weight:700;letter-spacing:0.04em;padding:0.1rem 0.35rem;border-radius:0.25rem;background:rgba(99,102,241,0.25);color:#a5b4fc;border:1px solid rgba(99,102,241,0.4);text-transform:uppercase;">' + VD.escapeHtml(item.original_language.toUpperCase()) + '</span>';
     }
 
     card.innerHTML =
@@ -944,9 +944,9 @@
         overview +
       '</div>' +
       '<div class="poster-info">' +
-        '<div class="poster-title" title="' + escAttr(item.title) + '">' + escHtml(item.title) + '</div>' +
+        '<div class="poster-title" title="' + VD.escapeAttr(item.title) + '">' + VD.escapeHtml(item.title) + '</div>' +
         '<div class="poster-meta">' +
-          '<span>' + escHtml(String(item.year || '—')) + '</span>' +
+          '<span>' + VD.escapeHtml(String(item.year || '—')) + '</span>' +
           '<span>·</span>' +
           '<svg class="star-icon" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>' +
           '<span>' + rating + '</span>' +
@@ -1069,28 +1069,28 @@
     if (queueStatus === 'in_library') {
       if (mediaType === 'tv') {
         return '<button class="add-btn add-btn-library add-btn-action" ' +
-          'data-tmdb-id="' + escAttr(String(tmdbId)) + '" ' +
+          'data-tmdb-id="' + VD.escapeAttr(String(tmdbId)) + '" ' +
           'data-media-type="tv" ' +
-          'data-title="' + escAttr(title) + '" ' +
-          'data-year="' + escAttr(String(year || '')) + '">View Seasons</button>';
+          'data-title="' + VD.escapeAttr(title) + '" ' +
+          'data-year="' + VD.escapeAttr(String(year || '')) + '">View Seasons</button>';
       }
       return '<button class="add-btn add-btn-library" disabled>In Library</button>';
     }
     if (queueStatus === 'in_queue') {
       if (mediaType === 'tv') {
         return '<button class="add-btn add-btn-queue add-btn-action" ' +
-          'data-tmdb-id="' + escAttr(String(tmdbId)) + '" ' +
+          'data-tmdb-id="' + VD.escapeAttr(String(tmdbId)) + '" ' +
           'data-media-type="tv" ' +
-          'data-title="' + escAttr(title) + '" ' +
-          'data-year="' + escAttr(String(year || '')) + '">View Seasons</button>';
+          'data-title="' + VD.escapeAttr(title) + '" ' +
+          'data-year="' + VD.escapeAttr(String(year || '')) + '">View Seasons</button>';
       }
       return '<button class="add-btn add-btn-queue" disabled>In Queue</button>';
     }
     return '<button class="add-btn add-btn-available add-btn-action" ' +
-      'data-tmdb-id="' + escAttr(String(tmdbId)) + '" ' +
-      'data-media-type="' + escAttr(mediaType) + '" ' +
-      'data-title="' + escAttr(title) + '" ' +
-      'data-year="' + escAttr(String(year || '')) + '">Add to Library</button>';
+      'data-tmdb-id="' + VD.escapeAttr(String(tmdbId)) + '" ' +
+      'data-media-type="' + VD.escapeAttr(mediaType) + '" ' +
+      'data-title="' + VD.escapeAttr(title) + '" ' +
+      'data-year="' + VD.escapeAttr(String(year || '')) + '">Add to Library</button>';
   }
 
   // Update every rendered card whose tmdb_id matches and patch the mediaCache
@@ -1210,22 +1210,6 @@
   });
 
   // -----------------------------------------------------------------------
-  // Utility: escape HTML text content
-  function escHtml(str) {
-    var div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  // Utility: escape for HTML attribute values
-  function escAttr(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/'/g, '&#39;')
-      .replace(/"/g, '&quot;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
 
   // Restore state if returning from search, otherwise load default
   var savedState = sessionStorage.getItem('vd_discover_state');
