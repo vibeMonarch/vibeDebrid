@@ -616,8 +616,19 @@ class SymlinkManager:
         valid_count = 0
         broken_count = 0
 
+        # Batch all stat checks into a single thread dispatch to avoid
+        # creating one threadpool submission per symlink when there are
+        # thousands of symlinks to check.
+        def _check_batch(paths: list[str]) -> dict[str, tuple[bool, bool]]:
+            return {p: (os.path.islink(p), os.path.exists(p)) for p in paths}
+
+        all_paths = [s.target_path for s in valid_symlinks]
+        path_results: dict[str, tuple[bool, bool]] = (
+            await asyncio.to_thread(_check_batch, all_paths) if all_paths else {}
+        )
+
         for symlink in valid_symlinks:
-            is_link = await asyncio.to_thread(os.path.islink, symlink.target_path)
+            is_link, dest_exists = path_results.get(symlink.target_path, (False, False))
             if not is_link:
                 # The symlink file itself is missing or was replaced by a regular file.
                 symlink.valid = False
@@ -636,7 +647,6 @@ class SymlinkManager:
                 continue
 
             # The symlink exists — now verify its destination.
-            dest_exists = await asyncio.to_thread(os.path.exists, symlink.target_path)
             if not dest_exists:
                 symlink.valid = False
                 broken_count += 1

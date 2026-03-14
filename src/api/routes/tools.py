@@ -67,10 +67,11 @@ _cleanup_lock = asyncio.Lock()
 async def _try_acquire(lock: asyncio.Lock, detail: str) -> AsyncGenerator[None, None]:
     """Attempt to acquire *lock* without blocking; raise HTTP 409 if already held.
 
-    Best-effort non-blocking check.  Under asyncio cooperative scheduling,
-    the check-then-acquire is effectively atomic for uncontested locks.  If
-    two requests arrive simultaneously, the second may block until the first
-    completes rather than receiving 409.
+    The check-then-acquire is atomic under asyncio's cooperative scheduling: no
+    other coroutine can run between ``lock.locked()`` and ``lock.acquire()``
+    because there is no ``await`` between them.  When the lock is free,
+    ``lock.acquire()`` sets ``_locked = True`` synchronously (without yielding),
+    so the window that would allow a second coroutine to slip in does not exist.
 
     Args:
         lock: The asyncio.Lock to acquire.
@@ -78,11 +79,11 @@ async def _try_acquire(lock: asyncio.Lock, detail: str) -> AsyncGenerator[None, 
 
     Raises:
         HTTPException: HTTP 409 when the lock is already held.
-        HTTPException: HTTP 409 when the lock is acquired but the body raises
-            an HTTPException (re-raised transparently).
     """
     if lock.locked():
         raise HTTPException(status_code=409, detail=detail)
+    # acquire() on a free lock completes synchronously (no yield).  No other
+    # coroutine can run between the locked() check above and this call.
     await lock.acquire()
     try:
         yield
