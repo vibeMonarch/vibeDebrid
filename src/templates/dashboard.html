@@ -71,7 +71,6 @@
       <div class="min-w-0">
         <p class="text-xs text-vd-muted">Real-Debrid</p>
         <p id="health-rd-label" class="text-sm font-medium text-gray-400">Checking...</p>
-        <p id="health-rd-detail" class="text-xs text-vd-muted mt-0.5"></p>
       </div>
     </div>
 
@@ -287,14 +286,6 @@
     done:       { countId: 'count-done'       },
   };
 
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  }
-
   function setTextContent(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
@@ -341,9 +332,8 @@
     }
 
     // Real-Debrid account health
-    const rdDot    = document.getElementById('health-rd-dot');
-    const rdLabel  = document.getElementById('health-rd-label');
-    const rdDetail = document.getElementById('health-rd-detail');
+    const rdDot   = document.getElementById('health-rd-dot');
+    const rdLabel = document.getElementById('health-rd-label');
     const rd = health.rd;
     if (rd) {
       const days = rd.days_remaining ?? 0;
@@ -369,15 +359,10 @@
       rdDot.className   = dotClass;
       rdLabel.className = labelClass;
       rdLabel.textContent = labelText;
-      const count   = rd.torrent_count ?? 0;
-      const countStr = count >= 2500 ? '2500+' : String(count);
-      const storage = formatBytes(rd.total_bytes ?? 0);
-      rdDetail.textContent = countStr + ' torrent' + (count !== 1 ? 's' : '') + ' \u2014 ' + storage;
     } else {
       rdDot.className     = 'w-3 h-3 rounded-full bg-gray-500 flex-shrink-0';
       rdLabel.className   = 'text-sm font-medium text-gray-400';
       rdLabel.textContent = 'Unavailable';
-      rdDetail.textContent = '';
     }
 
     // Update refresh timestamp

@@ -280,10 +280,6 @@ class TestDashboard:
             "premium": 90 * 86400,  # RD returns seconds remaining
             "expiration": "2026-06-01T00:00:00.000Z",
         }
-        torrents_payload = [
-            {"id": "T1", "bytes": 4_000_000_000},
-            {"id": "T2", "bytes": 2_000_000_000},
-        ]
 
         with (
             patch(
@@ -296,11 +292,6 @@ class TestDashboard:
                 new_callable=AsyncMock,
                 return_value=user_payload,
             ),
-            patch(
-                "src.api.routes.dashboard.rd_client.list_torrents",
-                new_callable=AsyncMock,
-                return_value=torrents_payload,
-            ),
         ):
             resp = await http.get("/api/stats")
 
@@ -312,8 +303,6 @@ class TestDashboard:
         assert rd["days_remaining"] == 90
         assert rd["expiration"] == "2026-06-01T00:00:00.000Z"
         assert rd["points"] == 1234
-        assert rd["torrent_count"] == 2
-        assert rd["total_bytes"] == 6_000_000_000
 
     async def test_stats_rd_health_unavailable(self, http: AsyncClient) -> None:
         """When RD raises RealDebridError, health.rd is None and the rest of stats is ok."""
@@ -369,7 +358,6 @@ class TestDashboard:
             "expiration": None,
         }
         mock_get_account_info = AsyncMock(return_value=user_payload)
-        mock_list_torrents = AsyncMock(return_value=[])
 
         with (
             patch(
@@ -380,10 +368,6 @@ class TestDashboard:
             patch(
                 "src.api.routes.dashboard.rd_client.get_account_info",
                 mock_get_account_info,
-            ),
-            patch(
-                "src.api.routes.dashboard.rd_client.list_torrents",
-                mock_list_torrents,
             ),
         ):
             resp1 = await http.get("/api/stats")
@@ -396,7 +380,6 @@ class TestDashboard:
         assert resp2.json()["health"]["rd"]["username"] == "cacheduser"
         # RD client should only have been called once (second request uses cache)
         assert mock_get_account_info.call_count == 1
-        assert mock_list_torrents.call_count == 1
 
     async def test_stats_rd_health_expired(self, http: AsyncClient) -> None:
         """A user with premium=0 has days_remaining=0."""
@@ -420,11 +403,6 @@ class TestDashboard:
                 "src.api.routes.dashboard.rd_client.get_account_info",
                 new_callable=AsyncMock,
                 return_value=user_payload,
-            ),
-            patch(
-                "src.api.routes.dashboard.rd_client.list_torrents",
-                new_callable=AsyncMock,
-                return_value=[],
             ),
         ):
             resp = await http.get("/api/stats")

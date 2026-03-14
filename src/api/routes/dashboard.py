@@ -1,5 +1,6 @@
 """Dashboard endpoints."""
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -10,11 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+
 from src.api.deps import get_db
 from src.core.mount_scanner import mount_scanner
 from src.models.media_item import MediaItem, QueueState
-import httpx
-
 from src.services.http_client import CircuitOpenError
 from src.services.real_debrid import RealDebridError, rd_client
 
@@ -27,6 +28,7 @@ router = APIRouter(tags=["dashboard"])
 # ---------------------------------------------------------------------------
 
 _rd_health_cache: dict[str, Any] = {"data": None, "fetched_at": 0.0}
+_rd_health_lock = asyncio.Lock()
 _RD_HEALTH_TTL = 900.0  # 15 minutes
 
 
@@ -54,8 +56,6 @@ class RdHealth(BaseModel):
     days_remaining: int
     expiration: str | None = None
     points: int = 0
-    torrent_count: int = 0
-    total_bytes: int = 0
 
 
 class HealthStatus(BaseModel):
@@ -108,43 +108,45 @@ async def stats(session: AsyncSession = Depends(get_db)) -> StatsResponse:
     except Exception:
         mount_available = False
 
-    # Fetch RD account health (cached, TTL 15 min)
+    # Fetch RD account health (cached, TTL 15 min, lock prevents concurrent fetches)
     rd_health: RdHealth | None = None
     now = time.monotonic()
     if now - _rd_health_cache["fetched_at"] < _RD_HEALTH_TTL and _rd_health_cache["data"] is not None:
         rd_health = _rd_health_cache["data"]
         logger.debug("stats: RD health cache hit (age=%.0fs)", now - _rd_health_cache["fetched_at"])
     else:
-        try:
-            user_info = await rd_client.get_account_info()
-            torrents = await rd_client.list_torrents(limit=2500)
-            torrent_count = len(torrents)
-            total_bytes = sum(t.get("bytes", 0) for t in torrents)
-            rd_health = RdHealth(
-                username=user_info.get("username", ""),
-                premium_type=user_info.get("type", "free"),
-                days_remaining=int(user_info.get("premium", 0)) // 86400,
-                expiration=user_info.get("expiration"),
-                points=int(user_info.get("points", 0)),
-                torrent_count=torrent_count,
-                total_bytes=total_bytes,
-            )
-            _rd_health_cache["data"] = rd_health
-            _rd_health_cache["fetched_at"] = now
-            logger.info(
-                "stats: RD health fetched username=%s premium_type=%s days_remaining=%d torrents=%d",
-                rd_health.username,
-                rd_health.premium_type,
-                rd_health.days_remaining,
-                rd_health.torrent_count,
-            )
-        except (
-            RealDebridError,
-            CircuitOpenError,
-            httpx.RequestError,
-            TimeoutError,
-        ) as exc:
-            logger.warning("stats: RD health unavailable (%s: %s)", type(exc).__name__, exc)
+        async with _rd_health_lock:
+            # Re-check after acquiring lock (another request may have populated cache)
+            now = time.monotonic()
+            if now - _rd_health_cache["fetched_at"] < _RD_HEALTH_TTL and _rd_health_cache["data"] is not None:
+                rd_health = _rd_health_cache["data"]
+            else:
+                try:
+                    user_info = await rd_client.get_account_info()
+                    rd_health = RdHealth(
+                        username=user_info.get("username", ""),
+                        premium_type=user_info.get("type", "free"),
+                        days_remaining=int(user_info.get("premium") or 0) // 86400,
+                        expiration=user_info.get("expiration"),
+                        points=int(user_info.get("points") or 0),
+                    )
+                    _rd_health_cache["data"] = rd_health
+                    _rd_health_cache["fetched_at"] = now
+                    logger.info(
+                        "stats: RD health fetched username=%s premium_type=%s days_remaining=%d",
+                        rd_health.username,
+                        rd_health.premium_type,
+                        rd_health.days_remaining,
+                    )
+                except (
+                    RealDebridError,
+                    CircuitOpenError,
+                    httpx.RequestError,
+                    TimeoutError,
+                    ValueError,
+                    TypeError,
+                ) as exc:
+                    logger.warning("stats: RD health unavailable (%s: %s)", type(exc).__name__, exc)
 
     health = HealthStatus(mount_available=mount_available, rd=rd_health)
 
