@@ -152,25 +152,26 @@ async def search(body: SearchRequest) -> SearchResponse:
                     body.imdb_id,
                 )
                 return results
-            elif (
-                body.media_type == "show"
-                and body.season is not None
-                and body.episode is not None
-            ):
+            elif body.media_type == "show":
+                # Default to S01E01 when not provided — Torrentio requires
+                # season+episode for shows but returns season packs for any
+                # episode query, so S01E01 is a safe anchor.
+                season = body.season if body.season is not None else 1
+                episode = body.episode if body.episode is not None else 1
                 results = await torrentio_client.scrape_episode(
-                    body.imdb_id, body.season, body.episode, include_debrid_key=False
+                    body.imdb_id, season, episode, include_debrid_key=False
                 )
                 logger.debug(
                     "search: torrentio returned %d episode results for imdb_id=%s S%02dE%02d",
                     len(results),
                     body.imdb_id,
-                    body.season,
-                    body.episode,
+                    season,
+                    episode,
                 )
                 return results
             else:
                 logger.debug(
-                    "search: skipping torrentio — media_type=%s requires season+episode for shows",
+                    "search: skipping torrentio — unsupported media_type=%s",
                     body.media_type,
                 )
                 return []

@@ -263,6 +263,25 @@ class ZileanClient:
         try:
             client = await self._get_client()
             response = await client.get("/dmm/filtered", params=params)
+
+            # Fallback: if filtered query returned empty, retry with title
+            # only.  Many torrents in Zilean lack IMDB/season/episode metadata
+            # even though the title matches.
+            has_filters = imdb_id is not None or season is not None or episode is not None
+            if has_filters and response.is_success:
+                try:
+                    first_body = response.json()
+                except ValueError:
+                    first_body = None
+                if first_body == []:
+                    logger.info(
+                        "zilean.search: 0 results with filters (imdb=%s season=%s episode=%s), "
+                        "retrying title-only",
+                        imdb_id, season, episode,
+                    )
+                    response = await client.get(
+                        "/dmm/filtered", params={"Query": query},
+                    )
         except httpx.ConnectError as exc:
             await breaker.record_failure()
             logger.warning(
