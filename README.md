@@ -26,12 +26,18 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Multi-source scraping: Torrentio (Stremio addon) + Zilean (DMM hashlists)
 - Episode fallback chain: episode query → season query → show query
 - XEM scene numbering for anime (TMDB → broadcast season mapping)
+- XEM scene season packs: auto-maps scene seasons to TMDB coordinates (e.g., scene S02 = TMDB S01E14-E26)
+- Anime batch detection: recognizes `[BATCH]`, episode ranges (`01~13`), and `Season N` keywords as season packs
 - Season pack auto-split into individual episodes when no packs are available
+- Zilean title-only fallback: retries without IMDB/season/episode filters when strict query returns 0
+- Sequential RD cache checking: checks top result first, stops on cache hit (2-3 API calls vs 12)
+- Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
 
 **Three-Tier Filtering**
-- Tier 1 — hard reject: size limits, blocked keywords/groups, resolution floor, language filter
-- Tier 2 — quality scoring: resolution, codec, audio, source, seeders, cache status, language preference
+- Tier 1 — hard reject: size limits, blocked keywords/groups, resolution floor, language filter, episode mismatch
+- Tier 2 — quality scoring: resolution, codec, audio, source, seeders, cache status, language preference, original language bonus
 - Two quality profiles (high / standard) with full customization
+- PTN list normalization for multi-episode (S01E01E02) and multi-season (S01-S04) titles
 
 **Deduplication**
 - Mount-first: checks Zurg mount index before any API calls
@@ -55,6 +61,12 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - OAuth authentication
 - Automatic library scan after symlink creation
 - Configurable movie/show section IDs
+
+**Security**
+- CSRF protection via double-submit cookie pattern on all mutation endpoints
+- Settings validation with Pydantic model (rejects unknown keys)
+- API key masking in responses (last 4 chars only)
+- SRI integrity hashes on CDN-loaded scripts (htmx)
 
 **Web UI**
 - Dashboard with queue stats and system health
@@ -82,6 +94,8 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 **Zurg auto-recovery and rd_id drift**: Zurg has an auto-repair feature that replaces CDN-dropped files with different RD torrents while keeping mount paths stable. After recovery, vibeDebrid's stored rd_ids may be stale (returning 404 from the RD API). This does not affect playback or symlinks — those go through the Zurg mount. The RD Account Cleanup tool handles this safely via live mount verification, and will warn about stale rd_ids in scan results. Full rd_id reconciliation will be available after Zurg webhook integration (requires dockerization).
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
+
+**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), Zilean searches may return 0 results. A title-only fallback helps, but shows indexed only under their original-language title (e.g., "Saiunkoku Monogatari" vs "The Story of Saiunkoku") may not be found automatically. Manual search with the original title works as a workaround. See [#34](https://github.com/hkny/vibeDebrid/issues/34).
 
 ## Prerequisites
 
