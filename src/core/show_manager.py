@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -848,6 +849,36 @@ class ShowManager:
                         )
                         continue
 
+                    # Build XEM scene pack metadata so the scrape pipeline can
+                    # query Torrentio with the correct TMDB anchor episode and
+                    # the CHECKING stage can filter mount files to the right range.
+                    tmdb_ep_list = [
+                        {"s": ep.tmdb_season, "e": ep.tmdb_episode}
+                        for ep in group.episodes
+                    ]
+                    # Anchor = first TMDB episode in the group; end = last.
+                    # Only set anchor/end when all episodes share the same TMDB season
+                    # (the common case). Cross-TMDB-season groups fall back to per-episode
+                    # processing via the tmdb_episodes list.
+                    distinct_tmdb_seasons = {ep.tmdb_season for ep in group.episodes}
+                    if len(distinct_tmdb_seasons) == 1:
+                        tmdb_anchor_season = group.episodes[0].tmdb_season
+                        tmdb_anchor_episode = min(ep.tmdb_episode for ep in group.episodes)
+                        tmdb_end_episode = max(ep.tmdb_episode for ep in group.episodes)
+                    else:
+                        # Cross-season: anchor/end not meaningful. The split fallback
+                        # will use tmdb_episodes directly.
+                        tmdb_anchor_season = group.episodes[0].tmdb_season if group.episodes else None
+                        tmdb_anchor_episode = None
+                        tmdb_end_episode = None
+                    xem_metadata: dict = {
+                        "xem_scene_pack": True,
+                        "scene_season": season_num,
+                        "tmdb_anchor_season": tmdb_anchor_season,
+                        "tmdb_anchor_episode": tmdb_anchor_episode,
+                        "tmdb_end_episode": tmdb_end_episode,
+                        "tmdb_episodes": tmdb_ep_list,
+                    }
                     item = MediaItem(
                         title=request.title,
                         year=request.year,
@@ -865,14 +896,17 @@ class ShowManager:
                         is_season_pack=True,
                         quality_profile=request.quality_profile,
                         original_language=request.original_language,
+                        metadata_json=json.dumps(xem_metadata),
                     )
                     session.add(item)
                     existing_keys.add(pack_key)
                     created += 1
                     logger.info(
                         "show_manager.add_seasons: created XEM scene season pack %s S%02d "
-                        "(tmdb_id=%s)",
+                        "(tmdb_id=%s, anchor=S%02dE%02d, end_ep=%s, episodes=%d)",
                         request.title, season_num, tmdb_id_str,
+                        tmdb_anchor_season or 0, tmdb_anchor_episode or 0,
+                        tmdb_end_episode, len(tmdb_ep_list),
                     )
 
                 else:

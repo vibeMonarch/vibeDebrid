@@ -1,6 +1,7 @@
 """FastAPI application entrypoint with startup/shutdown hooks and scheduler."""
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -368,6 +369,7 @@ async def _job_queue_processor() -> None:
                     # Set to (start_ep - 1) when the absolute episode fallback is used so
                     # that symlink_manager can remap absolute numbers to per-season numbers.
                     _season_pack_episode_offset: int = 0
+                    scan_result = None
                     # Season packs: look up ALL episodes (episode=None) and symlink each match
                     matches = await mount_scanner.lookup(
                         session,
@@ -520,6 +522,65 @@ async def _job_queue_processor() -> None:
                                         matches = unfiltered
                                 else:
                                     matches = unfiltered
+
+                    # XEM scene pack fallback: the item's season is the scene
+                    # season (e.g. S02) but mount files are stored with TMDB
+                    # season (e.g. S01).  When xem_scene_pack metadata is
+                    # present and the standard lookup found nothing, retry with
+                    # the TMDB anchor season and then filter to the TMDB episode
+                    # range.  Set episode_offset so symlinks get scene numbering.
+                    if not matches and item.metadata_json:
+                        try:
+                            _xem_meta = json.loads(item.metadata_json)
+                            if _xem_meta.get("xem_scene_pack"):
+                                _anchor_season = _xem_meta.get("tmdb_anchor_season")
+                                _anchor_ep = _xem_meta.get("tmdb_anchor_episode")
+                                _end_ep = _xem_meta.get("tmdb_end_episode")
+                                if _anchor_season is not None:
+                                    logger.info(
+                                        "CHECKING season pack id=%d: XEM scene pack fallback, "
+                                        "retrying lookup with TMDB anchor season=%d "
+                                        "(item scene_season=%d)",
+                                        item.id, int(_anchor_season), item.season or 0,
+                                    )
+                                    xem_matches = await mount_scanner.lookup(
+                                        session,
+                                        title=item.title,
+                                        season=int(_anchor_season),
+                                        episode=None,
+                                    )
+                                    if not xem_matches and scan_result and scan_result.matched_dir_path:
+                                        xem_matches = await mount_scanner.lookup_by_path_prefix(
+                                            session,
+                                            scan_result.matched_dir_path,
+                                            season=int(_anchor_season),
+                                            episode=None,
+                                        )
+                                    if xem_matches and _anchor_ep is not None and _end_ep is not None:
+                                        # Filter to only the TMDB episode range for this scene season.
+                                        xem_matches = [
+                                            f for f in xem_matches
+                                            if f.parsed_episode is not None
+                                            and int(_anchor_ep) <= f.parsed_episode <= int(_end_ep)
+                                        ]
+                                        if xem_matches:
+                                            # Offset maps TMDB absolute episode → scene episode.
+                                            # e.g. anchor_ep=14, offset=13 → E14 becomes E01.
+                                            _season_pack_episode_offset = int(_anchor_ep) - 1
+                                            matches = xem_matches
+                                            logger.info(
+                                                "CHECKING season pack id=%d: XEM scene pack matched "
+                                                "%d files (TMDB S%02dE%02d-E%02d, offset=%d)",
+                                                item.id, len(matches),
+                                                int(_anchor_season), int(_anchor_ep), int(_end_ep),
+                                                _season_pack_episode_offset,
+                                            )
+                        except (ValueError, TypeError, AttributeError) as _xem_exc:
+                            logger.debug(
+                                "CHECKING season pack id=%d: XEM scene pack metadata parse failed: %s",
+                                item.id, _xem_exc,
+                            )
+
                     # Auto-correct: season packs must be shows
                     if matches and item.media_type == MediaType.MOVIE:
                         logger.info(

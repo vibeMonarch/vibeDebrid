@@ -240,7 +240,40 @@ class ScrapePipeline:
         # ------------------------------------------------------------------
         scene_season: int | None = item.season
         scene_episode: int | None = item.episode
+
+        # XEM scene pack branch: when a season pack carries xem_scene_pack
+        # metadata, use the stored TMDB anchor season/episode for scrapers so
+        # Torrentio is queried with TMDB coordinates (e.g. S01E14) instead of
+        # the scene season number (e.g. S02E01).
         if (
+            item.is_season_pack
+            and item.episode is None
+            and item.media_type == MediaType.SHOW
+            and item.metadata_json
+        ):
+            try:
+                _meta = json.loads(item.metadata_json)
+                if _meta.get("xem_scene_pack"):
+                    _anchor_season = _meta.get("tmdb_anchor_season")
+                    _anchor_episode = _meta.get("tmdb_anchor_episode")
+                    if _anchor_season is not None and _anchor_episode is not None:
+                        scene_season = int(_anchor_season)
+                        scene_episode = int(_anchor_episode)
+                        logger.info(
+                            "scrape_pipeline: XEM scene pack anchor remap for item id=%d "
+                            "scene S%02d → TMDB S%02dE%02d",
+                            item.id,
+                            item.season or 0,
+                            scene_season,
+                            scene_episode,
+                        )
+            except (ValueError, TypeError, AttributeError) as exc:
+                logger.debug(
+                    "scrape_pipeline: XEM scene pack metadata parse failed for item id=%d: %s",
+                    item.id, exc,
+                )
+
+        elif (
             item.media_type == MediaType.SHOW
             and settings.xem.enabled
             and item.episode is not None
@@ -1415,7 +1448,12 @@ class ScrapePipeline:
 
         When no season packs are available on any scraper, creates one queue
         item per episode so that individual episodes can be acquired instead.
-        Uses TMDB to determine the episode count for the season.
+
+        For XEM scene packs (``xem_scene_pack`` in metadata), uses the stored
+        TMDB episode list instead of querying TMDB directly — the season number
+        on the item is the scene season and may not exist in TMDB.
+
+        For regular season packs, uses TMDB to determine the episode count.
 
         Existing episode items for the same show+season are skipped to avoid
         duplicates.
@@ -1436,6 +1474,94 @@ class ScrapePipeline:
             )
             return 0
 
+        # ------------------------------------------------------------------
+        # XEM scene pack branch: use stored TMDB episode list
+        # ------------------------------------------------------------------
+        if item.metadata_json:
+            try:
+                _meta = json.loads(item.metadata_json)
+            except (ValueError, TypeError):
+                _meta = {}
+        else:
+            _meta = {}
+
+        if _meta.get("xem_scene_pack") and _meta.get("tmdb_episodes"):
+            tmdb_episodes: list[dict] = _meta["tmdb_episodes"]
+            logger.info(
+                "scrape_pipeline._split_season_pack_to_episodes: item id=%d is XEM scene pack "
+                "scene_season=%s — splitting using stored TMDB episode list (%d episodes)",
+                item.id, item.season, len(tmdb_episodes),
+            )
+
+            # Find existing episode items keyed by (tmdb_season, tmdb_episode).
+            existing_stmt = select(MediaItem.season, MediaItem.episode).where(
+                MediaItem.tmdb_id == item.tmdb_id,
+                MediaItem.episode.is_not(None),
+            )
+            existing_result = await session.execute(existing_stmt)
+            existing_keys: set[tuple[int, int]] = {
+                (row[0], row[1]) for row in existing_result.all()
+                if row[0] is not None and row[1] is not None
+            }
+
+            now = datetime.now(timezone.utc)
+            created = 0
+            for ep_entry in tmdb_episodes:
+                try:
+                    ep_season = int(ep_entry["s"])
+                    ep_episode = int(ep_entry["e"])
+                except (KeyError, ValueError, TypeError):
+                    logger.debug(
+                        "scrape_pipeline._split_season_pack_to_episodes: skipping "
+                        "malformed ep_entry %r for item id=%d",
+                        ep_entry, item.id,
+                    )
+                    continue
+
+                if (ep_season, ep_episode) in existing_keys:
+                    logger.debug(
+                        "scrape_pipeline._split_season_pack_to_episodes: S%02dE%02d "
+                        "already exists for item id=%d — skipping",
+                        ep_season, ep_episode, item.id,
+                    )
+                    continue
+
+                new_item = MediaItem(
+                    title=item.title,
+                    year=item.year,
+                    media_type=MediaType.SHOW,
+                    tmdb_id=item.tmdb_id,
+                    imdb_id=item.imdb_id,
+                    tvdb_id=item.tvdb_id,
+                    state=QueueState.WANTED,
+                    source="season_pack_split",
+                    added_at=now,
+                    state_changed_at=now,
+                    retry_count=0,
+                    season=ep_season,
+                    episode=ep_episode,
+                    is_season_pack=False,
+                    quality_profile=item.quality_profile,
+                    original_language=item.original_language,
+                )
+                session.add(new_item)
+                existing_keys.add((ep_season, ep_episode))
+                created += 1
+
+            if created > 0:
+                await session.flush()
+
+            logger.info(
+                "scrape_pipeline._split_season_pack_to_episodes: XEM scene pack item id=%d "
+                "title=%r scene_season=%d created %d TMDB episode items (skipped %d existing)",
+                item.id, item.title, item.season, created,
+                len(tmdb_episodes) - created,
+            )
+            return created
+
+        # ------------------------------------------------------------------
+        # Standard branch: look up episode count from TMDB
+        # ------------------------------------------------------------------
         try:
             tmdb_id_int = int(item.tmdb_id)
         except (ValueError, TypeError):
