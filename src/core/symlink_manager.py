@@ -120,6 +120,13 @@ _TMDB_TAG_RE = re.compile(r"\s*\{(?:tmdb|tvdb|imdb)-[^}]+\}")
 _EPISODE_RE = re.compile(r"[Ss]\d{1,2}[Ee](\d{1,3})")
 _BARE_EPISODE_RE = re.compile(r"[\s._-][Ee](\d{2,3})(?:\b|[\s._-])")
 
+# Last-resort bare trailing number for anime naming conventions, e.g.:
+#   "Wolf's Rain 01.mkv" → episode 1
+# Only matches 1-3 digit numbers at the end of the stem (4-digit years excluded
+# by regex length limit; common resolution values excluded by the set below).
+_BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
+_NON_EPISODE_NUMBERS: frozenset[int] = frozenset({480, 576, 720, 1080, 2160, 4320})
+
 
 def _parse_episode_from_filename(filename: str) -> int | None:
     """Extract episode number from a filename using PTN then regex fallback.
@@ -150,6 +157,16 @@ def _parse_episode_from_filename(filename: str) -> int | None:
     match = _BARE_EPISODE_RE.search(filename)
     if match:
         return int(match.group(1))
+
+    # Last-resort: bare trailing number for anime naming conventions, e.g.
+    # "Wolf's Rain 01.mkv" → episode 1.  Excludes known resolution values.
+    stem = os.path.splitext(filename)[0]
+    trailing_match = _BARE_TRAILING_EP_RE.search(stem)
+    if trailing_match:
+        candidate = int(trailing_match.group(1))
+        if candidate not in _NON_EPISODE_NUMBERS:
+            return candidate
+
     return None
 
 

@@ -44,6 +44,7 @@ from src.core.symlink_manager import (
     VerifyResult,
     _find_existing_show_dir,
     _format_timestamp,
+    _parse_episode_from_filename,
     build_movie_dir,
     build_show_dir,
     sanitize_name,
@@ -1734,3 +1735,61 @@ class TestPlexNaming:
         (tmp_path / dir_name).mkdir()
         result = _find_existing_show_dir(str(tmp_path), "Show Name (2024) {tmdb-209867}")
         assert result == dir_name
+
+
+# ---------------------------------------------------------------------------
+# _parse_episode_from_filename: bare trailing number (anime naming convention)
+# ---------------------------------------------------------------------------
+
+
+class TestParseEpisodeFromFilenameBarTrailing:
+    """Tests for the bare-trailing-number fallback in _parse_episode_from_filename.
+
+    This covers the 'Wolf's Rain 01.mkv' family of filenames where the episode
+    number is a bare integer at the end of the filename stem — no S/E prefix,
+    no dash, no brackets.
+    """
+
+    def test_bare_trailing_simple(self) -> None:
+        """'Wolf's Rain 01.mkv' → episode 1."""
+        assert _parse_episode_from_filename("Wolf's Rain 01.mkv") == 1
+
+    def test_bare_trailing_two_digit(self) -> None:
+        """'Wolf's Rain 26.mkv' → episode 26."""
+        assert _parse_episode_from_filename("Wolf's Rain 26.mkv") == 26
+
+    def test_bare_trailing_leading_zero(self) -> None:
+        """'Anime Title 03.mkv' → episode 3 (leading zero handled by int())."""
+        assert _parse_episode_from_filename("Anime Title 03.mkv") == 3
+
+    def test_bare_trailing_year_not_matched(self) -> None:
+        """'Show Name 2003.mkv' must NOT yield an episode number.
+
+        The regex only matches 1-3 digit numbers so a 4-digit year is
+        never treated as an episode number.
+        """
+        assert _parse_episode_from_filename("Show Name 2003.mkv") is None
+
+    def test_bare_trailing_does_not_match_resolution_720(self) -> None:
+        """'Some Show 720.mkv' — 720 is a resolution value, not an episode."""
+        assert _parse_episode_from_filename("Some Show 720.mkv") is None
+
+    def test_bare_trailing_does_not_match_resolution_1080(self) -> None:
+        """'Some Show 1080.mkv' — 1080 is a resolution value, not an episode."""
+        assert _parse_episode_from_filename("Some Show 1080.mkv") is None
+
+    def test_bare_trailing_does_not_match_resolution_480(self) -> None:
+        """'Some Show 480.mkv' — 480 is a resolution value, not an episode."""
+        assert _parse_episode_from_filename("Some Show 480.mkv") is None
+
+    def test_sxexx_wins_over_bare_trailing(self) -> None:
+        """When SxxExx is present it takes precedence over bare trailing number."""
+        assert _parse_episode_from_filename("Show S01E05.mkv") == 5
+
+    def test_bare_episode_prefix_wins_over_bare_trailing(self) -> None:
+        """When bare E-prefix pattern matches it takes precedence."""
+        assert _parse_episode_from_filename("Show E12 extra 04.mkv") == 12
+
+    def test_bare_trailing_dot_separator(self) -> None:
+        """'Show.Name.07.mkv' — dot separator before the episode number works."""
+        assert _parse_episode_from_filename("Show.Name.07.mkv") == 7
