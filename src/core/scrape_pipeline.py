@@ -388,11 +388,17 @@ class ScrapePipeline:
             except (ValueError, TypeError):
                 pass
 
+        # Build cached_hashes from Torrentio results that have RD cache status.
+        cached_hashes: set[str] = {
+            r.info_hash for r in combined
+            if getattr(r, "cached", False) and getattr(r, "info_hash", None)
+        }
+
         # Filter and rank first, then probe RD cache on the top candidates.
         ranked = filter_engine.filter_and_rank(
             combined,  # type: ignore[arg-type]
             profile_name=item.quality_profile,
-            cached_hashes=set(),
+            cached_hashes=cached_hashes,
             prefer_season_packs=bool(item.is_season_pack),
             original_language=orig_lang_name,
             requested_season=scene_season if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
@@ -1097,7 +1103,7 @@ class ScrapePipeline:
                 {"imdb_id": item.imdb_id, "type": "movie"}
             )
             try:
-                results = await torrentio_client.scrape_movie(item.imdb_id, include_debrid_key=False)
+                results = await torrentio_client.scrape_movie(item.imdb_id)
                 logger.debug(
                     "scrape_pipeline: Torrentio returned %d results for movie "
                     "item id=%d",
@@ -1141,7 +1147,6 @@ class ScrapePipeline:
             try:
                 results = await torrentio_client.scrape_episode(
                     item.imdb_id, eff_scene_season, eff_scene_episode,
-                    include_debrid_key=False,
                 )
                 logger.debug(
                     "scrape_pipeline: Torrentio returned %d results for episode "
