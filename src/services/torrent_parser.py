@@ -91,7 +91,7 @@ DUAL_AUDIO_RE = re.compile(r"\bDUAL[\.\s-]?AUDIO\b", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 
 # Last-resort bare trailing number for anime naming conventions, e.g.:
-#   "Wolf's Rain 01.mkv" → episode 1
+#   "Show Title 01.mkv" → episode 1
 # Only matches 1-3 digit numbers at the end of the stem (4-digit years excluded
 # by regex length limit; common resolution values excluded by the set below).
 BARE_TRAILING_EP_RE = re.compile(r"[\s.](\d{1,3})\s*$")
@@ -336,7 +336,7 @@ def parse_episode_from_filename(filename: str) -> int | None:
     1. PTN parse — checks the ``episode`` key.
     2. ``SxxExx`` regex — standard season-episode notation.
     3. Bare ``E``-prefixed number — ``E05``, ``E12``, etc.
-    4. Bare trailing number — anime convention, e.g. ``Wolf's Rain 01.mkv``.
+    4. Bare trailing number — anime convention, e.g. ``Show Title 01.mkv``.
        Excludes known resolution/bitrate values (480, 720, 1080, …).
 
     Args:
@@ -364,7 +364,7 @@ def parse_episode_from_filename(filename: str) -> int | None:
         return int(match.group(1))
 
     # Last-resort: bare trailing number for anime naming conventions, e.g.
-    # "Wolf's Rain 01.mkv" → episode 1.  Excludes known resolution values.
+    # "Show Title 01.mkv" → episode 1.  Excludes known resolution values.
     stem = os.path.splitext(filename)[0]
     trailing_match = BARE_TRAILING_EP_RE.search(stem)
     if trailing_match:

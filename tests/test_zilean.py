@@ -958,14 +958,14 @@ async def test_response_is_null_returns_empty(client: ZileanClient) -> None:
 
 def test_parse_languages_cyrillic_only(client: ZileanClient) -> None:
     """A title containing Cyrillic characters is detected as Russian."""
-    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Sousou.no.Frieren.S01E01.1080p"
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Test.Anime.S01E01.1080p"
     result = client._parse_languages(title)
     assert "Russian" in result
 
 
 def test_parse_languages_cyrillic_full_russian_title(client: ZileanClient) -> None:
     """A realistic anime title mixing Cyrillic and Latin is detected as Russian."""
-    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f \u0432 \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0443\u0442\u044c \u0424\u0440\u0438\u0440\u0435\u043d / Sousou no Frieren [02x01-05]"
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f \u0432 \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0443\u0442\u044c \u0424\u0440\u0438\u0440\u0435\u043d / Test Anime JP Title [02x01-05]"
     result = client._parse_languages(title)
     assert "Russian" in result
 
@@ -979,7 +979,7 @@ def test_parse_languages_cyrillic_no_duplicate_with_russian_token(client: Zilean
 
 def test_parse_languages_cyrillic_with_other_language(client: ZileanClient) -> None:
     """Title with Cyrillic script and a Japanese tag yields both Russian and Japanese."""
-    title = "\u0410\u043d\u0438\u043c\u0435 [JAP] Sousou.no.Frieren.S01E01.1080p"
+    title = "\u0410\u043d\u0438\u043c\u0435 [JAP] Test.Anime.S01E01.1080p"
     result = client._parse_languages(title)
     assert "Russian" in result
     assert "Japanese" in result
@@ -1137,11 +1137,11 @@ def test_parse_languages_multi_tag_still_detected(client: ZileanClient) -> None:
 async def test_cyrillic_title_populates_languages_field(client: ZileanClient) -> None:
     """A Zilean entry with a Cyrillic raw_title gets Russian in its languages field."""
     entry = _make_zilean_entry(
-        raw_title="\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Sousou.no.Frieren.S01E01.1080p",
+        raw_title="\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Test.Anime.S01E01.1080p",
     )
     _patch_client(client, [_make_response(200, [entry])])
 
-    results = await client.search("Frieren")
+    results = await client.search("Test Anime")
 
     assert len(results) == 1
     assert "Russian" in results[0].languages
@@ -1151,11 +1151,11 @@ async def test_cyrillic_title_populates_languages_field(client: ZileanClient) ->
 async def test_rus_abbreviation_populates_languages_field(client: ZileanClient) -> None:
     """A Zilean entry with '[RUS]' in its raw_title gets Russian in its languages field."""
     entry = _make_zilean_entry(
-        raw_title="Sousou.no.Frieren.S01E01.1080p.[RUS].WEB-DL",
+        raw_title="Test.Anime.JP.S01E01.1080p.[RUS].WEB-DL",
     )
     _patch_client(client, [_make_response(200, [entry])])
 
-    results = await client.search("Frieren")
+    results = await client.search("Test Anime")
 
     assert len(results) == 1
     assert "Russian" in results[0].languages
@@ -1197,10 +1197,10 @@ class TestAnimeDashNotationParsing:
             episodes=episodes if episodes is not None else [],
         )
 
-    def test_frieren_s2_dash_06_not_season_pack(self, client: ZileanClient) -> None:
-        """'[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]' must not be
+    def test_anime_s2_dash_06_not_season_pack(self, client: ZileanClient) -> None:
+        """'[ASW] Test Anime JP Title S2 - 06 [1080p HEVC x265 10Bit][AAC]' must not be
         a season pack — it is a single episode in anime dash notation."""
-        raw_title = "[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]"
+        raw_title = "[ASW] Test Anime JP Title S2 - 06 [1080p HEVC x265 10Bit][AAC]"
         entry = self._entry_for(raw_title)
         result = client._parse_entry(entry)
 
@@ -1208,9 +1208,9 @@ class TestAnimeDashNotationParsing:
         assert result.is_season_pack is False
         assert result.episode == 6
 
-    def test_frieren_s2_dash_06_season_set(self, client: ZileanClient) -> None:
+    def test_anime_s2_dash_06_season_set(self, client: ZileanClient) -> None:
         """Season is extracted correctly from the dash notation 'S2 - 06'."""
-        raw_title = "[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]"
+        raw_title = "[ASW] Test Anime JP Title S2 - 06 [1080p HEVC x265 10Bit][AAC]"
         entry = self._entry_for(raw_title)
         result = client._parse_entry(entry)
 
@@ -1278,7 +1278,7 @@ class TestAnimeBatchPackParsing:
         The [BATCH] keyword signals a multi-episode release.  The episode
         field must remain None (not extracted as episode 1 via bare-dash).
         """
-        raw_title = "[Erai-raws] Kamonohashi Ron no Kindan Suiri - 01 ~ 13 [1080p][BATCH][Multiple Subtitle]"
+        raw_title = "[Erai-raws] Test Series Title - 01 ~ 13 [1080p][BATCH][Multiple Subtitle]"
         entry = self._entry_for(raw_title)
         result = client._parse_entry(entry)
 
@@ -1314,7 +1314,7 @@ class TestAnimeBatchPackParsing:
         """'[NanakoRaws] Title (1080p)[BATCH]' — BATCH without a range is still
         recognised as a season pack.
         """
-        raw_title = "[NanakoRaws] Kamonohashi Ron no Kindan Suiri (1080p)[BATCH]"
+        raw_title = "[Group] Test Series Title (1080p)[BATCH]"
         entry = self._entry_for(raw_title)
         result = client._parse_entry(entry)
 
@@ -1323,8 +1323,8 @@ class TestAnimeBatchPackParsing:
         assert result.episode is None
 
     def test_season_keyword_extracts_season_number(self, client: ZileanClient) -> None:
-        """'[Judas] Title (Season 1)' — '(Season 1)' must set season=1."""
-        raw_title = "[Judas] Kamonohashi Ron no Kindan Suiri (Ron Kamonohashi's Forbidden Deductions) (Season 1)"
+        """'[Group] Title (Season 1)' — '(Season 1)' must set season=1."""
+        raw_title = "[Group] Test Series Title (Test Series Full Title) (Season 1)"
         entry = self._entry_for(raw_title)
         result = client._parse_entry(entry)
 

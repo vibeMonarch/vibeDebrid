@@ -724,17 +724,17 @@ class TestFilterAndRankOriginalLanguage:
         return [
             _make_torrentio_result(
                 info_hash="1" * 40,
-                title="Frieren.S01E01.JAPANESE.1080p.WEB-DL.x265",
+                title="Test.Anime.S01E01.JAPANESE.1080p.WEB-DL.x265",
                 languages=["Japanese"],
             ),
             _make_torrentio_result(
                 info_hash="2" * 40,
-                title="Frieren.S01E01.Dual.Audio.1080p.WEB-DL.x265",
+                title="Test.Anime.S01E01.Dual.Audio.1080p.WEB-DL.x265",
                 languages=["Dual Audio"],
             ),
             _make_torrentio_result(
                 info_hash="3" * 40,
-                title="Frieren.S01E01.DUBBED.1080p.WEB-DL.x265",
+                title="Test.Anime.S01E01.DUBBED.1080p.WEB-DL.x265",
                 languages=["Dubbed"],
             ),
         ]
@@ -1302,8 +1302,8 @@ class TestMediaItemResponseOriginalLanguage:
         """GET /api/queue returns original_language for each item."""
         await _persist_item(
             session,
-            title="Frieren",
-            imdb_id="tt12345670",
+            title="Test Anime",
+            imdb_id="tt0000002",
             original_language="ja",
             state=QueueState.WANTED,
         )
@@ -1311,9 +1311,9 @@ class TestMediaItemResponseOriginalLanguage:
         assert resp.status_code == 200
         items = resp.json()["items"]
         assert len(items) >= 1
-        frieren_items = [i for i in items if i["title"] == "Frieren"]
-        assert len(frieren_items) == 1
-        assert frieren_items[0]["original_language"] == "ja"
+        test_anime_items = [i for i in items if i["title"] == "Test Anime"]
+        assert len(test_anime_items) == 1
+        assert test_anime_items[0]["original_language"] == "ja"
 
     async def test_queue_item_without_original_language_is_null(
         self, http: AsyncClient, session: AsyncSession

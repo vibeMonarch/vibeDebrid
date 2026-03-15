@@ -61,8 +61,8 @@ IMDB_ID = "tt9988776"
 # ---------------------------------------------------------------------------
 
 
-def _make_frieren_scene_s1_group():
-    """Return a SceneSeasonGroup for Frieren scene S01 (TMDB S01E01-E28, all aired)."""
+def _make_test_anime_scene_s1_group():
+    """Return a SceneSeasonGroup for Test Anime scene S01 (TMDB S01E01-E28, all aired)."""
     from src.core.show_manager import SceneEpisodeInfo, SceneSeasonGroup
     from datetime import date
 
@@ -86,8 +86,8 @@ def _make_frieren_scene_s1_group():
     )
 
 
-def _make_frieren_scene_s2_group_airing():
-    """Return a SceneSeasonGroup for Frieren scene S02 (TMDB S01E29-E35, partially aired)."""
+def _make_test_anime_scene_s2_group_airing():
+    """Return a SceneSeasonGroup for Test Anime scene S02 (TMDB S01E29-E35, partially aired)."""
     from src.core.show_manager import SceneEpisodeInfo, SceneSeasonGroup
     from datetime import date
 
@@ -120,14 +120,14 @@ def _make_frieren_scene_s2_group_airing():
 
 
 def _make_xem_show_detail() -> TmdbShowDetail:
-    """Build a TmdbShowDetail with tvdb_id set (Frieren-like)."""
+    """Build a TmdbShowDetail with tvdb_id set (XEM-mapped show)."""
     return TmdbShowDetail(
         tmdb_id=TMDB_ID,
-        title="Frieren: Beyond Journey's End",
+        title="Test Anime: The Journey",
         year=2023,
-        overview="An elf mage.",
-        poster_path="/frieren.jpg",
-        backdrop_path="/frieren_bg.jpg",
+        overview="A test anime show.",
+        poster_path="/test_anime.jpg",
+        backdrop_path="/test_anime_bg.jpg",
         status="Ended",
         vote_average=9.0,
         number_of_seasons=1,
@@ -177,7 +177,7 @@ def _make_season_pack_item(
         imdb_id=IMDB_ID,
         tmdb_id=TMDB_ID_STR,
         tvdb_id=TVDB_ID,
-        title="Frieren: Beyond Journey's End",
+        title="Test Anime: The Journey",
         year=2023,
         media_type=MediaType.SHOW,
         state=state,
@@ -232,7 +232,7 @@ def _make_torrentio_season_pack(**overrides: object) -> TorrentioResult:
     """Build a TorrentioResult that is a season pack."""
     defaults: dict[str, object] = {
         "info_hash": "b" * 40,
-        "title": "Frieren.S01.COMPLETE.1080p.WEB-DL.x265-GROUP",
+        "title": "Test.Anime.S01.COMPLETE.1080p.WEB-DL.x265-GROUP",
         "resolution": "1080p",
         "codec": "x265",
         "quality": "WEB-DL",
@@ -248,7 +248,7 @@ def _make_torrentio_season_pack(**overrides: object) -> TorrentioResult:
 
 def _make_mount_file(
     *,
-    filepath: str = "/mnt/zurg/__all__/Frieren S01/E01.mkv",
+    filepath: str = "/mnt/zurg/__all__/Test Anime S01/E01.mkv",
     filename: str = "E01.mkv",
     parsed_season: int | None = 1,
     parsed_episode: int | None = 1,
@@ -397,7 +397,7 @@ async def _make_rd_torrent(
     *,
     media_item_id: int,
     rd_id: str = "RD_XEM_001",
-    filename: str = "Frieren Beyond Journey End S01",
+    filename: str = "Test Anime The Journey S01",
 ) -> RdTorrent:
     """Persist an RdTorrent linked to the given media item."""
     torrent = RdTorrent(
@@ -430,14 +430,14 @@ class TestAddCompleteXemSceneSeasonMetadata:
         req = AddSeasonsRequest(
             tmdb_id=TMDB_ID,
             imdb_id=IMDB_ID,
-            title="Frieren: Beyond Journey's End",
+            title="Test Anime: The Journey",
             year=2023,
             seasons=[1],
         )
 
-        # Frieren-like XEM: TMDB S01 has 35 eps, scene S01 is eps 1-28 (all aired).
+        # XEM-mapped show: TMDB S01 has 35 eps, scene S01 is eps 1-28 (all aired).
         mock_show = _make_xem_show_detail()
-        frieren_detail = TmdbSeasonDetail(
+        season_detail = TmdbSeasonDetail(
             season_number=1,
             name="Season 1",
             episodes=[
@@ -464,7 +464,7 @@ class TestAddCompleteXemSceneSeasonMetadata:
             patch(
                 "src.core.show_manager.tmdb_client.get_season_details",
                 new_callable=AsyncMock,
-                return_value=frieren_detail,
+                return_value=season_detail,
             ),
         ):
             result = await sm.add_seasons(session, req)
@@ -559,17 +559,17 @@ class TestAddCompleteXemSceneSeasonMetadata:
         from src.core.show_manager import AddSeasonsRequest, ShowManager
 
         sm = ShowManager()
-        # Request scene S02 (the airing half of Frieren)
+        # Request scene S02 (the airing half of Test Anime)
         req = AddSeasonsRequest(
             tmdb_id=TMDB_ID,
             imdb_id=IMDB_ID,
-            title="Frieren: Beyond Journey's End",
+            title="Test Anime: The Journey",
             year=2023,
             seasons=[2],
         )
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = TmdbSeasonDetail(
+        season_detail = TmdbSeasonDetail(
             season_number=1,
             name="Season 1",
             episodes=[
@@ -597,7 +597,7 @@ class TestAddCompleteXemSceneSeasonMetadata:
             patch(
                 "src.core.show_manager.tmdb_client.get_season_details",
                 new_callable=AsyncMock,
-                return_value=frieren_detail,
+                return_value=season_detail,
             ),
         ):
             result = await sm.add_seasons(session, req)
@@ -707,7 +707,7 @@ class TestScrapePipelineXemScenePack:
         # Torrentio returns one result but it's an individual episode (not a pack)
         individual_ep = TorrentioResult(
             info_hash="a" * 40,
-            title="Frieren S01E14 1080p WEB-DL",
+            title="Test.Anime.S01E14.1080p.WEB-DL",
             resolution="1080p",
             codec="x265",
             quality="WEB-DL",
@@ -854,7 +854,7 @@ class TestCheckingStageXemScenePack:
         # Build 13 mount files with TMDB S01 episodes 14-26
         xem_files = [
             _make_mount_file(
-                filepath=f"/mnt/zurg/Frieren S01/E{ep:02d}.mkv",
+                filepath=f"/mnt/zurg/Test Anime S01/E{ep:02d}.mkv",
                 filename=f"E{ep:02d}.mkv",
                 parsed_season=1,
                 parsed_episode=ep,
@@ -926,7 +926,7 @@ class TestCheckingStageXemScenePack:
         # 26 files — all episodes of TMDB S01 — in the mount
         all_s1_files = [
             _make_mount_file(
-                filepath=f"/mnt/zurg/Frieren S01/E{ep:02d}.mkv",
+                filepath=f"/mnt/zurg/Test Anime S01/E{ep:02d}.mkv",
                 filename=f"E{ep:02d}.mkv",
                 parsed_season=1,
                 parsed_episode=ep,
@@ -1005,7 +1005,7 @@ class TestCheckingStageXemScenePack:
 
         xem_files = [
             _make_mount_file(
-                filepath=f"/mnt/zurg/Frieren S01/E{ep:02d}.mkv",
+                filepath=f"/mnt/zurg/Test Anime S01/E{ep:02d}.mkv",
                 filename=f"E{ep:02d}.mkv",
                 parsed_season=1,
                 parsed_episode=ep,

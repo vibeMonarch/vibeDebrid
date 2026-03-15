@@ -817,7 +817,7 @@ class MountScanner:
             session: Active async SQLAlchemy session.
             filename: The bare filename (with extension) as returned by the RD
                 API, e.g.
-                ``"Frieren Beyond Journey's End (2023) S02E01 (...).mkv"``.
+                ``"Show Title (2023) S02E01 (...).mkv"``.
 
         Returns:
             A ``ScanDirectoryResult`` with ``files_indexed=1`` on success and
@@ -1448,7 +1448,7 @@ def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, A
             episode = int(leading_match.group(1))
 
     # Last-resort fallback: bare trailing number anime naming convention.
-    # "Wolf's Rain 01.mkv" → episode 1
+    # "Show Title 01.mkv" → episode 1
     # Only applied when all other parsers have failed and the trailing number
     # is not a known non-episode value (resolution, bitrate, etc.).
     if episode is None:

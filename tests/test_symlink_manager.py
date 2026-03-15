@@ -1745,18 +1745,18 @@ class TestPlexNaming:
 class TestParseEpisodeFromFilenameBarTrailing:
     """Tests for the bare-trailing-number fallback in _parse_episode_from_filename.
 
-    This covers the 'Wolf's Rain 01.mkv' family of filenames where the episode
+    This covers the 'Show Title 01.mkv' family of filenames where the episode
     number is a bare integer at the end of the filename stem — no S/E prefix,
     no dash, no brackets.
     """
 
     def test_bare_trailing_simple(self) -> None:
-        """'Wolf's Rain 01.mkv' → episode 1."""
-        assert _parse_episode_from_filename("Wolf's Rain 01.mkv") == 1
+        """'Show Title 01.mkv' → episode 1."""
+        assert _parse_episode_from_filename("Show Title 01.mkv") == 1
 
     def test_bare_trailing_two_digit(self) -> None:
-        """'Wolf's Rain 26.mkv' → episode 26."""
-        assert _parse_episode_from_filename("Wolf's Rain 26.mkv") == 26
+        """'Show Title 26.mkv' → episode 26."""
+        assert _parse_episode_from_filename("Show Title 26.mkv") == 26
 
     def test_bare_trailing_leading_zero(self) -> None:
         """'Anime Title 03.mkv' → episode 3 (leading zero handled by int())."""

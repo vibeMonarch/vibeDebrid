@@ -1786,7 +1786,7 @@ class ScrapePipeline:
         Args:
             files: List of file dicts from the RD torrent info response.  Each
                 dict is expected to have at minimum a ``"path"`` key whose value
-                is a string (e.g. ``"/Solo.Leveling.S01E01.mkv"``).
+                is a string (e.g. ``"/Show.Title.S01E01.mkv"``).
             anchor_episode: First TMDB episode number in the target range
                 (inclusive).
             end_episode: Last TMDB episode number in the target range

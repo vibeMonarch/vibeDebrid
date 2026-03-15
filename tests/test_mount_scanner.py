@@ -172,13 +172,13 @@ class TestParseFilename:
     # ------------------------------------------------------------------
 
     def test_bare_trailing_ep_simple(self) -> None:
-        """'Wolf's Rain 01.mkv' yields episode 1 via bare trailing fallback."""
-        result = _parse_filename("Wolf's Rain 01.mkv")
+        """'Show Title 01.mkv' yields episode 1 via bare trailing fallback."""
+        result = _parse_filename("Show Title 01.mkv")
         assert result["episode"] == 1
 
     def test_bare_trailing_ep_two_digit(self) -> None:
-        """'Wolf's Rain 26.mkv' yields episode 26."""
-        result = _parse_filename("Wolf's Rain 26.mkv")
+        """'Show Title 26.mkv' yields episode 26."""
+        result = _parse_filename("Show Title 26.mkv")
         assert result["episode"] == 26
 
     def test_bare_trailing_ep_leading_zero(self) -> None:
@@ -213,13 +213,13 @@ class TestParseFilename:
 
     def test_bare_trailing_ep_not_used_when_sxexx_present(self) -> None:
         """When SxxExx is present the bare trailing fallback is not invoked."""
-        result = _parse_filename("Wolf's Rain S01E05 01.mkv")
+        result = _parse_filename("Show Title S01E05 01.mkv")
         # Standard SxxExx parser wins; bare trailing should not override.
         assert result["episode"] == 5
 
     def test_bare_trailing_ep_not_used_when_anime_dash_present(self) -> None:
         """When the anime-dash pattern matches the bare trailing fallback is not invoked."""
-        result = _parse_filename("[Group] Wolf's Rain - 12.mkv")
+        result = _parse_filename("[Group] Show Title - 12.mkv")
         assert result["episode"] == 12
 
     def test_bare_trailing_ep_dot_separator(self) -> None:

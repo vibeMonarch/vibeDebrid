@@ -10,7 +10,7 @@ Covers:
   - check_monitored_shows: no shows, new season pack, new episodes,
     dedup by existing_keys, future episode skip, last_checked_at update,
     TMDB failure handling
-  - XEM-aware: _derive_scene_seasons (Frieren-like split, no mappings, disabled,
+  - XEM-aware: _derive_scene_seasons (XEM-style split, no mappings, disabled,
     season detail fetch failure), get_show_detail with XEM (scene seasons,
     xem_mapped flag, item bucketing), add_seasons with XEM (complete pack,
     airing individual items, dedup, auto-subscribe, fallthrough)
@@ -1949,7 +1949,7 @@ class TestAddSeasonsAiring:
 class TestAddAiringSeasonPackCutoff:
     """Tests for completed-season-pack cutoff in _add_airing_season.
 
-    Covers the Frieren-style scenario: S01 episodes 1-28 covered by a
+    Covers the XEM-style scenario: S01 episodes 1-28 covered by a
     COMPLETE season pack; user adds the airing season to get episodes 29+.
     """
 
@@ -1961,7 +1961,7 @@ class TestAddAiringSeasonPackCutoff:
         return AddSeasonsRequest(
             tmdb_id=TMDB_ID,
             imdb_id="tt9999001",
-            title="Frieren",
+            title="Test Anime",
             year=2023,
             seasons=seasons,
             subscribe=subscribe,
@@ -1982,7 +1982,7 @@ class TestAddAiringSeasonPackCutoff:
         pack_completed_at = datetime(2024, 3, 22, 12, 0, 0, tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         pack = MediaItem(
-            title="Frieren",
+            title="Test Anime",
             year=2023,
             media_type=MediaType.SHOW,
             tmdb_id=TMDB_ID_STR,
@@ -2000,7 +2000,7 @@ class TestAddAiringSeasonPackCutoff:
         await session.flush()
 
         mock_show = _make_show_detail(
-            title="Frieren",
+            title="Test Anime",
             seasons=[
                 TmdbSeasonInfo(season_number=1, name="S1", episode_count=30, air_date="2023-09-29"),
             ],
@@ -2060,7 +2060,7 @@ class TestAddAiringSeasonPackCutoff:
         # Season pack WANTED (not yet complete)
         now = datetime.now(timezone.utc)
         pack = MediaItem(
-            title="Frieren",
+            title="Test Anime",
             year=2023,
             media_type=MediaType.SHOW,
             tmdb_id=TMDB_ID_STR,
@@ -2078,7 +2078,7 @@ class TestAddAiringSeasonPackCutoff:
         await session.flush()
 
         mock_show = _make_show_detail(
-            title="Frieren",
+            title="Test Anime",
             seasons=[
                 TmdbSeasonInfo(season_number=1, name="S1", episode_count=5, air_date="2026-01-01"),
             ],
@@ -2504,24 +2504,24 @@ def _make_xem_show_detail(
         ]
     return TmdbShowDetail(
         tmdb_id=tmdb_id,
-        title="Frieren: Beyond Journey's End",
+        title="Test Anime: The Journey",
         year=2023,
-        overview="An elf mage reflects on her adventure.",
-        poster_path="/frieren.jpg",
-        backdrop_path="/frieren_bg.jpg",
+        overview="A long-running anime series.",
+        poster_path="/test_anime.jpg",
+        backdrop_path="/test_anime_bg.jpg",
         status="Ended",
         vote_average=9.0,
         number_of_seasons=len(seasons),
         seasons=seasons,
-        imdb_id="tt22248376",
+        imdb_id="tt0000001",
         tvdb_id=tvdb_id,
         genres=[{"id": 16, "name": "Animation"}],
         next_episode_to_air=next_episode_to_air,
     )
 
 
-def _make_frieren_season_detail() -> TmdbSeasonDetail:
-    """Build a 35-episode season detail mimicking Frieren TMDB season 1.
+def _make_test_anime_season_detail() -> TmdbSeasonDetail:
+    """Build a 35-episode season detail for XEM test data (single TMDB season split by scene).
 
     Episodes 1-28 have past air dates (aired).
     Episodes 29-32 have past air dates (aired, belong to scene S02).
@@ -2556,8 +2556,8 @@ def _make_frieren_season_detail() -> TmdbSeasonDetail:
     )
 
 
-def _make_frieren_xem_map() -> dict[int, tuple[int, int]]:
-    """Absolute episode → (scene_season, scene_episode) map for Frieren-like data.
+def _make_test_anime_xem_map() -> dict[int, tuple[int, int]]:
+    """Absolute episode → (scene_season, scene_episode) map for XEM test data.
 
     TMDB S01 has 35 episodes (one season). Absolute positions are 1-35.
     Episodes 1-28 stay in scene S01; episodes 29-35 remap to scene S02.
@@ -2578,23 +2578,23 @@ def _make_frieren_xem_map() -> dict[int, tuple[int, int]]:
 class TestDeriveSceneSeasons:
     """Tests for ShowManager._derive_scene_seasons (internal method)."""
 
-    async def test_frieren_one_tmdb_season_yields_two_scene_seasons(
+    async def test_xem_one_tmdb_season_yields_two_scene_seasons(
         self, session: AsyncSession
     ) -> None:
-        """Frieren-like: TMDB S01 with XEM remapping → 2 SceneSeasonGroups."""
+        """XEM-mapped show: TMDB S01 with XEM remapping → 2 SceneSeasonGroups."""
         sm = ShowManager()
-        frieren_seasons = [
+        test_anime_seasons = [
             TmdbSeasonInfo(season_number=1, name="Season 1", episode_count=35, air_date="2023-09-29")
         ]
 
-        xem_map = _make_frieren_xem_map()
-        season_detail = _make_frieren_season_detail()
+        xem_map = _make_test_anime_xem_map()
+        season_detail = _make_test_anime_season_detail()
 
         with (
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
             patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
-            groups = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, frieren_seasons)
+            groups = await sm._derive_scene_seasons(session, TMDB_ID, TVDB_ID, test_anime_seasons)
 
         assert groups is not None
         assert len(groups) == 2
@@ -2729,13 +2729,13 @@ class TestGetShowDetailWithXem:
         """XEM-mapped show: seasons list contains SceneSeasonGroups with xem_mapped=True."""
         sm = ShowManager()
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
@@ -2750,13 +2750,13 @@ class TestGetShowDetailWithXem:
         """Season numbers in ShowDetail reflect scene season numbers (1 and 2), not TMDB."""
         sm = ShowManager()
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
@@ -2771,13 +2771,13 @@ class TestGetShowDetailWithXem:
         """Scene S01 (all 28 eps aired, no queue items) gets AVAILABLE status."""
         sm = ShowManager()
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
@@ -2791,13 +2791,13 @@ class TestGetShowDetailWithXem:
         """Scene S02 (some eps aired, some future) gets AIRING status."""
         sm = ShowManager()
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
@@ -2847,13 +2847,13 @@ class TestGetShowDetailWithXem:
 
         sm = ShowManager()
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
@@ -2878,13 +2878,13 @@ class TestGetShowDetailWithXem:
 
         sm = ShowManager()
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.get_show_detail(session, TMDB_ID)
 
@@ -2909,8 +2909,8 @@ class TestAddSeasonsWithXem:
     ) -> AddSeasonsRequest:
         return AddSeasonsRequest(
             tmdb_id=TMDB_ID,
-            imdb_id="tt22248376",
-            title="Frieren: Beyond Journey's End",
+            imdb_id="tt0000001",
+            title="Test Anime: The Journey",
             year=2023,
             seasons=seasons,
             quality_profile=quality_profile,
@@ -2925,13 +2925,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[1])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -2956,18 +2956,18 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[2])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
         # Scene S02 has 7 episodes (4 aired WANTED + 3 future UNRELEASED)
-        # Items with no air_date are skipped; frieren_detail has air_dates for all
+        # Items with no air_date are skipped; season_detail has air_dates for all
         assert result.created_episodes == 4   # eps 29-32 (aired)
         assert result.created_unreleased == 3  # eps 33-35 (future)
         assert result.created_items == 7
@@ -2989,13 +2989,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[1, 2])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3023,13 +3023,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[1])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3047,13 +3047,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[1])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3073,13 +3073,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[2])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3096,13 +3096,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[2], subscribe=False)
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3121,13 +3121,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[1], subscribe=False)
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3171,13 +3171,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[99])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             result = await sm.add_seasons(session, req)
 
@@ -3192,13 +3192,13 @@ class TestAddSeasonsWithXem:
         req = self._make_xem_request(seasons=[2])
 
         mock_show = _make_xem_show_detail()
-        frieren_detail = _make_frieren_season_detail()
-        xem_map = _make_frieren_xem_map()
+        season_detail = _make_test_anime_season_detail()
+        xem_map = _make_test_anime_xem_map()
 
         with (
             patch("src.core.show_manager.tmdb_client.get_show_details", new_callable=AsyncMock, return_value=mock_show),
             patch("src.core.show_manager.xem_mapper.get_absolute_scene_map", new_callable=AsyncMock, return_value=xem_map),
-            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=frieren_detail),
+            patch("src.core.show_manager.tmdb_client.get_season_details", new_callable=AsyncMock, return_value=season_detail),
         ):
             await sm.add_seasons(session, req)
 

@@ -488,10 +488,10 @@ class TestParseEpisodeFromFilename:
     # --- Bare trailing number (anime convention) ---
 
     def test_bare_trailing_number_01(self) -> None:
-        assert parse_episode_from_filename("Wolf's Rain 01.mkv") == 1
+        assert parse_episode_from_filename("Show Title 01.mkv") == 1
 
     def test_bare_trailing_number_26(self) -> None:
-        assert parse_episode_from_filename("Wolf's Rain 26.mkv") == 26
+        assert parse_episode_from_filename("Show Title 26.mkv") == 26
 
     def test_bare_trailing_with_dot_separator(self) -> None:
         assert parse_episode_from_filename("Show.Title.05.mkv") == 5
@@ -589,7 +589,7 @@ class TestCompiledRegexes:
         assert DUAL_AUDIO_RE.search("Show.DUAL.AUDIO.1080p") is not None
 
     def test_bare_trailing_ep_re_matches(self) -> None:
-        assert BARE_TRAILING_EP_RE.search("Wolf's Rain 01") is not None
+        assert BARE_TRAILING_EP_RE.search("Show Title 01") is not None
 
     def test_cyrillic_re_matches(self) -> None:
         assert CYRILLIC_RE.search("Фильм") is not None

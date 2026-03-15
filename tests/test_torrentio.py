@@ -1073,14 +1073,14 @@ async def test_cached_field_defaults_to_false(client: TorrentioClient) -> None:
 
 def test_parse_languages_cyrillic_only(client: TorrentioClient) -> None:
     """A title containing Cyrillic characters is detected as Russian."""
-    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Sousou.no.Frieren.S01E01.1080p"
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f / Test.Anime.S01E01.1080p"
     result = client._parse_languages(title, {})
     assert "Russian" in result
 
 
 def test_parse_languages_cyrillic_full_russian_title(client: TorrentioClient) -> None:
     """A realistic anime title mixing Cyrillic and Latin is detected as Russian."""
-    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f \u0432 \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0443\u0442\u044c \u0424\u0440\u0438\u0440\u0435\u043d / Sousou no Frieren [02x01-05]"
+    title = "\u041f\u0440\u043e\u0432\u043e\u0436\u0430\u044e\u0449\u0430\u044f \u0432 \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0443\u0442\u044c \u0424\u0440\u0438\u0440\u0435\u043d / Test Anime JP Title [02x01-05]"
     result = client._parse_languages(title, {})
     assert "Russian" in result
 
@@ -1094,7 +1094,7 @@ def test_parse_languages_cyrillic_no_duplicate_with_russian_token(client: Torren
 
 def test_parse_languages_cyrillic_with_other_language(client: TorrentioClient) -> None:
     """Title with Cyrillic script and a Japanese tag yields both Russian and Japanese."""
-    title = "\u0410\u043d\u0438\u043c\u0435 [JAP] Sousou.no.Frieren.S01E01.1080p"
+    title = "\u0410\u043d\u0438\u043c\u0435 [JAP] Test.Anime.S01E01.1080p"
     result = client._parse_languages(title, {})
     assert "Russian" in result
     assert "Japanese" in result
@@ -1421,10 +1421,10 @@ class TestAnimeDashNotationParsing:
             "infoHash": info_hash,
         }
 
-    def test_frieren_s2_dash_06_not_season_pack(self, client: TorrentioClient) -> None:
-        """'[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]' must not be
+    def test_anime_s2_dash_06_not_season_pack(self, client: TorrentioClient) -> None:
+        """'[ASW] Test Anime JP Title S2 - 06 [1080p HEVC x265 10Bit][AAC]' must not be
         a season pack — it is a single episode using anime dash notation."""
-        release = "[ASW] Sousou no Frieren S2 - 06 [1080p HEVC x265 10Bit][AAC]"
+        release = "[ASW] Test Anime JP Title S2 - 06 [1080p HEVC x265 10Bit][AAC]"
         stream = self._stream_for(release)
         result = client._parse_stream(stream)
 
@@ -1517,7 +1517,7 @@ class TestAnimeBatchPackParsing:
         The [BATCH] keyword signals a multi-episode release.  The episode
         field must remain None (not extracted as episode 1 via bare-dash).
         """
-        release = "[Erai-raws] Kamonohashi Ron no Kindan Suiri - 01 ~ 13 [1080p][BATCH][Multiple Subtitle]"
+        release = "[Erai-raws] Test Series Title - 01 ~ 13 [1080p][BATCH][Multiple Subtitle]"
         stream = self._stream_for(release)
         result = client._parse_stream(stream)
 
@@ -1553,7 +1553,7 @@ class TestAnimeBatchPackParsing:
         """'[NanakoRaws] Title (1080p)[BATCH]' — BATCH without a range is still
         recognised as a season pack.
         """
-        release = "[NanakoRaws] Kamonohashi Ron no Kindan Suiri (1080p)[BATCH]"
+        release = "[Group] Test Series Title (1080p)[BATCH]"
         stream = self._stream_for(release)
         result = client._parse_stream(stream)
 
@@ -1562,8 +1562,8 @@ class TestAnimeBatchPackParsing:
         assert result.episode is None
 
     def test_season_keyword_extracts_season_number(self, client: TorrentioClient) -> None:
-        """'[Judas] Title (Season 1)' — '(Season 1)' must set season=1."""
-        release = "[Judas] Kamonohashi Ron no Kindan Suiri (Ron Kamonohashi's Forbidden Deductions) (Season 1)"
+        """'[Group] Title (Season 1)' — '(Season 1)' must set season=1."""
+        release = "[Group] Test Series Title (Test Series Full Title) (Season 1)"
         stream = self._stream_for(release)
         result = client._parse_stream(stream)
 
