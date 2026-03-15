@@ -100,7 +100,7 @@
 <body class="bg-vd-bg text-gray-200 min-h-screen flex">
   <!-- Sidebar -->
   <nav id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-vd-card border-r border-vd-border flex flex-col z-30 transform -translate-x-full lg:translate-x-0 transition-transform">
-    <div class="p-6 border-b border-vd-border">
+    <div class="p-6 pl-14 lg:pl-6 border-b border-vd-border">
       <h1 class="text-xl font-bold text-white tracking-tight">vibeDebrid</h1>
       <p class="text-xs text-vd-muted mt-1">Media Automation</p>
     </div>
@@ -144,8 +144,11 @@
     </div>
   </nav>
 
+  <!-- Mobile sidebar backdrop -->
+  <div id="sidebar-backdrop" onclick="closeSidebar()" class="fixed inset-0 bg-black/50 z-20 hidden lg:hidden"></div>
+
   <!-- Mobile menu button -->
-  <button onclick="document.getElementById('sidebar').classList.toggle('-translate-x-full')" class="lg:hidden fixed top-4 left-4 z-40 p-2 bg-vd-card rounded-lg border border-vd-border">
+  <button onclick="toggleSidebar()" class="lg:hidden fixed top-4 left-4 z-40 p-2 bg-vd-card rounded-lg border border-vd-border">
     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
   </button>
 
@@ -188,13 +191,24 @@
       showToast('Request failed: ' + (evt.detail.xhr.statusText || 'Unknown error'), 'error');
     });
 
+    // Mobile sidebar toggle helpers
+    function closeSidebar() {
+      document.getElementById('sidebar').classList.add('-translate-x-full');
+      document.getElementById('sidebar-backdrop').classList.add('hidden');
+    }
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('-translate-x-full');
+      document.getElementById('sidebar-backdrop').classList.toggle('hidden');
+    }
+
     // Close mobile sidebar when clicking a nav link
     document.querySelectorAll('.nav-link').forEach(link => {
-      link.addEventListener('click', () => {
-        if (window.innerWidth < 1024) {
-          document.getElementById('sidebar').classList.add('-translate-x-full');
-        }
-      });
+      link.addEventListener('click', closeSidebar);
+    });
+
+    // Force sidebar closed on bfcache restore (iOS Safari caches DOM state)
+    window.addEventListener('pageshow', function() {
+      if (window.innerWidth < 1024) closeSidebar();
     });
 
     // SSE connection manager (shared across pages)

@@ -39,6 +39,10 @@
   }
   .season-check-icon { color: #22c55e; flex-shrink: 0; }
   .season-card.status-in_queue .season-check-icon { color: #818cf8; }
+  .episode-row { transition: background-color 0.15s ease; }
+  .episode-row:hover { background-color: rgba(255,255,255,0.03); }
+  .season-pill { transition: all 0.15s ease; }
+  .season-pill.active { background-color: rgba(99,102,241,0.2); color: #818cf8; border-color: #6366f1; }
 </style>
 {% endblock %}
 
@@ -168,6 +172,9 @@
   <div id="seasons-grid" class="px-4 lg:px-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-8">
     <!-- Populated by JS -->
   </div>
+
+  <!-- Episode browser (populated by JS) -->
+  <div id="episode-browser" class="hidden px-4 lg:px-8 mb-8"></div>
 
   <!-- Add bar (sticky at bottom) -->
   <div id="add-bar"

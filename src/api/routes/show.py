@@ -13,6 +13,7 @@ from src.config import settings
 from src.core.show_manager import (
     AddSeasonsRequest,
     AddSeasonsResult,
+    SeasonEpisodesResponse,
     ShowDetail,
     show_manager,
 )
@@ -38,16 +39,29 @@ async def get_show_detail(
     return detail
 
 
+@router.get("/{tmdb_id}/season/{season_number}/episodes")
+async def get_season_episodes(
+    tmdb_id: int,
+    season_number: int,
+    session: AsyncSession = Depends(get_db),
+) -> SeasonEpisodesResponse:
+    """Fetch per-episode info for a season for the episode browser."""
+    if not settings.tmdb.api_key:
+        raise HTTPException(status_code=503, detail="TMDB API key is not configured")
+
+    return await show_manager.get_season_episodes(session, tmdb_id, season_number)
+
+
 @router.post("/add")
 async def add_seasons(
     body: AddSeasonsRequest,
     session: AsyncSession = Depends(get_db),
 ) -> AddSeasonsResult:
     """Add selected seasons to queue and optionally subscribe."""
-    if not body.seasons and not body.subscribe:
+    if not body.seasons and not body.episodes and not body.subscribe:
         raise HTTPException(
             status_code=400,
-            detail="Must select at least one season or enable subscribe",
+            detail="Must select at least one season or episode, or enable subscribe",
         )
 
     result = await show_manager.add_seasons(session, body)

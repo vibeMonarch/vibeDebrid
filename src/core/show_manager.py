@@ -17,7 +17,7 @@ from src.config import settings
 from src.core.xem_mapper import xem_mapper
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.monitored_show import MonitoredShow
-from src.services.tmdb import TmdbSeasonInfo, tmdb_client
+from src.services.tmdb import TmdbSeasonDetail, TmdbSeasonInfo, tmdb_client
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ class SceneEpisodeInfo(BaseModel):
     tmdb_season: int
     tmdb_episode: int
     scene_episode: int
+    name: str = ""
     air_date: date | None = None
     has_aired: bool = False
 
@@ -88,6 +89,35 @@ class ShowDetail(BaseModel):
     default_profile: str = ""
 
 
+class EpisodeSelection(BaseModel):
+    """A single episode selected for adding to queue."""
+
+    season: int
+    episode: int
+    tmdb_season: int | None = None
+    tmdb_episode: int | None = None
+
+
+class EpisodeBrowseInfo(BaseModel):
+    """Episode info for the episode browser."""
+
+    episode_number: int          # Scene episode number (or TMDB if no XEM)
+    name: str = ""
+    air_date: str | None = None  # ISO date string
+    has_aired: bool = False
+    status: str = "available"    # "available", "in_queue", "in_library", "unreleased"
+    tmdb_season: int | None = None
+    tmdb_episode: int | None = None
+
+
+class SeasonEpisodesResponse(BaseModel):
+    """Response for GET /api/show/{tmdb_id}/season/{season_number}/episodes."""
+
+    season_number: int
+    xem_mapped: bool = False
+    episodes: list[EpisodeBrowseInfo] = []
+
+
 class AddSeasonsRequest(BaseModel):
     """Request to add seasons to queue."""
 
@@ -95,7 +125,8 @@ class AddSeasonsRequest(BaseModel):
     imdb_id: str | None = None
     title: str
     year: int | None = None
-    seasons: list[int]
+    seasons: list[int] = []
+    episodes: list[EpisodeSelection] = []
     quality_profile: str | None = None
     subscribe: bool = False
     original_language: str | None = None
@@ -108,6 +139,7 @@ class AddSeasonsResult(BaseModel):
     created_episodes: int = 0
     created_unreleased: int = 0
     skipped_seasons: list[int] = []
+    skipped_episodes: int = 0
     subscription_status: str = "none"  # "created", "updated", "unchanged", "none"
 
 
@@ -236,6 +268,7 @@ class ShowManager:
                     tmdb_season=s.season_number,
                     tmdb_episode=ep.episode_number,
                     scene_episode=scene_ep,
+                    name=ep.name or "",
                     air_date=ep_air_date,
                     has_aired=has_aired,
                 )
@@ -469,6 +502,196 @@ class ShowManager:
             is_subscribed=is_subscribed,
             quality_profiles=profile_names,
             default_profile=settings.quality.default_profile,
+        )
+
+    async def get_season_episodes(
+        self,
+        session: AsyncSession,
+        tmdb_id: int,
+        season_number: int,
+    ) -> SeasonEpisodesResponse:
+        """Fetch per-episode info for a season, cross-referenced with queue and library.
+
+        When XEM mappings exist the returned episode numbers are scene episode
+        numbers for the requested scene season.  Without XEM, TMDB episode
+        numbers are used directly.
+
+        For each episode the status field reflects the highest-priority state:
+        - "in_library"  — a COMPLETE or DONE item (or covering season pack) exists
+        - "in_queue"    — an active (non-terminal) item exists
+        - "unreleased"  — the episode has not yet aired
+        - "available"   — aired but not in queue or library
+
+        Args:
+            session: Async database session.
+            tmdb_id: The TMDB numeric ID for the show.
+            season_number: The season number to fetch (scene season when XEM-mapped,
+                TMDB season otherwise).
+
+        Returns:
+            A SeasonEpisodesResponse with episode list and xem_mapped flag.
+        """
+        show = await tmdb_client.get_show_details(tmdb_id)
+        if show is None:
+            logger.warning(
+                "show_manager.get_season_episodes: TMDB returned None for tmdb_id=%d",
+                tmdb_id,
+            )
+            return SeasonEpisodesResponse(season_number=season_number)
+
+        # Fetch existing queue items for this show once.
+        tmdb_id_str = str(tmdb_id)
+        db_result = await session.execute(
+            select(MediaItem).where(MediaItem.tmdb_id == tmdb_id_str)
+        )
+        existing_items: list[MediaItem] = list(db_result.scalars().all())
+
+        today = datetime.now(timezone.utc).date()
+
+        # Check for a season-pack covering this season (scene or TMDB).
+        def _season_pack_covers(season_num: int) -> str | None:
+            """Return 'in_library' or 'in_queue' if a pack covers this season, else None."""
+            for item in existing_items:
+                if item.season == season_num and item.is_season_pack and item.episode is None:
+                    if item.state in _LIBRARY_STATES:
+                        return "in_library"
+                    return "in_queue"
+            return None
+
+        # -----------------------------------------------------------------------
+        # Try XEM path when tvdb_id is available.
+        # -----------------------------------------------------------------------
+        if show.tvdb_id is not None:
+            try:
+                scene_groups = await self._derive_scene_seasons(
+                    session, tmdb_id, show.tvdb_id, show.seasons
+                )
+            except (httpx.RequestError, httpx.HTTPStatusError, ValueError, TimeoutError, KeyError) as exc:
+                logger.warning(
+                    "show_manager.get_season_episodes: _derive_scene_seasons failed "
+                    "tmdb_id=%d: %s",
+                    tmdb_id, exc,
+                )
+                scene_groups = None
+
+            if scene_groups is not None:
+                target_group: SceneSeasonGroup | None = next(
+                    (g for g in scene_groups if g.scene_season == season_number), None
+                )
+                if target_group is not None:
+                    # Build lookup: tmdb (season, episode) → MediaItem state bucket.
+                    # Episode items are stored with TMDB numbering in the DB.
+                    tmdb_ep_state: dict[tuple[int, int], str] = {}
+                    for item in existing_items:
+                        if item.episode is None:
+                            continue
+                        key = (item.season, item.episode)
+                        new_status = (
+                            "in_library" if item.state in _LIBRARY_STATES else "in_queue"
+                        )
+                        # Keep highest priority: in_library > in_queue.
+                        existing = tmdb_ep_state.get(key)
+                        if existing != "in_library":
+                            tmdb_ep_state[key] = new_status
+
+                    pack_status = _season_pack_covers(season_number)
+
+                    episodes: list[EpisodeBrowseInfo] = []
+                    for ep_info in target_group.episodes:
+                        tmdb_key = (ep_info.tmdb_season, ep_info.tmdb_episode)
+
+                        if pack_status is not None:
+                            ep_status = pack_status
+                        elif tmdb_key in tmdb_ep_state:
+                            ep_status = tmdb_ep_state[tmdb_key]
+                        elif not ep_info.has_aired:
+                            ep_status = "unreleased"
+                        else:
+                            ep_status = "available"
+
+                        episodes.append(EpisodeBrowseInfo(
+                            episode_number=ep_info.scene_episode,
+                            name=ep_info.name,
+                            air_date=ep_info.air_date.isoformat() if ep_info.air_date else None,
+                            has_aired=ep_info.has_aired,
+                            status=ep_status,
+                            tmdb_season=ep_info.tmdb_season,
+                            tmdb_episode=ep_info.tmdb_episode,
+                        ))
+
+                    logger.info(
+                        "show_manager.get_season_episodes: XEM path tmdb_id=%d "
+                        "scene_season=%d episodes=%d",
+                        tmdb_id, season_number, len(episodes),
+                    )
+                    return SeasonEpisodesResponse(
+                        season_number=season_number,
+                        xem_mapped=True,
+                        episodes=episodes,
+                    )
+
+        # -----------------------------------------------------------------------
+        # Non-XEM path: fetch TMDB season details directly.
+        # -----------------------------------------------------------------------
+        season_detail = await tmdb_client.get_season_details(tmdb_id, season_number)
+        if season_detail is None:
+            logger.warning(
+                "show_manager.get_season_episodes: TMDB season detail returned None "
+                "tmdb_id=%d season=%d",
+                tmdb_id, season_number,
+            )
+            return SeasonEpisodesResponse(season_number=season_number)
+
+        # Build lookup: (season, episode) → status bucket.
+        ep_state: dict[tuple[int, int], str] = {}
+        for item in existing_items:
+            if item.episode is None:
+                continue
+            key = (item.season, item.episode)
+            new_status = (
+                "in_library" if item.state in _LIBRARY_STATES else "in_queue"
+            )
+            existing_st = ep_state.get(key)
+            if existing_st != "in_library":
+                ep_state[key] = new_status
+
+        pack_status = _season_pack_covers(season_number)
+
+        episodes = []
+        for ep in season_detail.episodes:
+            ep_num = ep.episode_number
+            ep_air_date = _parse_air_date(ep.air_date)
+            has_aired = ep_air_date is not None and ep_air_date <= today
+            tmdb_key = (season_number, ep_num)
+
+            if pack_status is not None:
+                ep_status = pack_status
+            elif tmdb_key in ep_state:
+                ep_status = ep_state[tmdb_key]
+            elif not has_aired:
+                ep_status = "unreleased"
+            else:
+                ep_status = "available"
+
+            episodes.append(EpisodeBrowseInfo(
+                episode_number=ep_num,
+                name=ep.name,
+                air_date=ep.air_date,
+                has_aired=has_aired,
+                status=ep_status,
+                tmdb_season=season_number,
+                tmdb_episode=ep_num,
+            ))
+
+        logger.info(
+            "show_manager.get_season_episodes: TMDB path tmdb_id=%d "
+            "season=%d episodes=%d",
+            tmdb_id, season_number, len(episodes),
+        )
+        return SeasonEpisodesResponse(
+            season_number=season_number,
+            xem_mapped=False,
+            episodes=episodes,
         )
 
     async def _add_airing_season(
@@ -769,6 +992,7 @@ class ShowManager:
         """
         tmdb_id_str = str(request.tmdb_id)
         now = datetime.now(timezone.utc)
+        today = now.date()
         created = 0
         created_episodes = 0
         created_unreleased = 0
@@ -982,6 +1206,115 @@ class ShowManager:
                         request.title, season_num, tmdb_id_str,
                     )
 
+        # -----------------------------------------------------------------------
+        # Per-episode additions from the episode browser.
+        # -----------------------------------------------------------------------
+        skipped_episodes = 0
+
+        if request.episodes:
+            # Fetch TMDB season details grouped by (tmdb) season to minimise API calls.
+            # EpisodeSelection.tmdb_season is the TMDB season (may differ from scene season
+            # for XEM shows). When tmdb_season is None we fall back to episode.season.
+            tmdb_seasons_needed: set[int] = set()
+            for ep_sel in request.episodes:
+                tmdb_seasons_needed.add(ep_sel.tmdb_season if ep_sel.tmdb_season is not None else ep_sel.season)
+
+            tmdb_season_detail_cache: dict[int, TmdbSeasonDetail] = {}
+            season_list = sorted(tmdb_seasons_needed)
+            details = await asyncio.gather(
+                *(tmdb_client.get_season_details(request.tmdb_id, s) for s in season_list),
+                return_exceptions=True,
+            )
+            for s_num, detail in zip(season_list, details):
+                if isinstance(detail, TmdbSeasonDetail):
+                    tmdb_season_detail_cache[s_num] = detail
+
+            for ep_sel in request.episodes:
+                # Storage coordinates: XEM path uses TMDB season/episode; non-XEM uses scene.
+                if ep_sel.tmdb_season is not None and ep_sel.tmdb_episode is not None:
+                    store_season = ep_sel.tmdb_season
+                    store_episode = ep_sel.tmdb_episode
+                else:
+                    store_season = ep_sel.season
+                    store_episode = ep_sel.episode
+
+                ep_key = (store_season, store_episode)
+
+                # Skip if already in DB.
+                if ep_key in existing_keys:
+                    skipped_episodes += 1
+                    logger.debug(
+                        "show_manager.add_seasons: skipping episode S%02dE%02d for "
+                        "tmdb_id=%s (already exists)",
+                        store_season, store_episode, tmdb_id_str,
+                    )
+                    continue
+
+                # Skip if a season pack already covers this episode (DB or same request).
+                pack_covers = (
+                    (ep_sel.season, None) in existing_keys
+                    or any(
+                        item.season == ep_sel.season and item.is_season_pack and item.episode is None
+                        for item in all_existing
+                    )
+                )
+                if pack_covers:
+                    skipped_episodes += 1
+                    logger.debug(
+                        "show_manager.add_seasons: skipping episode S%02dE%02d for "
+                        "tmdb_id=%s (season pack already covers it)",
+                        store_season, store_episode, tmdb_id_str,
+                    )
+                    continue
+
+                # Determine air date from cached TMDB season detail.
+                detail_season_num = ep_sel.tmdb_season if ep_sel.tmdb_season is not None else ep_sel.season
+                detail_ep_num = ep_sel.tmdb_episode if ep_sel.tmdb_episode is not None else ep_sel.episode
+                ep_air_date: date | None = None
+                season_det = tmdb_season_detail_cache.get(detail_season_num)
+                if season_det is not None:
+                    for tmdb_ep in season_det.episodes:
+                        if tmdb_ep.episode_number == detail_ep_num:
+                            ep_air_date = _parse_air_date(tmdb_ep.air_date)
+                            break
+
+                if ep_air_date is not None and ep_air_date > today:
+                    state = QueueState.UNRELEASED
+                    air_date_value: date | None = ep_air_date
+                    created_unreleased += 1
+                else:
+                    state = QueueState.WANTED
+                    air_date_value = None
+                    created_episodes += 1
+
+                item = MediaItem(
+                    title=request.title,
+                    year=request.year,
+                    media_type=MediaType.SHOW,
+                    tmdb_id=tmdb_id_str,
+                    imdb_id=request.imdb_id,
+                    tvdb_id=tvdb_id,
+                    state=state,
+                    source="show_detail",
+                    added_at=now,
+                    state_changed_at=now,
+                    retry_count=0,
+                    season=store_season,
+                    episode=store_episode,
+                    is_season_pack=False,
+                    quality_profile=request.quality_profile,
+                    air_date=air_date_value,
+                    original_language=request.original_language,
+                )
+                session.add(item)
+                existing_keys.add(ep_key)
+                created += 1
+
+                logger.info(
+                    "show_manager.add_seasons: %s %s S%02dE%02d (tmdb_id=%s)",
+                    state.value.upper(), request.title, store_season, store_episode, tmdb_id_str,
+                )
+
         # Auto-subscribe when the user adds an airing season — they clearly
         # want ongoing episode tracking.
         has_airing_tmdb = airing_season_num is not None and airing_season_num in request.seasons
@@ -1035,6 +1368,7 @@ class ShowManager:
             created_episodes=created_episodes,
             created_unreleased=created_unreleased,
             skipped_seasons=skipped,
+            skipped_episodes=skipped_episodes,
             subscription_status=sub_status,
         )
 
