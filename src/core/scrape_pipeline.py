@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -402,16 +403,20 @@ class ScrapePipeline:
         # validation and the cache check loop later.
         xem_anchor_episode: int | None = None
         xem_end_episode: int | None = None
+        xem_anchor_season: int | None = None
         if item.is_season_pack and item.metadata_json:
             try:
                 _xem_meta = json.loads(item.metadata_json) if isinstance(item.metadata_json, str) else item.metadata_json
                 if _xem_meta.get("xem_scene_pack"):
                     _raw_anchor = _xem_meta.get("tmdb_anchor_episode")
                     _raw_end = _xem_meta.get("tmdb_end_episode")
+                    _raw_season = _xem_meta.get("tmdb_anchor_season")
                     if _raw_anchor is not None:
                         xem_anchor_episode = int(_raw_anchor)
                     if _raw_end is not None:
                         xem_end_episode = int(_raw_end)
+                    if _raw_season is not None:
+                        xem_anchor_season = int(_raw_season)
             except (ValueError, TypeError, json.JSONDecodeError):
                 pass
 
@@ -437,7 +442,8 @@ class ScrapePipeline:
                             rd_files = info.get("files", [])
                             if rd_files:
                                 valid, matched = self._validate_xem_episode_range(
-                                    rd_files, xem_anchor_episode, xem_end_episode
+                                    rd_files, xem_anchor_episode, xem_end_episode,
+                                    anchor_season=xem_anchor_season,
                                 )
                                 if not valid:
                                     logger.warning(
@@ -595,6 +601,7 @@ class ScrapePipeline:
             cache_limit=cache_limit,
             xem_anchor_episode=xem_anchor_episode,
             xem_end_episode=xem_end_episode,
+            xem_anchor_season=xem_anchor_season,
         )
 
         # Handle case where all candidates were rejected by XEM file validation.
@@ -1174,6 +1181,7 @@ class ScrapePipeline:
         cache_limit: int,
         xem_anchor_episode: int | None = None,
         xem_end_episode: int | None = None,
+        xem_anchor_season: int | None = None,
     ) -> tuple[FilteredResult | None, str | None, bool]:
         """Check ranked results one at a time for RD cache status, stopping at the first hit.
 
@@ -1316,6 +1324,7 @@ class ScrapePipeline:
                             rd_files,
                             xem_anchor_episode,  # type: ignore[arg-type]
                             xem_end_episode,  # type: ignore[arg-type]
+                            anchor_season=xem_anchor_season,
                         )
                         if not valid:
                             logger.warning(
@@ -1363,6 +1372,7 @@ class ScrapePipeline:
                         info["files"],
                         xem_anchor_episode,  # type: ignore[arg-type]
                         xem_end_episode,  # type: ignore[arg-type]
+                        anchor_season=xem_anchor_season,
                     )
                     if not valid:
                         logger.warning(
@@ -1799,11 +1809,15 @@ class ScrapePipeline:
             for r in results
         ]
 
+    # Regex for extracting season number from filenames (S01E05 → season 1).
+    _SEASON_RE = re.compile(r"[Ss](\d{1,2})[Ee]\d{1,3}")
+
     @staticmethod
     def _validate_xem_episode_range(
         files: list[dict[str, Any]],
         anchor_episode: int,
         end_episode: int,
+        anchor_season: int | None = None,
     ) -> tuple[bool, list[int]]:
         """Check whether RD torrent files contain episodes in the target XEM range.
 
@@ -1811,6 +1825,10 @@ class ScrapePipeline:
         parses each filename to extract an episode number.  Returns True when at
         least one video file has an episode number that falls within the inclusive
         range ``[anchor_episode, end_episode]``.
+
+        When ``anchor_season`` is provided, also verifies that the parsed season
+        number matches.  This is required for multi-TMDB-season shows where
+        episode numbers alone are ambiguous (e.g. S01E01-E12 vs S02E01-E12).
 
         Args:
             files: List of file dicts from the RD torrent info response.  Each
@@ -1820,11 +1838,14 @@ class ScrapePipeline:
                 (inclusive).
             end_episode: Last TMDB episode number in the target range
                 (inclusive).
+            anchor_season: Expected TMDB season number.  When set, files whose
+                parsed season differs are excluded from matching.
 
         Returns:
             A 2-tuple ``(valid, matched_episodes)`` where:
             - ``valid`` is ``True`` if at least one video file episode falls
-              within ``[anchor_episode, end_episode]``.
+              within ``[anchor_episode, end_episode]`` (and season matches when
+              ``anchor_season`` is set).
             - ``matched_episodes`` is the sorted list of matched episode numbers.
               Always empty when ``valid`` is ``False``.
         """
@@ -1837,6 +1858,13 @@ class ScrapePipeline:
             if ext.lower() not in VIDEO_EXTENSIONS:
                 continue
             filename = os.path.basename(path)
+
+            # Season check: if anchor_season is set, verify the file's season matches.
+            if anchor_season is not None:
+                season_match = ScrapePipeline._SEASON_RE.search(filename)
+                if season_match and int(season_match.group(1)) != anchor_season:
+                    continue  # Wrong season — skip this file.
+
             ep_num = parse_episode_from_filename(filename)
             if ep_num is not None and anchor_episode <= ep_num <= end_episode:
                 matched.append(ep_num)
