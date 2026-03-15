@@ -110,6 +110,7 @@
     setToggle('filters-prefer-original-language', filters.prefer_original_language === true);
     setField('filters-dub-penalty',         filters.dub_penalty         != null ? filters.dub_penalty         : 20);
     setField('filters-dual-audio-bonus',    filters.dual_audio_bonus    != null ? filters.dual_audio_bonus    : 10);
+    setField('filters-cached-bonus',        filters.cached_bonus        != null ? filters.cached_bonus        : 25);
 
     // Retry
     const retry = s.retry || {};
@@ -262,6 +263,7 @@
           .split(',').map(s => s.trim()).filter(Boolean);
         const dubPenalty = parseInt(document.getElementById('filters-dub-penalty').value);
         const dualAudioBonus = parseInt(document.getElementById('filters-dual-audio-bonus').value);
+        const cachedBonus = parseInt(document.getElementById('filters-cached-bonus').value);
         return {
           filters: {
             blocked_keywords:          keywords,
@@ -270,6 +272,7 @@
             prefer_original_language:  getToggle('filters-prefer-original-language'),
             dub_penalty:               isNaN(dubPenalty)      ? 20 : Math.min(50, Math.max(0, dubPenalty)),
             dual_audio_bonus:          isNaN(dualAudioBonus)  ? 10 : Math.min(30, Math.max(0, dualAudioBonus)),
+            cached_bonus:              isNaN(cachedBonus)     ? 25 : Math.min(100, Math.max(0, cachedBonus)),
           }
         };
       }
