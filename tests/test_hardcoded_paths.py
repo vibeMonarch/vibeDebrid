@@ -49,10 +49,10 @@ class TestPathsConfigDefaults:
         assert config.library_shows == ""
 
     def test_no_hardcoded_developer_paths(self) -> None:
-        """Ensure none of the defaults contain a developer-specific username."""
+        """Ensure none of the defaults contain a developer-specific home path."""
         config = PathsConfig()
         for field_name, value in config.model_dump().items():
-            assert "/home/hakan" not in value, (
+            assert not value.startswith("/home/"), (
                 f"PathsConfig.{field_name} still contains a hardcoded developer path: {value!r}"
             )
 

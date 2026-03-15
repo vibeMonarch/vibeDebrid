@@ -56,3 +56,7 @@ htmlcov/
 # Claude Code local settings
 .claude/settings.local.json
 .claude/worktrees/
+.claude/memory/
+
+# Project status
+status.md
