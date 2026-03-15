@@ -398,6 +398,23 @@ class ScrapePipeline:
             requested_episode=scene_episode if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
         )
 
+        # Extract XEM scene pack episode range early — needed for both dedup
+        # validation and the cache check loop later.
+        xem_anchor_episode: int | None = None
+        xem_end_episode: int | None = None
+        if item.is_season_pack and item.metadata_json:
+            try:
+                _xem_meta = json.loads(item.metadata_json) if isinstance(item.metadata_json, str) else item.metadata_json
+                if _xem_meta.get("xem_scene_pack"):
+                    _raw_anchor = _xem_meta.get("tmdb_anchor_episode")
+                    _raw_end = _xem_meta.get("tmdb_end_episode")
+                    if _raw_anchor is not None:
+                        xem_anchor_episode = int(_raw_anchor)
+                    if _raw_end is not None:
+                        xem_end_episode = int(_raw_end)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                pass
+
         # --- Hash-based dedup: skip cache check if top result already registered ---
         if ranked:
             top_hash = ranked[0].result.info_hash
@@ -411,39 +428,68 @@ class ScrapePipeline:
                     )
                     existing_torrent = None
                 if existing_torrent:
-                    logger.info(
-                        "scrape_pipeline: hash-based dedup hit for item id=%d — "
-                        "hash=%s already registered (rd_id=%s), skipping to CHECKING",
-                        item.id, top_hash, existing_torrent.rd_id,
-                    )
-                    await self._log_scrape(
-                        session,
-                        media_item_id=item.id,
-                        scraper="pipeline",
-                        query_params=json.dumps({
-                            "title": item.title,
-                            "step": "hash_dedup",
-                            "info_hash": top_hash,
-                        }),
-                        results_count=total_count,
-                        results_summary=json.dumps(self._summarise_results(combined[:5])),
-                        selected_result=json.dumps({
-                            "info_hash": top_hash,
-                            "rd_id": existing_torrent.rd_id,
-                            "action": "hash_dedup_hit",
-                        }),
-                        duration_ms=zilean_duration_ms + torrentio_duration_ms,
-                    )
-                    await queue_manager.transition(session, item.id, QueueState.CHECKING)
-                    return PipelineResult(
-                        item_id=item.id,
-                        action="dedup_hit",
-                        message=f"Torrent already in RD registry (hash={top_hash}, rd_id={existing_torrent.rd_id})",
-                        selected_hash=top_hash,
-                        rd_torrent_id=existing_torrent.rd_id,
-                        scrape_results_count=total_count,
-                        filtered_results_count=len(ranked),
-                    )
+                    # XEM validation: if this is a scene pack, verify the existing
+                    # torrent's files contain the target episode range before accepting.
+                    dedup_valid = True
+                    if xem_anchor_episode is not None and xem_end_episode is not None and existing_torrent.rd_id:
+                        try:
+                            info = await rd_client.get_torrent_info(existing_torrent.rd_id)
+                            rd_files = info.get("files", [])
+                            if rd_files:
+                                valid, matched = self._validate_xem_episode_range(
+                                    rd_files, xem_anchor_episode, xem_end_episode
+                                )
+                                if not valid:
+                                    logger.warning(
+                                        "scrape_pipeline: hash dedup hit for item id=%d rejected "
+                                        "— existing torrent rd_id=%s fails XEM validation "
+                                        "(target E%02d-E%02d, no matching episodes)",
+                                        item.id, existing_torrent.rd_id,
+                                        xem_anchor_episode, xem_end_episode,
+                                    )
+                                    dedup_valid = False
+                        except Exception as exc:
+                            logger.warning(
+                                "scrape_pipeline: XEM validation on dedup torrent failed "
+                                "for item id=%d: %s — skipping dedup",
+                                item.id, exc,
+                            )
+                            dedup_valid = False
+
+                    if dedup_valid:
+                        logger.info(
+                            "scrape_pipeline: hash-based dedup hit for item id=%d — "
+                            "hash=%s already registered (rd_id=%s), skipping to CHECKING",
+                            item.id, top_hash, existing_torrent.rd_id,
+                        )
+                        await self._log_scrape(
+                            session,
+                            media_item_id=item.id,
+                            scraper="pipeline",
+                            query_params=json.dumps({
+                                "title": item.title,
+                                "step": "hash_dedup",
+                                "info_hash": top_hash,
+                            }),
+                            results_count=total_count,
+                            results_summary=json.dumps(self._summarise_results(combined[:5])),
+                            selected_result=json.dumps({
+                                "info_hash": top_hash,
+                                "rd_id": existing_torrent.rd_id,
+                                "action": "hash_dedup_hit",
+                            }),
+                            duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                        )
+                        await queue_manager.transition(session, item.id, QueueState.CHECKING)
+                        return PipelineResult(
+                            item_id=item.id,
+                            action="dedup_hit",
+                            message=f"Torrent already in RD registry (hash={top_hash}, rd_id={existing_torrent.rd_id})",
+                            selected_hash=top_hash,
+                            rd_torrent_id=existing_torrent.rd_id,
+                            scrape_results_count=total_count,
+                            filtered_results_count=len(ranked),
+                        )
 
         # When force_original is set, double the original_language score component
         # to give it stronger weight over quality factors.
@@ -541,23 +587,6 @@ class ScrapePipeline:
         # ------------------------------------------------------------------
         # Step 7 — Sequential RD cache check + Add to Real-Debrid
         # ------------------------------------------------------------------
-
-        # Extract XEM scene pack episode range for file-level validation.
-        # Only active when the item is a season pack with xem_scene_pack metadata.
-        xem_anchor_episode: int | None = None
-        xem_end_episode: int | None = None
-        if item.is_season_pack and item.metadata_json:
-            try:
-                _xem_meta = json.loads(item.metadata_json) if isinstance(item.metadata_json, str) else item.metadata_json
-                if _xem_meta.get("xem_scene_pack"):
-                    _raw_anchor = _xem_meta.get("tmdb_anchor_episode")
-                    _raw_end = _xem_meta.get("tmdb_end_episode")
-                    if _raw_anchor is not None:
-                        xem_anchor_episode = int(_raw_anchor)
-                    if _raw_end is not None:
-                        xem_end_episode = int(_raw_end)
-            except (ValueError, TypeError, json.JSONDecodeError):
-                pass
 
         cache_limit = settings.search.cache_check_limit
         winner, winner_rd_id, winner_is_cached = await self._sequential_cache_check(
