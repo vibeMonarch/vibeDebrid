@@ -24,8 +24,10 @@ Design rules:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -38,11 +40,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import FilteredResult, filter_engine
-from src.core.mount_scanner import mount_scanner
+from src.core.mount_scanner import VIDEO_EXTENSIONS, mount_scanner
 from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
+from src.services.torrent_parser import parse_episode_from_filename
 from src.services.torrentio import TorrentioResult, torrentio_client
 from src.services.zilean import ZileanResult, zilean_client
 
@@ -538,12 +541,91 @@ class ScrapePipeline:
         # ------------------------------------------------------------------
         # Step 7 — Sequential RD cache check + Add to Real-Debrid
         # ------------------------------------------------------------------
+
+        # Extract XEM scene pack episode range for file-level validation.
+        # Only active when the item is a season pack with xem_scene_pack metadata.
+        xem_anchor_episode: int | None = None
+        xem_end_episode: int | None = None
+        if item.is_season_pack and item.metadata_json:
+            try:
+                _xem_meta = json.loads(item.metadata_json) if isinstance(item.metadata_json, str) else item.metadata_json
+                if _xem_meta.get("xem_scene_pack"):
+                    _raw_anchor = _xem_meta.get("tmdb_anchor_episode")
+                    _raw_end = _xem_meta.get("tmdb_end_episode")
+                    if _raw_anchor is not None:
+                        xem_anchor_episode = int(_raw_anchor)
+                    if _raw_end is not None:
+                        xem_end_episode = int(_raw_end)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                pass
+
         cache_limit = settings.search.cache_check_limit
         winner, winner_rd_id, winner_is_cached = await self._sequential_cache_check(
             item_id=item.id,
             ranked=ranked,
             cache_limit=cache_limit,
+            xem_anchor_episode=xem_anchor_episode,
+            xem_end_episode=xem_end_episode,
         )
+
+        # Handle case where all candidates were rejected by XEM file validation.
+        if winner is None:
+            logger.warning(
+                "scrape_pipeline.run: all %d candidates failed XEM episode range validation "
+                "for item id=%d title=%r — splitting to individual episodes",
+                len(ranked),
+                item.id,
+                item.title,
+            )
+            if item.is_season_pack:
+                try:
+                    created = await self._split_season_pack_to_episodes(session, item)
+                except Exception as exc:
+                    logger.warning(
+                        "scrape_pipeline: XEM-rejected season pack split failed for "
+                        "item id=%d: %s",
+                        item.id, exc,
+                    )
+                    created = 0
+
+                if created > 0:
+                    await self._log_scrape(
+                        session,
+                        media_item_id=item.id,
+                        scraper="pipeline",
+                        query_params=json.dumps({
+                            "title": item.title,
+                            "step": "xem_validation_rejected_split",
+                            "total": total_count,
+                            "episodes_created": created,
+                        }),
+                        results_count=total_count,
+                        results_summary=json.dumps(self._summarise_results(combined[:5])),
+                        selected_result=None,
+                        duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                    )
+                    await queue_manager.transition(session, item.id, QueueState.COMPLETE)
+                    return PipelineResult(
+                        item_id=item.id,
+                        action="season_pack_split",
+                        message=(
+                            f"All candidates failed XEM episode range validation, "
+                            f"created {created} individual episode items"
+                        ),
+                        scrape_results_count=total_count,
+                        filtered_results_count=filtered_count,
+                    )
+
+            # Split failed or no episodes created — transition to SLEEPING.
+            await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+            return PipelineResult(
+                item_id=item.id,
+                action="no_results",
+                message="All candidates failed XEM episode range validation",
+                scrape_results_count=total_count,
+                filtered_results_count=filtered_count,
+            )
+
         return await self._step_add_to_rd(
             session,
             item,
@@ -1061,7 +1143,9 @@ class ScrapePipeline:
         item_id: int,
         ranked: list[FilteredResult],
         cache_limit: int,
-    ) -> tuple[FilteredResult, str | None, bool]:
+        xem_anchor_episode: int | None = None,
+        xem_end_episode: int | None = None,
+    ) -> tuple[FilteredResult | None, str | None, bool]:
         """Check ranked results one at a time for RD cache status, stopping at the first hit.
 
         Iterates through up to ``cache_limit`` of the top-ranked filtered results.
@@ -1070,6 +1154,14 @@ class ScrapePipeline:
         - Checks the torrent status: if it is cached (``downloaded`` or
           ``waiting_files_selection``), keeps it in RD and returns immediately.
         - If not cached, deletes it from RD and moves to the next candidate.
+
+        When ``xem_anchor_episode`` and ``xem_end_episode`` are both provided,
+        cached torrents are additionally validated against the XEM episode range.
+        A cached torrent whose files contain no episodes in
+        ``[xem_anchor_episode, xem_end_episode]`` is deleted from RD and the
+        loop continues to the next candidate.  If *all* candidates fail XEM
+        validation, ``(None, None, False)`` is returned to signal the caller
+        that a season-pack-to-episodes split should be attempted.
 
         If no cached result is found after exhausting the limit, the last
         checked torrent is left in RD so it will begin downloading — this
@@ -1084,21 +1176,32 @@ class ScrapePipeline:
             item_id: The MediaItem primary key (used only for log messages).
             ranked: Filtered results ordered best-first by metadata score.
             cache_limit: Maximum number of candidates to probe.
+            xem_anchor_episode: First TMDB episode in the XEM range (inclusive),
+                or ``None`` to skip file-level validation entirely.
+            xem_end_episode: Last TMDB episode in the XEM range (inclusive), or
+                ``None`` to skip file-level validation entirely.
 
         Returns:
             A 3-tuple of (winner, winner_rd_id, winner_is_cached) where:
-            - ``winner``: The chosen FilteredResult.
+            - ``winner``: The chosen FilteredResult, or ``None`` when all
+              candidates were rejected by XEM file validation.
             - ``winner_rd_id``: The RD torrent ID if the winner is already in
               RD (either cached or the last-checked uncached one), or ``None``
-              if the loop never succeeded.
+              if the loop never succeeded or all candidates were rejected.
             - ``winner_is_cached``: ``True`` if the winner is confirmed cached.
         """
+        xem_validation_active = (
+            xem_anchor_episode is not None and xem_end_episode is not None
+        )
+        total_attempts = min(len(ranked), cache_limit)
+
         candidates = ranked[:cache_limit]
         if not candidates:
             return ranked[0], None, False
 
         last_added: FilteredResult | None = None
         last_rd_id: str | None = None
+        xem_rejected_count = 0
 
         for attempt_idx, candidate in enumerate(candidates):
             info_hash: str = candidate.result.info_hash
@@ -1155,6 +1258,7 @@ class ScrapePipeline:
 
             # --- Check torrent status ---
             cached = False
+            info: dict[str, Any] = {}
             try:
                 info = await rd_client.get_torrent_info(rd_id)
                 status = info.get("status", "")
@@ -1175,12 +1279,88 @@ class ScrapePipeline:
             )
 
             if cached:
-                # Found a cached torrent — keep it in RD and return immediately.
+                # XEM scene pack validation: check file list matches target episode range.
+                if xem_validation_active:
+                    rd_files = info.get("files", [])
+                    if rd_files:
+                        valid, matched_eps = self._validate_xem_episode_range(
+                            rd_files,
+                            xem_anchor_episode,  # type: ignore[arg-type]
+                            xem_end_episode,  # type: ignore[arg-type]
+                        )
+                        if not valid:
+                            logger.warning(
+                                "scrape_pipeline: cache check attempt %d/%d: hash=%s cached but "
+                                "fails XEM validation (target E%02d-E%02d, no matching episodes) "
+                                "for item id=%d — deleting and trying next",
+                                attempt_idx + 1, total_attempts, info_hash,
+                                xem_anchor_episode, xem_end_episode, item_id,
+                            )
+                            try:
+                                await rd_client.delete_torrent(rd_id)
+                            except RealDebridRateLimitError:
+                                logger.warning(
+                                    "scrape_pipeline: 429 during XEM reject delete for rd_id=%s, "
+                                    "sleeping 2s",
+                                    rd_id,
+                                )
+                                await asyncio.sleep(2)
+                            except Exception as del_exc:
+                                logger.warning(
+                                    "scrape_pipeline: XEM reject delete failed for rd_id=%s: %s",
+                                    rd_id, del_exc,
+                                )
+                            xem_rejected_count += 1
+                            continue  # try next candidate
+                        # Files are present and pass validation — fall through to return.
+                        logger.debug(
+                            "scrape_pipeline: cache check attempt %d/%d: hash=%s passed XEM "
+                            "validation (target E%02d-E%02d, matched=%s) for item id=%d",
+                            attempt_idx + 1, total_attempts, info_hash,
+                            xem_anchor_episode, xem_end_episode, matched_eps, item_id,
+                        )
+                    # If files list is empty (still in magnet_conversion), skip
+                    # validation — cannot check yet, accept the torrent as-is.
+
+                # Found a cached torrent that passes all checks — keep it in RD.
                 return candidate, rd_id, True
 
             is_last = attempt_idx == len(candidates) - 1
             if is_last:
                 # Exhausted the limit without finding a cached result.
+                # For XEM-validated items, run a final file check if files are available.
+                if xem_validation_active and info.get("files"):
+                    valid, matched_eps = self._validate_xem_episode_range(
+                        info["files"],
+                        xem_anchor_episode,  # type: ignore[arg-type]
+                        xem_end_episode,  # type: ignore[arg-type]
+                    )
+                    if not valid:
+                        logger.warning(
+                            "scrape_pipeline: cache check: last candidate hash=%s (uncached) "
+                            "fails XEM validation (target E%02d-E%02d) for item id=%d — "
+                            "deleting",
+                            info_hash, xem_anchor_episode, xem_end_episode, item_id,
+                        )
+                        try:
+                            await rd_client.delete_torrent(rd_id)
+                        except RealDebridRateLimitError:
+                            logger.warning(
+                                "scrape_pipeline: 429 during XEM reject delete (last) for "
+                                "rd_id=%s, sleeping 2s",
+                                rd_id,
+                            )
+                            await asyncio.sleep(2)
+                        except Exception as del_exc:
+                            logger.warning(
+                                "scrape_pipeline: XEM reject delete (last) failed for "
+                                "rd_id=%s: %s",
+                                rd_id, del_exc,
+                            )
+                        xem_rejected_count += 1
+                        # Fall through — loop ends and we handle xem_rejected_count below.
+                        break
+
                 # Keep this torrent in RD so it starts downloading.
                 logger.info(
                     "scrape_pipeline: cache check exhausted %d/%d candidates "
@@ -1207,8 +1387,31 @@ class ScrapePipeline:
             last_added = candidate
             last_rd_id = None if deleted else rd_id
 
-        # All candidates were skipped (e.g. all 451-blocked).
-        # Fall back to the top-ranked result with no rd_id.
+        # All candidates were either 451-blocked or rejected by XEM validation.
+        # When XEM validation rejected any candidates, prefer the split fallback
+        # over an unvalidated uncached torrent — uncached non-last candidates were
+        # never XEM-checked, so their content is unknown and likely wrong.
+        if xem_validation_active and xem_rejected_count > 0:
+            logger.info(
+                "scrape_pipeline: cache check: %d candidates failed XEM "
+                "validation for item id=%d — signalling split fallback",
+                xem_rejected_count, item_id,
+            )
+            # Clean up any uncached fallback still in RD.
+            if last_added is not None and last_rd_id is not None:
+                try:
+                    await rd_client.delete_torrent(last_rd_id)
+                except Exception as del_exc:
+                    logger.debug(
+                        "scrape_pipeline: cleanup of uncached fallback rd_id=%s "
+                        "failed: %s", last_rd_id, del_exc,
+                    )
+            return None, None, False
+
+        # Fall back to the top-ranked result with no rd_id (all 451-blocked or
+        # last_added holds the best uncached fallback we recorded).
+        if last_added is not None:
+            return last_added, last_rd_id, False
         logger.info(
             "scrape_pipeline: cache check: all %d candidates were skipped "
             "for item id=%d — no rd_id available",
@@ -1566,6 +1769,50 @@ class ScrapePipeline:
             }
             for r in results
         ]
+
+    @staticmethod
+    def _validate_xem_episode_range(
+        files: list[dict[str, Any]],
+        anchor_episode: int,
+        end_episode: int,
+    ) -> tuple[bool, list[int]]:
+        """Check whether RD torrent files contain episodes in the target XEM range.
+
+        Iterates over the torrent's file list, filters to video files only, and
+        parses each filename to extract an episode number.  Returns True when at
+        least one video file has an episode number that falls within the inclusive
+        range ``[anchor_episode, end_episode]``.
+
+        Args:
+            files: List of file dicts from the RD torrent info response.  Each
+                dict is expected to have at minimum a ``"path"`` key whose value
+                is a string (e.g. ``"/Solo.Leveling.S01E01.mkv"``).
+            anchor_episode: First TMDB episode number in the target range
+                (inclusive).
+            end_episode: Last TMDB episode number in the target range
+                (inclusive).
+
+        Returns:
+            A 2-tuple ``(valid, matched_episodes)`` where:
+            - ``valid`` is ``True`` if at least one video file episode falls
+              within ``[anchor_episode, end_episode]``.
+            - ``matched_episodes`` is the sorted list of matched episode numbers.
+              Always empty when ``valid`` is ``False``.
+        """
+        matched: list[int] = []
+        for f in files:
+            path: str = f.get("path", "")
+            if not path:
+                continue
+            _, ext = os.path.splitext(path)
+            if ext.lower() not in VIDEO_EXTENSIONS:
+                continue
+            filename = os.path.basename(path)
+            ep_num = parse_episode_from_filename(filename)
+            if ep_num is not None and anchor_episode <= ep_num <= end_episode:
+                matched.append(ep_num)
+        matched.sort()
+        return (len(matched) > 0, matched)
 
     async def _split_season_pack_to_episodes(
         self,
