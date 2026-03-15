@@ -1,6 +1,7 @@
 """Queue management endpoints."""
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -315,10 +316,33 @@ async def get_item(
         for log in logs
     ]
 
-    # Fetch associated RD torrents
+    # Fetch associated RD torrents (direct FK or via hash-dedup scrape log)
     torrents_result = await session.execute(
         select(RdTorrent).where(RdTorrent.media_item_id == item_id)
     )
+    torrent_rows = list(torrents_result.scalars().all())
+
+    # If no direct FK link, check scrape log for hash-dedup entries and look up
+    # the shared RdTorrent by info_hash. This covers episodes that skipped
+    # register_torrent because their torrent was already registered by another item.
+    if not torrent_rows:
+        for log in logs:
+            if log.selected_result:
+                try:
+                    sel = json.loads(log.selected_result)
+                    if sel.get("action") == "hash_dedup_hit" and sel.get("info_hash"):
+                        dedup_result = await session.execute(
+                            select(RdTorrent).where(
+                                RdTorrent.info_hash == sel["info_hash"].lower()
+                            )
+                        )
+                        dedup_torrent = dedup_result.scalar_one_or_none()
+                        if dedup_torrent:
+                            torrent_rows.append(dedup_torrent)
+                        break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
     torrents = [
         {
             "id": t.id,
@@ -330,7 +354,7 @@ async def get_item(
             "cached": t.cached,
             "status": t.status.value,
         }
-        for t in torrents_result.scalars().all()
+        for t in torrent_rows
     ]
 
     logger.debug(
