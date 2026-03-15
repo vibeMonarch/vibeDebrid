@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = Path("config.json")
+# VIBE_DATA_DIR lets Docker deployments redirect all runtime data (config, DB)
+# to a mounted volume.  Without it the behaviour is unchanged: "." (cwd).
+_data_dir = Path(os.environ.get("VIBE_DATA_DIR", "."))
+CONFIG_FILE = _data_dir / "config.json"
 CONFIG_EXAMPLE_FILE = Path("config.example.json")
 
 
@@ -149,7 +153,7 @@ class BackupConfig(BaseModel):
     enabled: bool = True
     interval_hours: int = 24
     max_backups: int = 7
-    backup_dir: str = "./backups"
+    backup_dir: str = str(_data_dir / "backups")
 
 
 class SchedulerConfig(BaseModel):
@@ -210,7 +214,7 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
     )
 
-    database_url: str = "sqlite+aiosqlite:///./vibeDebrid.db"
+    database_url: str = f"sqlite+aiosqlite:///{_data_dir / 'vibeDebrid.db'}"
 
     real_debrid: RealDebridConfig = RealDebridConfig()
     scrapers: ScrapersConfig = ScrapersConfig()

@@ -1275,6 +1275,7 @@ from src.api.routes.show import router as show_router  # noqa: E402
 from src.api.routes.health import router as health_router  # noqa: E402
 from src.api.routes.omdb import router as omdb_router  # noqa: E402
 from src.api.routes.movie import router as movie_router  # noqa: E402
+from src.api.routes.webhook import router as webhook_router  # noqa: E402
 
 app.include_router(dashboard_router)
 app.include_router(queue_router, prefix="/api/queue", tags=["queue"])
@@ -1288,6 +1289,7 @@ app.include_router(show_router, prefix="/api/show", tags=["show"])
 app.include_router(health_router)
 app.include_router(omdb_router, prefix="/api/omdb", tags=["omdb"])
 app.include_router(movie_router, prefix="/api/movie", tags=["movie"])
+app.include_router(webhook_router)
 
 
 # --- Page routes (serve Jinja2 templates) ---

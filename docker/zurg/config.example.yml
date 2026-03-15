@@ -1,0 +1,37 @@
+# Zurg configuration — Real-Debrid WebDAV bridge
+# Docs: https://github.com/debridmediamanager/zurg-testing
+
+token: YOUR_REAL_DEBRID_API_KEY
+host: "0.0.0.0"
+port: 9090
+
+check_for_changes_every_secs: 10
+enable_repair: true
+auto_delete_rar_torrents: true
+
+# Notify vibeDebrid when library changes (Docker DNS resolves service name)
+on_library_update: |
+  curl -s -X POST http://vibedebrid:5100/api/webhook/zurg \
+    -H "Content-Type: application/json" \
+    -d '{"event": "library_update"}' || true
+
+directories:
+  anime:
+    group_order: 10
+    group: media
+    filters:
+      - regex: /\b[a-fA-F0-9]{8}\b/
+      - any_file_inside_regex: /\b[a-fA-F0-9]{8}\b/
+
+  shows:
+    group_order: 20
+    group: media
+    filters:
+      - has_episodes: true
+
+  movies:
+    group_order: 30
+    group: media
+    only_show_the_biggest_file: true
+    filters:
+      - regex: /.*/

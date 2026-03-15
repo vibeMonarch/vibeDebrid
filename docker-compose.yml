@@ -1,0 +1,139 @@
+services:
+  zurg:
+    image: ghcr.io/debridmediamanager/zurg-testing:latest
+    container_name: zurg
+    restart: unless-stopped
+    volumes:
+      - ./data/zurg/config.yml:/app/config.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/dav/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    networks:
+      - vibedebrid
+
+  rclone:
+    image: rclone/rclone:latest
+    container_name: rclone
+    restart: unless-stopped
+    depends_on:
+      zurg:
+        condition: service_healthy
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    command: >
+      mount rclone_RD: /data/mnt
+      --config /config/rclone.conf
+      --allow-other
+      --poll-interval=0
+      --dir-cache-time=10s
+      --allow-non-empty
+      --vfs-cache-mode=full
+      --vfs-read-chunk-size=1M
+      --vfs-read-chunk-size-limit=32M
+      --buffer-size=512M
+      --vfs-cache-max-age=6h
+      --vfs-cache-max-size=100G
+      --attr-timeout=1s
+      --tpslimit=10
+      --tpslimit-burst=10
+      --uid=${PUID:-1000}
+      --gid=${PGID:-1000}
+    volumes:
+      - ./data/rclone/rclone.conf:/config/rclone.conf:ro
+      - ${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}:/data/mnt:rshared
+    healthcheck:
+      test: ["CMD", "ls", "/data/mnt/__all__"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+    networks:
+      - vibedebrid
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: zilean-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zilean}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zilean}
+      POSTGRES_DB: ${POSTGRES_DB:-zilean}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zilean}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    networks:
+      - vibedebrid
+
+  zilean:
+    image: ipromknight/zilean:latest
+    container_name: zilean
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${ZILEAN_PORT:-8182}:8182"
+    environment:
+      Zilean__Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-zilean};Username=${POSTGRES_USER:-zilean};Password=${POSTGRES_PASSWORD:-zilean}"
+      Zilean__Dmm__MinimumScoreMatch: "${ZILEAN_MIN_SCORE:-0.85}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8182/healthchecks/ping"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    networks:
+      - vibedebrid
+
+  vibedebrid:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vibedebrid
+    restart: unless-stopped
+    depends_on:
+      rclone:
+        condition: service_healthy
+      zilean:
+        condition: service_healthy
+    ports:
+      - "${VIBE_PORT:-5100}:5100"
+    environment:
+      VIBE_DATA_DIR: /data
+      VIBE_SCRAPERS__ZILEAN__BASE_URL: http://zilean:8182
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data:/data
+      - ${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}:${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}:rshared,ro
+      - ${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}:${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}:rw
+      - ${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}:${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5100/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - vibedebrid
+
+networks:
+  vibedebrid:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
