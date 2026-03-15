@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
@@ -208,7 +208,16 @@ async def list_queue(
 
     if title:
         escaped = title.replace("%", "\\%").replace("_", "\\_")
-        stmt = stmt.where(MediaItem.title.ilike(f"%{escaped}%", escape="\\"))
+        title_filter = MediaItem.title.ilike(f"%{escaped}%", escape="\\")
+        # Also match items sharing the same tmdb_id as any title-matched item,
+        # so alternate-title entries (e.g. Japanese name) appear together.
+        tmdb_subq = (
+            select(MediaItem.tmdb_id)
+            .where(title_filter, MediaItem.tmdb_id.is_not(None))
+            .distinct()
+            .scalar_subquery()
+        )
+        stmt = stmt.where(or_(title_filter, MediaItem.tmdb_id.in_(tmdb_subq)))
 
     # Get total count before pagination
     count_stmt = select(func.count()).select_from(stmt.subquery())

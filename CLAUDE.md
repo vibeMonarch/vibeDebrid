@@ -79,6 +79,7 @@ When fixing a bug:
 - **Always confirm approach before implementing.** Present a plan and get user approval before writing code.
 - **Never commit or push without explicit user command.** Always stage and present changes for review first.
 - **Never push without explicit user consent.** Committing and pushing are separate approvals.
+- **Never reference specific media titles.** This is a pseudonymous open-source project. Never use real show, anime, or movie names (e.g., no "Solo Leveling", "Frieren", etc.) in code, comments, tests, commit messages, or issue descriptions. Always use generic placeholders like "Test Anime", "Show Title", "Test Movie". This applies to torrent group names, IMDB IDs of real content, and any other identifiable media references.
 
 ## Docker Context
 
