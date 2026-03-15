@@ -115,8 +115,7 @@ _SOURCE_NONE: float = 5.0
 _SEEDERS_MAX: float = 10.0
 _SEEDERS_DIVISOR: float = 100.0
 
-# RD cache bonus
-_CACHED_BONUS: float = 10.0
+# RD cache bonus (configurable via settings.filters.cached_bonus)
 
 # Season pack bonus
 _SEASON_PACK_BONUS: float = 5.0
@@ -588,9 +587,10 @@ class FilterEngine:
         else:
             breakdown["seeders"] = 0.0
 
-        # --- Cached in RD (max 10 pts) ---
+        # --- Cached in RD (configurable, default 25 pts) ---
+        cached_bonus = float(settings.filters.cached_bonus)
         breakdown["cached"] = (
-            _CACHED_BONUS if result.info_hash in cached_hashes else 0.0
+            cached_bonus if result.info_hash in cached_hashes else 0.0
         )
 
         # --- Season pack (max 5 pts) ---

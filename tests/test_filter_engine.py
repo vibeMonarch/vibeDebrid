@@ -10,7 +10,7 @@ Scoring reference (max ~120 pts):
   Audio       10  — pos 0→10, pos 1→8, pos 2→6, … floor=1, None→3
   Source      15  — pos 0→15, pos 1→12, pos 2→9, … floor=2, None→5
   Seeders     10  — min(seeders/100, 1.0) * 10. None→0
-  Cached      10  — 10 if cached, else 0
+  Cached      25  — configurable (settings.filters.cached_bonus), default 25
   Season pack  5  — 5 if is_season_pack, else 0
   Language    15  — pos 0→15, pos 1→12, pos 2→9, … floor=1, multi→10, None→0
 """
@@ -777,12 +777,12 @@ class TestTier2SeedersCachedSeasonPack:
         bd = self._full_score(result)
         assert bd["seeders"] == 0.0
 
-    def test_cached_hash_gives_10_cached_points(self):
-        """Info hash present in cached_hashes → 10 pts."""
+    def test_cached_hash_gives_cached_bonus_points(self):
+        """Info hash present in cached_hashes → cached_bonus pts (default 25)."""
         info_hash = "c" * 40
         result = _make_result(info_hash=info_hash, seeders=0)
         bd = self._full_score(result, cached_hashes={info_hash})
-        assert bd["cached"] == 10.0
+        assert bd["cached"] == 25.0
 
     def test_uncached_hash_gives_0_cached_points(self):
         """Info hash absent from cached_hashes → 0 pts."""
@@ -955,7 +955,7 @@ class TestFilterAndRankIntegration:
                 cached_hashes={"c" * 40},
             )
         assert ranked[0].result.info_hash == "c" * 40
-        assert ranked[0].score_breakdown["cached"] == 10.0
+        assert ranked[0].score_breakdown["cached"] == 25.0
         assert ranked[1].score_breakdown["cached"] == 0.0
 
 
@@ -1180,9 +1180,9 @@ class TestScoringRegressions:
         assert fr.score_breakdown["audio"] == 10.0
         assert fr.score_breakdown["source"] == 15.0
         assert fr.score_breakdown["seeders"] == 10.0
-        assert fr.score_breakdown["cached"] == 10.0
+        assert fr.score_breakdown["cached"] == 25.0
         assert fr.score_breakdown["season_pack"] == 5.0
-        assert fr.score == pytest.approx(105.0)
+        assert fr.score == pytest.approx(120.0)
 
     def test_worst_case_all_unlisted_score_with_no_resolution(self):
         """A result with all unlisted/unknown attributes scores at minimum — resolution=None.

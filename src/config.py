@@ -100,6 +100,7 @@ class FiltersConfig(BaseModel):
     prefer_original_language: bool = False
     dub_penalty: int = Field(default=20, ge=0, le=50)
     dual_audio_bonus: int = Field(default=10, ge=0, le=30)
+    cached_bonus: int = Field(default=25, ge=0, le=100)
 
 
 class RetryConfig(BaseModel):
