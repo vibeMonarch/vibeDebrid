@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,10 +16,81 @@ from src.core.queue_manager import ItemNotFoundError, queue_manager
 from src.core.symlink_manager import symlink_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
+from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent
 from src.services.real_debrid import rd_client
 
 logger = logging.getLogger(__name__)
+
+
+async def _find_protected_rd_ids(
+    session: AsyncSession,
+    item_ids: set[int],
+    rd_torrents: list[RdTorrent],
+) -> set[str]:
+    """Determine which RD torrent IDs should NOT be deleted from RD.
+
+    Checks if any OTHER item (not in the delete set) has symlinks pointing
+    to the same torrent directory. This prevents deleting a shared RD torrent
+    that another item depends on.
+    """
+    if not rd_torrents:
+        return set()
+
+    # Collect target_path directories from items being deleted.
+    item_id_list = list(item_ids)
+    symlink_result = await session.execute(
+        select(Symlink.target_path).where(Symlink.media_item_id.in_(item_id_list))
+    )
+    target_dirs: set[str] = set()
+    for (target_path,) in symlink_result:
+        if target_path:
+            target_dirs.add(os.path.dirname(target_path))
+
+    if not target_dirs:
+        return set()
+
+    # Check if any OTHER item has symlinks in those same directories.
+    protected_dirs: set[str] = set()
+    for target_dir in target_dirs:
+        count_result = await session.execute(
+            select(func.count()).select_from(Symlink).where(
+                Symlink.media_item_id.not_in(item_id_list),
+                Symlink.target_path.like(target_dir + "/%"),
+            )
+        )
+        if count_result.scalar():
+            protected_dirs.add(target_dir)
+
+    if not protected_dirs:
+        return set()
+
+    # Map RD torrents to their directories via the item's symlinks.
+    # Any rd_id whose content lives in a protected directory is protected.
+    protected_rd_ids: set[str] = set()
+    for torrent in rd_torrents:
+        if not torrent.rd_id:
+            continue
+        # Get this torrent's item symlink directories.
+        t_symlinks = await session.execute(
+            select(Symlink.target_path).where(
+                Symlink.media_item_id == torrent.media_item_id
+            )
+        )
+        for (tp,) in t_symlinks:
+            if tp and os.path.dirname(tp) in protected_dirs:
+                protected_rd_ids.add(torrent.rd_id)
+                break
+
+    if protected_rd_ids:
+        logger.info(
+            "_find_protected_rd_ids: protecting %d RD torrent(s) shared with "
+            "other items: %s",
+            len(protected_rd_ids),
+            protected_rd_ids,
+        )
+
+    return protected_rd_ids
 
 router = APIRouter()
 
@@ -206,8 +278,10 @@ async def bulk_remove(
     """Bulk remove: delete a list of items and their associated data."""
     processed = 0
     errors: list[str] = []
-    rd_ids_to_delete: set[str] = set()
+    all_rd_torrents: list[RdTorrent] = []
+    delete_item_ids: set[int] = set()
 
+    # First pass: collect all RD torrents and validate items exist.
     for item_id in body.ids:
         try:
             result = await session.execute(
@@ -217,18 +291,35 @@ async def bulk_remove(
             if item is None:
                 errors.append(f"Item {item_id} not found")
                 continue
+            delete_item_ids.add(item_id)
 
-            # Remove symlinks from disk and DB
-            await symlink_manager.remove_symlink(session, item_id)
+            torrents_result = await session.execute(
+                select(RdTorrent).where(RdTorrent.media_item_id == item_id)
+            )
+            all_rd_torrents.extend(torrents_result.scalars().all())
+        except Exception as exc:
+            errors.append(f"Item {item_id}: {exc}")
 
-            # Collect RD torrent IDs for concurrent deletion, remove DB rows
+    # Check for shared-torrent protection BEFORE deleting symlinks.
+    protected_rd_ids = await _find_protected_rd_ids(
+        session, delete_item_ids, all_rd_torrents
+    )
+    rd_ids_to_delete: set[str] = set()
+
+    # Second pass: delete items and their associated data.
+    for item_id in delete_item_ids:
+        try:
+            # Collect unprotected RD IDs, remove DB rows
             torrents_result = await session.execute(
                 select(RdTorrent).where(RdTorrent.media_item_id == item_id)
             )
             for torrent in torrents_result.scalars().all():
-                if torrent.rd_id:
+                if torrent.rd_id and torrent.rd_id not in protected_rd_ids:
                     rd_ids_to_delete.add(torrent.rd_id)
                 await session.delete(torrent)
+
+            # Remove symlinks from disk and DB
+            await symlink_manager.remove_symlink(session, item_id)
 
             # Delete scrape logs
             logs_result = await session.execute(
@@ -237,7 +328,12 @@ async def bulk_remove(
             for log in logs_result.scalars().all():
                 await session.delete(log)
 
-            await session.delete(item)
+            result = await session.execute(
+                select(MediaItem).where(MediaItem.id == item_id)
+            )
+            item = result.scalar_one_or_none()
+            if item:
+                await session.delete(item)
             processed += 1
 
         except Exception as exc:
@@ -494,15 +590,24 @@ async def remove_item(
     if item is None:
         raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
 
-    # Remove symlinks from disk and the symlinks table
-    symlinks_removed = await symlink_manager.remove_symlink(session, item_id)
-
-    # Collect RD IDs before deletion, then commit DB first (safe ordering)
+    # Collect RD torrents and check for shared-torrent protection BEFORE
+    # deleting symlinks (we need them to detect shared directories).
     torrents_result = await session.execute(
         select(RdTorrent).where(RdTorrent.media_item_id == item_id)
     )
-    rd_torrents = torrents_result.scalars().all()
-    rd_ids_to_delete = [t.rd_id for t in rd_torrents if t.rd_id]
+    rd_torrents = list(torrents_result.scalars().all())
+    protected_rd_ids = await _find_protected_rd_ids(
+        session, {item_id}, rd_torrents
+    )
+    rd_ids_to_delete = [
+        t.rd_id for t in rd_torrents
+        if t.rd_id and t.rd_id not in protected_rd_ids
+    ]
+
+    # Remove symlinks from disk and the symlinks table
+    symlinks_removed = await symlink_manager.remove_symlink(session, item_id)
+
+    # Remove RdTorrent DB rows
     for torrent in rd_torrents:
         await session.delete(torrent)
 
@@ -517,7 +622,7 @@ async def remove_item(
     await session.delete(item)
     await session.commit()
 
-    # Fire-and-forget RD cleanup after DB is committed
+    # Fire-and-forget RD cleanup after DB is committed (only unprotected)
     for rd_id in rd_ids_to_delete:
         try:
             await rd_client.delete_torrent(rd_id)
