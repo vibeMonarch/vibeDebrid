@@ -165,6 +165,7 @@ _PATCH_TARGETS = {
     "rd_delete": "src.core.scrape_pipeline.rd_client.delete_torrent",
     "filter_rank": "src.core.scrape_pipeline.filter_engine.filter_and_rank",
     "queue_transition": "src.core.scrape_pipeline.queue_manager.transition",
+    "os_path_exists": "os.path.exists",
 }
 
 
@@ -184,6 +185,7 @@ class _Mocks:
     rd_delete: AsyncMock
     filter_rank: MagicMock
     queue_transition: AsyncMock
+    os_path_exists: MagicMock
 
 
 @asynccontextmanager
@@ -255,6 +257,9 @@ async def _all_mocks(
     # We configure side_effect in individual tests when needed.
     mocks.queue_transition.side_effect = None
     mocks.queue_transition.return_value = MagicMock(spec=MediaItem)
+
+    mocks.os_path_exists = started["os_path_exists"]
+    mocks.os_path_exists.return_value = True
 
     try:
         yield mocks
@@ -1349,6 +1354,9 @@ async def _all_mocks_with_local_dedup(
     mocks.queue_transition.side_effect = None
     mocks.queue_transition.return_value = MagicMock(spec=MediaItem)
 
+    mocks.os_path_exists = started["os_path_exists"]
+    mocks.os_path_exists.return_value = True
+
     # Default: no local hash duplicate found
     mocks.dedup_local = started["dedup_local"]
     mocks.dedup_local.return_value = None
@@ -1591,6 +1599,9 @@ async def _all_mocks_with_tmdb(
     mocks.queue_transition = started["queue_transition"]
     mocks.queue_transition.side_effect = None
     mocks.queue_transition.return_value = MagicMock(spec=MediaItem)
+
+    mocks.os_path_exists = started["os_path_exists"]
+    mocks.os_path_exists.return_value = True
 
     # TMDB defaults: return a minimal detail object with no original_title,
     # and no alternative titles.

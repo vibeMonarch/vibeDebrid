@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -750,8 +750,40 @@ class ScrapePipeline:
             )
             return None
 
-        # Mount hit — log and return; caller transitions state
+        # Verify the matched file actually exists on disk — mount_index may
+        # contain stale entries from a previous scan (e.g. torrent removed from
+        # RD, Zurg no longer serves it).
         best_match = matches[0]
+        file_exists = await asyncio.to_thread(os.path.exists, best_match.filepath)
+        if not file_exists:
+            logger.warning(
+                "scrape_pipeline: mount index hit for item id=%d title=%r but "
+                "file not found on disk, removing stale index entry: %s",
+                item.id,
+                item.title,
+                best_match.filepath,
+            )
+            from src.models.mount_index import MountIndex
+
+            await session.execute(
+                delete(MountIndex).where(
+                    MountIndex.filepath == best_match.filepath
+                )
+            )
+            await session.flush()
+            await self._log_scrape(
+                session,
+                media_item_id=item.id,
+                scraper="mount_scan",
+                query_params=query_params,
+                results_count=0,
+                results_summary=json.dumps([]),
+                selected_result=None,
+                duration_ms=duration_ms,
+            )
+            return None
+
+        # Mount hit — log and return; caller transitions state
         logger.info(
             "scrape_pipeline: mount hit for item id=%d title=%r -> %s",
             item.id,
@@ -785,7 +817,7 @@ class ScrapePipeline:
             selected_result=selected_result,
             duration_ms=duration_ms,
         )
-        await queue_manager.transition(session, item.id, QueueState.COMPLETE)
+        await queue_manager.transition(session, item.id, QueueState.CHECKING)
         return PipelineResult(
             item_id=item.id,
             action="mount_hit",
