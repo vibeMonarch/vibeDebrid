@@ -86,6 +86,11 @@ DUB_RE = re.compile(r"\bDUB(?:BED)?\b", re.IGNORECASE)
 # false positives in show titles like "Dual.Survival.S01E01".
 DUAL_AUDIO_RE = re.compile(r"\bDUAL[\.\s-]?AUDIO\b", re.IGNORECASE)
 
+# Fallback: explicit "Episode XX" keyword, e.g.:
+#   "Attack on Titan - Episode 60 - The Other Side of the Sea.mkv" → episode 60
+# Common in anime BluRay releases.  Case-insensitive, also matches "Ep" / "Ep.".
+EPISODE_WORD_RE = re.compile(r"\bEp(?:isode)?\.?\s*(\d{1,4})\b", re.IGNORECASE)
+
 # ---------------------------------------------------------------------------
 # Compiled regexes — filename episode extraction
 # ---------------------------------------------------------------------------
@@ -261,6 +266,12 @@ def parse_episode_fallbacks(
         if m:
             season = int(m.group(1))
             episode = int(m.group(2))
+
+    # (2.5) Explicit "Episode XX" keyword (common in anime BluRay releases)
+    if episode is None:
+        m = EPISODE_WORD_RE.search(title)
+        if m:
+            episode = int(m.group(1))
 
     # (3) Episode range: "- 01 ~ 13" → season pack
     if episode is None:

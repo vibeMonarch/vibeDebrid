@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -23,7 +23,7 @@ from src.database import engine, init_db, async_session
 from src.core.queue_manager import queue_manager
 from src.core.scrape_pipeline import scrape_pipeline
 from src.core.mount_scanner import mount_scanner
-from src.core.symlink_manager import symlink_manager
+from src.core.symlink_manager import SourceNotFoundError, symlink_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.real_debrid import rd_client, RealDebridError
@@ -649,6 +649,7 @@ async def _job_queue_processor() -> None:
                     )
                     created = 0
                     symlink = None
+                    stale_paths: list[str] = []
                     for match in best_per_episode:
                         try:
                             symlink = await symlink_manager.create_symlink(
@@ -656,11 +657,26 @@ async def _job_queue_processor() -> None:
                                 episode_offset=_season_pack_episode_offset,
                             )
                             created += 1
+                        except SourceNotFoundError:
+                            stale_paths.append(match.filepath)
                         except Exception:
                             logger.warning(
                                 "CHECKING season pack id=%d: failed to symlink %s, skipping",
                                 item.id, match.filepath,
                             )
+                    if stale_paths:
+                        from src.models.mount_index import MountIndex
+
+                        await session.execute(
+                            delete(MountIndex).where(
+                                MountIndex.filepath.in_(stale_paths)
+                            )
+                        )
+                        await session.flush()
+                        logger.warning(
+                            "CHECKING season pack id=%d: purged %d stale mount index entries",
+                            item.id, len(stale_paths),
+                        )
                     if created == 0:
                         logger.warning(
                             "CHECKING season pack id=%d: all %d symlinks failed, will retry next cycle",
@@ -862,15 +878,31 @@ async def _job_queue_processor() -> None:
 
                             created = 0
                             symlink = None
+                            stale_paths_auto: list[str] = []
                             for match in best_per_episode:
                                 try:
                                     symlink = await symlink_manager.create_symlink(session, item, match.filepath)
                                     created += 1
+                                except SourceNotFoundError:
+                                    stale_paths_auto.append(match.filepath)
                                 except Exception:
                                     logger.warning(
                                         "CHECKING item id=%d: failed to symlink %s, skipping",
                                         item.id, match.filepath,
                                     )
+                            if stale_paths_auto:
+                                from src.models.mount_index import MountIndex
+
+                                await session.execute(
+                                    delete(MountIndex).where(
+                                        MountIndex.filepath.in_(stale_paths_auto)
+                                    )
+                                )
+                                await session.flush()
+                                logger.warning(
+                                    "CHECKING item id=%d: purged %d stale mount index entries",
+                                    item.id, len(stale_paths_auto),
+                                )
                             if created == 0:
                                 logger.warning(
                                     "CHECKING item id=%d: all %d symlinks failed, will retry next cycle",
@@ -896,7 +928,23 @@ async def _job_queue_processor() -> None:
                     logger.info(
                         "CHECKING item id=%d found in mount: %s", item.id, source_path,
                     )
-                    symlink = await symlink_manager.create_symlink(session, item, source_path)
+                    try:
+                        symlink = await symlink_manager.create_symlink(session, item, source_path)
+                    except SourceNotFoundError:
+                        from src.models.mount_index import MountIndex
+
+                        await session.execute(
+                            delete(MountIndex).where(
+                                MountIndex.filepath == source_path
+                            )
+                        )
+                        await session.flush()
+                        logger.warning(
+                            "CHECKING item id=%d: source not found, purged stale "
+                            "mount index entry %s, will retry next cycle",
+                            item.id, source_path,
+                        )
+                        continue
 
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
 

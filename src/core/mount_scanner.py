@@ -37,6 +37,7 @@ from src.config import settings
 from src.models.mount_index import MountIndex
 from src.services.torrent_parser import ANIME_BARE_DASH_EP_RE as _ANIME_DASH_EP_RE
 from src.services.torrent_parser import BARE_TRAILING_EP_RE as _BARE_TRAILING_EP_RE
+from src.services.torrent_parser import EPISODE_WORD_RE as _EPISODE_WORD_RE
 from src.services.torrent_parser import NON_EPISODE_NUMBERS as _NON_EPISODE_NUMBERS
 
 logger = logging.getLogger(__name__)
@@ -1432,6 +1433,13 @@ def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, A
     if tv_match:
         season = int(tv_match.group(1))
         episode = int(tv_match.group(2))
+
+    # Fallback: explicit "Episode XX" keyword (common in anime BluRay releases).
+    # e.g. "Attack on Titan - Episode 60 - The Other Side of the Sea.mkv"
+    if episode is None:
+        ep_word_match = _EPISODE_WORD_RE.search(os.path.splitext(filename)[0])
+        if ep_word_match:
+            episode = int(ep_word_match.group(1))
 
     # Fallback: anime "[Group] Title - NN" naming convention.
     # PTN often fails to extract episode numbers from these filenames.
