@@ -31,6 +31,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Season pack auto-split into individual episodes when no packs are available
 - Zilean title-only fallback: retries without IMDB/season/episode filters when strict query returns 0
 - Alternative title fallback: retries Zilean with TMDB original/alternative titles when English title returns 0 (critical for anime)
+- AniDB title enrichment (opt-in): injects romaji/synonym/official titles from AniDB's 60k+ title database into Zilean alt-title search — zero-latency SQLite lookups, no API calls during scraping
 - Sequential RD cache checking: checks top result first, stops on cache hit (2-3 API calls vs 12)
 - Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
 
@@ -97,7 +98,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
-**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). However, if no TMDB alternative title matches what release groups use, manual search with the correct title is still needed. Note: the alt-title feature adds one TMDB detail API call per pipeline run (for items with a tmdb_id); if you hit TMDB rate limits, this is a contributing factor.
+**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
 ## Prerequisites
 
@@ -107,6 +108,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - A [TMDB](https://www.themoviedb.org/settings/api) API key
 - Optional: [Zilean](https://github.com/iPromKnight/zilean) for additional scraping
 - Optional: [OMDb](https://www.omdbapi.com/apikey.aspx) API key (free) for IMDb/Rotten Tomatoes/Metascore ratings on detail pages
+- Optional: [AniDB](https://anidb.net/) for anime title enrichment (romaji/synonym titles for Zilean) and accurate episode counts. Title data is public (no registration). Episode count API requires [client registration](https://anidb.net/user/setting).
 - Optional: Plex Media Server
 
 ## Setup
@@ -178,6 +180,7 @@ All settings are configurable via `config.json`, the web UI, or environment vari
 | `symlink_naming` | `date_prefix`, `release_year`, `resolution`, `plex_naming` | date prefix on |
 | `xem` | `enabled`, `cache_hours` | enabled, 24h cache |
 | `omdb` | `enabled`, `api_key`, `cache_hours` | disabled, 7-day cache |
+| `anidb` | `enabled`, `api_enabled`, `client_name`, `refresh_hours`, `title_languages` | disabled, weekly refresh |
 
 ### Quality Profiles
 
@@ -202,7 +205,7 @@ src/
   database.py          SQLAlchemy async engine (SQLite + WAL)
   api/routes/          FastAPI routers (dashboard, queue, search, settings, discover, show, tools, duplicates, sse)
   core/                Business logic (queue_manager, scrape_pipeline, filter_engine, dedup, symlink_manager, mount_scanner, show_manager, xem_mapper)
-  services/            External API wrappers (real_debrid, torrentio, zilean, plex, tmdb, xem)
+  services/            External API wrappers (real_debrid, torrentio, zilean, plex, tmdb, xem, anidb)
   models/              SQLAlchemy ORM models
   templates/           Jinja2 + htmx templates
 ```
