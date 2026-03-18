@@ -112,6 +112,14 @@
         "api_key": "YOUR_OMDB_API_KEY",
         "cache_hours": 168
     },
+    "anidb": {
+        "enabled": false,
+        "api_enabled": false,
+        "client_name": "",
+        "client_version": 1,
+        "refresh_hours": 168,
+        "title_languages": ["x-jat", "en", "ja"]
+    },
     "retry": {
         "schedule_minutes": [
             30,

@@ -171,6 +171,15 @@
     }
     setToggle('omdb-enabled', omdb.enabled);
     setField('omdb-cache-hours', omdb.cache_hours != null ? omdb.cache_hours : 168);
+
+    // AniDB
+    var anidb = s.anidb || {};
+    setToggle('anidb-enabled', anidb.enabled);
+    setToggle('anidb-api-enabled', anidb.api_enabled);
+    setField('anidb-client-name', anidb.client_name || '');
+    setField('anidb-client-version', anidb.client_version != null ? anidb.client_version : 1);
+    setField('anidb-refresh-hours', anidb.refresh_hours != null ? anidb.refresh_hours : 168);
+    setField('anidb-title-languages', (anidb.title_languages || ['x-jat', 'en', 'ja']).join(', '));
   }
 
   function setField(id, value) {
@@ -340,6 +349,18 @@
         };
         if (key) payload.api_key = key;
         return { omdb: payload };
+      }
+      case 'anidb': {
+        return {
+          anidb: {
+            enabled: getToggle('anidb-enabled'),
+            api_enabled: getToggle('anidb-api-enabled'),
+            client_name: document.getElementById('anidb-client-name').value.trim(),
+            client_version: parseInt(document.getElementById('anidb-client-version').value) || 1,
+            refresh_hours: parseInt(document.getElementById('anidb-refresh-hours').value) || 168,
+            title_languages: document.getElementById('anidb-title-languages').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean),
+          }
+        };
       }
       default:
         return {};

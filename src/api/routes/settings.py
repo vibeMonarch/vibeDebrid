@@ -10,6 +10,7 @@ from pydantic import BaseModel, model_validator
 
 from src.config import (
     CONFIG_FILE,
+    AnidbConfig,
     BackupConfig,
     FiltersConfig,
     MountScannerConfig,
@@ -67,6 +68,7 @@ class SettingsUpdate(BaseModel):
     tmdb: TmdbConfig | None = None
     xem: XemConfig | None = None
     omdb: OmdbConfig | None = None
+    anidb: AnidbConfig | None = None
 
     model_config = {"extra": "forbid"}
 

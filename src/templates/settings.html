@@ -414,6 +414,87 @@
     </div>
   </div>
 
+  <!-- AniDB section (collapsed by default) -->
+  <div id="section-anidb" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('anidb')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+        </svg>
+        <span class="font-semibold text-white">AniDB</span>
+      </div>
+      <svg id="chevron-anidb" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-anidb" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 space-y-4 border-t border-vd-border pt-4">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-sm font-semibold text-gray-300">Title Enrichment</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="anidb-enabled" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+            <span class="text-xs text-vd-muted">Enabled</span>
+          </div>
+          <p class="text-xs text-vd-muted -mt-2">Download AniDB title dump and Fribb anime-lists for title enrichment. No registration required.</p>
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-sm font-semibold text-gray-300">Episode Count API</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="anidb-api-enabled" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+            <span class="text-xs text-vd-muted">API Enabled</span>
+          </div>
+          <p class="text-xs text-vd-muted -mt-2">Enable AniDB HTTP API for accurate episode count lookups. Requires client registration.</p>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="anidb-client-name">Client Name</label>
+            <input type="text" id="anidb-client-name"
+                   placeholder="Your registered client name"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Register a client at <a href="https://anidb.net/user/setting" target="_blank" class="text-vd-accent hover:underline">anidb.net/user/setting</a></p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="anidb-client-version">Client Version</label>
+            <input type="number" id="anidb-client-version" min="1"
+                   placeholder="1"
+                   class="w-32 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="anidb-refresh-hours">Refresh Interval (hours)</label>
+            <input type="number" id="anidb-refresh-hours" min="1" max="8760"
+                   placeholder="168"
+                   class="w-32 bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">How often to re-download title data. Default: 168 (1 week).</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="anidb-title-languages">Title Languages</label>
+            <input type="text" id="anidb-title-languages"
+                   placeholder="x-jat, en, ja"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Comma-separated language codes. x-jat = romaji, en = English, ja = Japanese.</p>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('anidb')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save AniDB
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Paths section (expanded by default) -->
   <div id="section-paths" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
     <button type="button"

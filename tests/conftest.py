@@ -28,6 +28,7 @@ import src.models.symlink  # noqa: F401
 import src.models.mount_index  # noqa: F401
 import src.models.monitored_show  # noqa: F401
 import src.models.xem_cache  # noqa: F401
+import src.models.anidb  # noqa: F401
 
 
 @pytest.fixture(autouse=True)

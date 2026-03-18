@@ -329,6 +329,15 @@ class ShowManager:
         if show is None:
             return None
 
+        # Fetch AniDB cached episode counts for anime (no API calls, SQLite only).
+        anidb_ep_counts: dict[int, int] = {}
+        if settings.anidb.enabled:
+            try:
+                from src.services.anidb import anidb_client
+                anidb_ep_counts = await anidb_client.get_cached_episode_counts(session, tmdb_id)
+            except Exception:
+                pass  # graceful degradation — use TMDB counts
+
         image_base = settings.tmdb.image_base_url.rstrip("/")
         poster_url = f"{image_base}/w500{show.poster_path}" if show.poster_path else None
         backdrop_url = f"{image_base}/w1280{show.backdrop_path}" if show.backdrop_path else None
@@ -472,12 +481,12 @@ class ShowManager:
                     else:
                         aired_episodes = s.episode_count
                 else:
-                    aired_episodes = s.episode_count
+                    aired_episodes = anidb_ep_counts.get(season_num, s.episode_count)
 
                 seasons.append(SeasonInfo(
                     season_number=season_num,
                     name=s.name,
-                    episode_count=s.episode_count,
+                    episode_count=anidb_ep_counts.get(season_num, s.episode_count),
                     aired_episodes=aired_episodes,
                     air_date=s.air_date,
                     status=status,
@@ -682,6 +691,39 @@ class ShowManager:
                 tmdb_season=season_number,
                 tmdb_episode=ep_num,
             ))
+
+        # Append placeholder entries for episodes beyond TMDB's count when
+        # AniDB has a higher cached episode count (no API calls).
+        if settings.anidb.enabled:
+            try:
+                from src.services.anidb import anidb_client
+                anidb_counts = await anidb_client.get_cached_episode_counts(session, tmdb_id)
+                anidb_count = anidb_counts.get(season_number)
+                if anidb_count and anidb_count > len(episodes):
+                    tmdb_count = len(episodes)
+                    for ep_num in range(tmdb_count + 1, anidb_count + 1):
+                        tmdb_key = (season_number, ep_num)
+                        if pack_status is not None:
+                            ep_status = pack_status
+                        elif tmdb_key in ep_state:
+                            ep_status = ep_state[tmdb_key]
+                        else:
+                            ep_status = "available"
+                        episodes.append(EpisodeBrowseInfo(
+                            episode_number=ep_num,
+                            name=f"Episode {ep_num}",
+                            has_aired=True,
+                            status=ep_status,
+                            tmdb_season=season_number,
+                            tmdb_episode=ep_num,
+                        ))
+                    logger.info(
+                        "show_manager.get_season_episodes: AniDB extended episode list "
+                        "tmdb_id=%d season=%d from %d to %d episodes",
+                        tmdb_id, season_number, tmdb_count, anidb_count,
+                    )
+            except Exception:
+                pass  # graceful degradation
 
         logger.info(
             "show_manager.get_season_episodes: TMDB path tmdb_id=%d "

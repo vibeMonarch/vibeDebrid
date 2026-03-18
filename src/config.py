@@ -194,6 +194,21 @@ class OmdbConfig(BaseModel):
     timeout_seconds: int = 10
 
 
+class AnidbConfig(BaseModel):
+    """Configuration for AniDB title enrichment and episode count lookups."""
+
+    enabled: bool = False
+    api_enabled: bool = False
+    client_name: str = ""
+    client_version: int = 1
+    titles_url: str = "https://anidb.net/api/anime-titles.xml.gz"
+    mappings_url: str = "https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-lists-reduced.json"
+    api_base_url: str = "http://api.anidb.net:9001/httpapi"
+    refresh_hours: int = Field(default=168, ge=1)
+    timeout_seconds: int = 30
+    title_languages: list[str] = ["x-jat", "en", "ja"]
+
+
 # --- Main settings ---
 
 
@@ -235,6 +250,7 @@ class Settings(BaseSettings):
     tmdb: TmdbConfig = TmdbConfig()
     xem: XemConfig = XemConfig()
     omdb: OmdbConfig = OmdbConfig()
+    anidb: AnidbConfig = AnidbConfig()
 
     @classmethod
     def load(cls) -> "Settings":

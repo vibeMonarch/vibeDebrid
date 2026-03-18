@@ -1004,6 +1004,27 @@ class ScrapePipeline:
             _MAX_ALT = 5
             candidates: list[str] = list(alt_titles or [])
 
+            # Inject AniDB title variants (from SQLite — zero latency)
+            if settings.anidb.enabled and item.tmdb_id:
+                try:
+                    from src.services.anidb import anidb_client as _anidb_client
+                    anidb_titles = await _anidb_client.get_titles_for_tmdb_id(
+                        session, int(item.tmdb_id)
+                    )
+                    for t in anidb_titles:
+                        if t not in candidates:
+                            candidates.append(t)
+                    if anidb_titles:
+                        logger.debug(
+                            "scrape_pipeline: AniDB added %d title variants for item id=%d",
+                            len(anidb_titles), item.id,
+                        )
+                except (ValueError, TypeError, OSError) as exc:
+                    logger.debug(
+                        "scrape_pipeline: AniDB title lookup failed for item id=%d: %s",
+                        item.id, exc,
+                    )
+
             # Lazily fetch additional alternative titles from TMDB.
             try:
                 from src.services.tmdb import tmdb_client as _tmdb_client

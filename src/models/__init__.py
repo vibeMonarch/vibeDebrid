@@ -5,5 +5,6 @@ from src.models.mount_index import MountIndex
 from src.models.symlink import Symlink
 from src.models.monitored_show import MonitoredShow
 from src.models.xem_cache import XemCacheEntry
+from src.models.anidb import AnidbTitle, AnidbMapping
 
-__all__ = ["MediaItem", "RdTorrent", "ScrapeLog", "MountIndex", "Symlink", "MonitoredShow", "XemCacheEntry"]
+__all__ = ["MediaItem", "RdTorrent", "ScrapeLog", "MountIndex", "Symlink", "MonitoredShow", "XemCacheEntry", "AnidbTitle", "AnidbMapping"]

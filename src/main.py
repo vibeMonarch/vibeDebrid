@@ -41,6 +41,9 @@ scheduler = AsyncIOScheduler()
 # the task from being garbage-collected before it completes.
 _bg_backfill_task: asyncio.Task[None] | None = None
 
+# Module-level reference to the background AniDB refresh task.
+_bg_anidb_task: asyncio.Task[None] | None = None
+
 
 def setup_logging() -> None:
     """Configure structured logging for the application."""
@@ -163,17 +166,42 @@ async def _get_absolute_episode_range(tmdb_id: str, target_season: int) -> tuple
         [(s.season_number, s.episode_count) for s in regular_seasons],
     )
 
+    # Try AniDB episode counts for more accurate anime data (all seasons
+    # up to and including target, so the cumulative offset is also correct).
+    anidb_counts: dict[int, int] = {}
+    if settings.anidb.enabled:
+        try:
+            from src.services.anidb import anidb_client  # noqa: PLC0415
+            async with async_session() as anidb_session:
+                anidb_counts = await anidb_client.get_episode_counts_up_to_season(
+                    anidb_session, tid, target_season
+                )
+                await anidb_session.commit()
+            if anidb_counts:
+                logger.debug(
+                    "_get_absolute_episode_range: AniDB episode counts for tmdb_id=%s: %s",
+                    tmdb_id, anidb_counts,
+                )
+        except Exception as exc:
+            logger.debug(
+                "_get_absolute_episode_range: AniDB lookup failed for tmdb_id=%s: %s",
+                tmdb_id, exc,
+            )
+
     cumulative = 0
     for s in regular_seasons:
+        # Use AniDB count if available, fall back to TMDB
+        ep_count = anidb_counts.get(s.season_number, s.episode_count)
         if s.season_number == target_season:
             start = cumulative + 1
-            end = cumulative + s.episode_count
+            end = cumulative + ep_count
             logger.info(
-                "_get_absolute_episode_range: tmdb_id=%s S%02d → absolute episodes %d-%d",
+                "_get_absolute_episode_range: tmdb_id=%s S%02d -> absolute episodes %d-%d%s",
                 tmdb_id, target_season, start, end,
+                " (AniDB)" if s.season_number in anidb_counts else "",
             )
             return (start, end)
-        cumulative += s.episode_count
+        cumulative += ep_count
 
     logger.warning(
         "_get_absolute_episode_range: season %d not found in TMDB data for tmdb_id=%s "
@@ -1090,6 +1118,22 @@ async def _job_plex_watchlist_sync() -> None:
         await session.close()
 
 
+async def _job_anidb_refresh() -> None:
+    """Scheduled job: refresh AniDB title dump and Fribb mapping."""
+    logger.info("Scheduled job starting: anidb_refresh")
+    from src.services.anidb import anidb_client  # noqa: PLC0415
+    session = async_session()
+    try:
+        await anidb_client.refresh_data(session)
+        await session.commit()
+        logger.info("Scheduled job complete: anidb_refresh")
+    except Exception:
+        logger.exception("Scheduled job failed: anidb_refresh")
+        await session.rollback()
+    finally:
+        await session.close()
+
+
 def _register_scheduled_jobs() -> None:
     """Register periodic jobs with the scheduler.
 
@@ -1159,6 +1203,20 @@ def _register_scheduled_jobs() -> None:
         "Registered job: plex_watchlist_sync (every %d min)",
         max(15, settings.plex.watchlist_poll_minutes),
     )
+
+    if settings.anidb.enabled:
+        scheduler.add_job(
+            _job_anidb_refresh,
+            "interval",
+            hours=settings.anidb.refresh_hours,
+            id="anidb_refresh",
+            replace_existing=True,
+            max_instances=1,
+        )
+        logger.info(
+            "Registered job: anidb_refresh (every %d hours)",
+            settings.anidb.refresh_hours,
+        )
 
 
 def _validate_configured_paths() -> None:
@@ -1243,6 +1301,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         global _bg_backfill_task
         _bg_backfill_task = asyncio.create_task(_background_backfill())
+
+    # Background task: refresh AniDB title data if stale or empty.
+    # Non-blocking — the app starts immediately and the refresh runs in the background.
+    if settings.anidb.enabled:
+        async def _background_anidb_refresh() -> None:
+            from src.services.anidb import anidb_client  # noqa: PLC0415
+            async with async_session() as anidb_session:
+                try:
+                    if not await anidb_client.is_data_fresh(anidb_session):
+                        logger.info("AniDB data stale or empty, refreshing...")
+                        await anidb_client.refresh_data(anidb_session)
+                        await anidb_session.commit()
+                        logger.info("AniDB data refresh complete")
+                    else:
+                        logger.info("AniDB data is fresh, skipping refresh")
+                except Exception:
+                    logger.exception("Background AniDB refresh failed")
+                    await anidb_session.rollback()
+
+        global _bg_anidb_task
+        _bg_anidb_task = asyncio.create_task(_background_anidb_refresh())
 
     # Run mount scan on startup only if the index is empty (first-ever boot).
     # When the DB already has indexed files, skip the expensive FUSE walk —
