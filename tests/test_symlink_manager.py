@@ -1838,18 +1838,20 @@ class TestNfoGeneration:
     # ------------------------------------------------------------------
 
     def test_movie_nfo_xml_content(self) -> None:
-        """_build_movie_nfo_xml produces a <movie> root with title, year, uniqueid elements."""
+        """_build_nfo_xml('movie') produces IDs only — no title/year (Jellyfin priority issue)."""
         import xml.etree.ElementTree as ET
 
         item = self._make_movie_item()
         manager = SymlinkManager()
-        xml_str = manager._build_movie_nfo_xml(item)
+        xml_str = manager._build_nfo_xml("movie", item)
 
         assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
         assert root.tag == "movie"
-        assert root.findtext("title") == "Test Movie"
-        assert root.findtext("year") == "2024"
+        # No title/year — Jellyfin gives NFO priority over remote providers,
+        # so including sparse metadata prevents full TMDB fetch.
+        assert root.findtext("title") is None
+        assert root.findtext("year") is None
 
         uid_elements = root.findall("uniqueid")
         uid_by_type = {el.get("type"): el.text for el in uid_elements}
@@ -1858,24 +1860,30 @@ class TestNfoGeneration:
         # TMDB uniqueid must have default="true" for Jellyfin/Kodi identification
         tmdb_el = [el for el in uid_elements if el.get("type") == "tmdb"][0]
         assert tmdb_el.get("default") == "true"
+        # IMDB should NOT have default when TMDB is present
+        imdb_el = [el for el in uid_elements if el.get("type") == "imdb"][0]
+        assert imdb_el.get("default") is None
+        # Legacy tags for broader Jellyfin/Kodi compatibility
+        assert root.findtext("tmdbid") == "12345"
+        assert root.findtext("imdbid") == "tt1234567"
 
     # ------------------------------------------------------------------
     # XML builder: shows
     # ------------------------------------------------------------------
 
     def test_tvshow_nfo_xml_content(self) -> None:
-        """_build_tvshow_nfo_xml produces a <tvshow> root with title, year, uniqueid elements."""
+        """_build_nfo_xml('tvshow') produces IDs only — no title/year."""
         import xml.etree.ElementTree as ET
 
         item = self._make_show_item()
         manager = SymlinkManager()
-        xml_str = manager._build_tvshow_nfo_xml(item)
+        xml_str = manager._build_nfo_xml("tvshow", item)
 
         assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
         assert root.tag == "tvshow"
-        assert root.findtext("title") == "Test Show"
-        assert root.findtext("year") == "2023"
+        assert root.findtext("title") is None
+        assert root.findtext("year") is None
 
         uid_elements = root.findall("uniqueid")
         uid_by_type = {el.get("type"): el.text for el in uid_elements}
@@ -1894,10 +1902,30 @@ class TestNfoGeneration:
 
         item = self._make_movie_item(tmdb_id=None, imdb_id=None)
         manager = SymlinkManager()
-        xml_str = manager._build_movie_nfo_xml(item)
+        xml_str = manager._build_nfo_xml("movie", item)
 
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
         assert root.findall("uniqueid") == []
+        assert root.findtext("tmdbid") is None
+        assert root.findtext("imdbid") is None
+
+    def test_nfo_imdb_default_when_no_tmdb(self) -> None:
+        """When tmdb_id is absent, IMDB uniqueid gets default='true'."""
+        import xml.etree.ElementTree as ET
+
+        item = self._make_movie_item(tmdb_id=None, imdb_id="tt9999999")
+        manager = SymlinkManager()
+        xml_str = manager._build_nfo_xml("movie", item)
+
+        root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
+        uid_elements = root.findall("uniqueid")
+        assert len(uid_elements) == 1
+        assert uid_elements[0].get("type") == "imdb"
+        assert uid_elements[0].get("default") == "true"
+        assert uid_elements[0].text == "tt9999999"
+        # Legacy tag present
+        assert root.findtext("imdbid") == "tt9999999"
+        assert root.findtext("tmdbid") is None
 
     # ------------------------------------------------------------------
     # generate_nfo disabled: _write_nfo_sidecar does nothing

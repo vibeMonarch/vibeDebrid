@@ -86,9 +86,14 @@ window.handleSearch = async function(event) {
   const season  = document.getElementById('season').value.trim();
   const episode = document.getElementById('episode').value.trim();
 
+  // Consume discover context on first search — clear so re-searches don't carry stale IDs
+  const discoverTmdbId = window._discoverTmdbId;
+  window._discoverTmdbId = null;
+
   const payload = {
     query:           query,
     imdb_id:         imdbId || null,
+    tmdb_id:         discoverTmdbId ? parseInt(discoverTmdbId, 10) : null,
     media_type:      document.getElementById('media_type').value,
     season:          season  ? parseInt(season,  10) : null,
     episode:         episode ? parseInt(episode, 10) : null,
@@ -943,6 +948,8 @@ window.handleManualAdd = async function(event) {
 
 // ─── Auto-fill from URL params (discover → search flow, switch-torrent flow) ─
 
+// Stores tmdb_id passed in from discover/movie detail page for threading into add payload
+window._discoverTmdbId = null;
 // Stores original_language passed in from discover page for threading into add payload
 window._discoverOriginalLanguage = null;
 
@@ -981,6 +988,10 @@ window._switchItemId = null;
   // Store return destination (discover flow)
   var fromPage = params.get('from');
   if (fromPage) window._searchReturnTo = fromPage;
+
+  // Store tmdb_id from discover/movie detail page
+  var tmdbId = params.get('tmdb_id');
+  if (tmdbId) window._discoverTmdbId = tmdbId;
 
   // Store original_language for threading into add payload
   var origLang = params.get('original_language');

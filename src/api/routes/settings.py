@@ -130,10 +130,21 @@ async def update_settings(body: SettingsUpdate) -> dict[str, Any]:
             existing = json.loads(raw)
 
         # Deep merge new values (only the fields that were provided)
+        # Credential fields are never overwritten with empty strings — the
+        # frontend intentionally omits them when unchanged, but Pydantic
+        # fills sub-model defaults with "", which would wipe saved keys.
+        _CREDENTIAL_SUBSTRINGS = ("api_key", "token", "secret")
+
+        def _is_credential_key(key: str) -> bool:
+            kl = key.lower()
+            return any(s in kl for s in _CREDENTIAL_SUBSTRINGS)
+
         def _deep_merge(base: dict, update: dict) -> dict:
             for key, value in update.items():
                 if isinstance(value, dict) and isinstance(base.get(key), dict):
                     base[key] = _deep_merge(base[key], value)
+                elif _is_credential_key(key) and value == "" and base.get(key):
+                    continue  # preserve existing credential
                 else:
                     base[key] = value
             return base

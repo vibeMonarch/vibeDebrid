@@ -821,35 +821,33 @@ class SymlinkManager:
         await session.flush()
         return symlink
 
-    def _build_movie_nfo_xml(self, media_item: MediaItem) -> str:
-        """Build movie.nfo XML content."""
-        root = ET.Element("movie")
-        ET.SubElement(root, "title").text = media_item.title
-        if media_item.year is not None:
-            ET.SubElement(root, "year").text = str(media_item.year)
-        if media_item.tmdb_id:
-            uid = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
-            uid.text = str(media_item.tmdb_id)
-        if media_item.imdb_id:
-            uid = ET.SubElement(root, "uniqueid", type="imdb")
-            uid.text = media_item.imdb_id
-        ET.indent(root, space="  ")
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(
-            root, encoding="unicode"
-        ) + "\n"
+    def _build_nfo_xml(self, root_tag: str, media_item: MediaItem) -> str:
+        """Build NFO XML content for movies or TV shows.
 
-    def _build_tvshow_nfo_xml(self, media_item: MediaItem) -> str:
-        """Build tvshow.nfo XML content."""
-        root = ET.Element("tvshow")
-        ET.SubElement(root, "title").text = media_item.title
-        if media_item.year is not None:
-            ET.SubElement(root, "year").text = str(media_item.year)
-        if media_item.tmdb_id:
+        Only includes provider IDs — no title, year, or other metadata.
+        Jellyfin gives NFO data priority over remote providers, so including
+        sparse metadata (title without plot/poster) would prevent Jellyfin
+        from fetching the full metadata from TMDB.  By providing only IDs,
+        Jellyfin uses them to identify the correct TMDB entry and then
+        fetches all metadata remotely.
+
+        Args:
+            root_tag: Root element name ("movie" or "tvshow").
+            media_item: The MediaItem providing metadata.
+        """
+        root = ET.Element(root_tag)
+        has_tmdb = bool(media_item.tmdb_id)
+        if has_tmdb:
             uid = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
             uid.text = str(media_item.tmdb_id)
+            ET.SubElement(root, "tmdbid").text = str(media_item.tmdb_id)
         if media_item.imdb_id:
-            uid = ET.SubElement(root, "uniqueid", type="imdb")
+            attrs: dict[str, str] = {"type": "imdb"}
+            if not has_tmdb:
+                attrs["default"] = "true"
+            uid = ET.SubElement(root, "uniqueid", **attrs)
             uid.text = media_item.imdb_id
+            ET.SubElement(root, "imdbid").text = media_item.imdb_id
         ET.indent(root, space="  ")
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(
             root, encoding="unicode"
@@ -870,13 +868,13 @@ class SymlinkManager:
 
             if media_item.media_type == MediaType.MOVIE:
                 nfo_path = os.path.join(target_dir, "movie.nfo")
-                nfo_content = self._build_movie_nfo_xml(media_item)
+                nfo_content = self._build_nfo_xml("movie", media_item)
             else:
                 # target_dir is .../Show Name (2024)/Season 01
                 # show root is .../Show Name (2024)
                 show_root = os.path.dirname(target_dir)
                 nfo_path = os.path.join(show_root, "tvshow.nfo")
-                nfo_content = self._build_tvshow_nfo_xml(media_item)
+                nfo_content = self._build_nfo_xml("tvshow", media_item)
 
             exists = await asyncio.to_thread(os.path.exists, nfo_path)
             if exists:
@@ -908,9 +906,8 @@ class SymlinkManager:
                     continue
 
                 def _has_other_files(d: str) -> bool:
-                    nfo_names = {"movie.nfo", "tvshow.nfo"}
                     for entry in os.listdir(d):
-                        if entry not in nfo_names:
+                        if not entry.endswith(".nfo"):
                             return True
                     return False
 

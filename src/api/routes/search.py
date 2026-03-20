@@ -388,14 +388,32 @@ async def add_torrent(
     enriched_title = body.title or "Unknown"
     enriched_year = body.year
 
-    if body.tmdb_id is not None:
+    # Resolve tmdb_id from imdb_id when missing
+    resolved_tmdb_id = body.tmdb_id
+    if resolved_tmdb_id is None and body.imdb_id:
+        try:
+            from src.services.tmdb import tmdb_client
+
+            found = await tmdb_client.find_by_imdb_id(body.imdb_id)
+            if found and found.get("tmdb_id"):
+                resolved_tmdb_id = found["tmdb_id"]
+                logger.info(
+                    "add_torrent: resolved tmdb_id=%s from imdb_id=%s",
+                    resolved_tmdb_id, body.imdb_id,
+                )
+        except Exception:
+            logger.debug(
+                "add_torrent: TMDB lookup by IMDB failed for %s", body.imdb_id
+            )
+
+    if resolved_tmdb_id is not None:
         try:
             from src.services.tmdb import tmdb_client
 
             if media_type == MediaType.SHOW:
-                detail = await tmdb_client.get_show_details(body.tmdb_id)
+                detail = await tmdb_client.get_show_details(resolved_tmdb_id)
             else:
-                detail = await tmdb_client.get_movie_details(body.tmdb_id)
+                detail = await tmdb_client.get_movie_details(resolved_tmdb_id)
             if detail:
                 if detail.title:
                     enriched_title = detail.title
@@ -403,14 +421,14 @@ async def add_torrent(
                     enriched_year = detail.year
         except Exception:
             logger.debug(
-                "add_torrent: TMDB enrichment failed for tmdb_id=%s", body.tmdb_id
+                "add_torrent: TMDB enrichment failed for tmdb_id=%s", resolved_tmdb_id
             )
 
     # Always create the MediaItem first in ADDING state.  If the RD call
     # fails we fall back to WANTED so the pipeline can pick it up later.
     item = MediaItem(
         imdb_id=body.imdb_id,
-        tmdb_id=str(body.tmdb_id) if body.tmdb_id is not None else None,
+        tmdb_id=str(resolved_tmdb_id) if resolved_tmdb_id is not None else None,
         tvdb_id=body.tvdb_id,
         title=enriched_title,
         year=enriched_year,
