@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,13 +13,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
+from src.core.dedup import dedup_engine
 from src.core.queue_manager import ItemNotFoundError, queue_manager
 from src.core.symlink_manager import symlink_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.symlink import Symlink
-from src.models.torrent import RdTorrent
-from src.services.real_debrid import rd_client
+from src.models.torrent import RdTorrent, TorrentStatus
+from src.services.real_debrid import RealDebridError, rd_client
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +174,22 @@ class BulkResponse(BaseModel):
     status: str
     processed: int
     errors: list[str]
+
+
+class SwitchTorrentRequest(BaseModel):
+    magnet_or_hash: str
+    release_title: str | None = None
+    resolution: str | None = None
+    size_bytes: int | None = None
+    codec: str | None = None
+    quality: str | None = None
+    is_season_pack: bool = False
+
+
+class SwitchTorrentResponse(BaseModel):
+    status: str
+    item_id: int
+    rd_id: str
 
 
 # --- Endpoints ---
@@ -584,6 +602,240 @@ async def rescrape_original_language(
         "status": "ok",
         "message": f"Re-scraping with original language preference ({item.original_language})",
     }
+
+
+_HASH_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+# States that are safe to switch torrent from (not in-flight)
+_SWITCH_ALLOWED_STATES = {
+    QueueState.WANTED,
+    QueueState.SLEEPING,
+    QueueState.DORMANT,
+    QueueState.COMPLETE,
+    QueueState.DONE,
+}
+
+
+@router.post("/{item_id}/switch-torrent")
+async def switch_torrent(
+    item_id: int,
+    body: SwitchTorrentRequest,
+    session: AsyncSession = Depends(get_db),
+) -> SwitchTorrentResponse:
+    """Manually replace the torrent for an existing queue item.
+
+    Adds the new torrent to Real-Debrid, cleans up the old torrent (symlinks,
+    RD account entry unless shared), registers the new one in the dedup
+    registry, and transitions the item to CHECKING so the file-validation
+    stage can create symlinks.
+
+    Args:
+        item_id: Primary key of the MediaItem to update.
+        body: New torrent details (hash or magnet, release title, metadata).
+        session: Injected async database session.
+
+    Returns:
+        SwitchTorrentResponse with status, item_id, and new rd_id.
+
+    Raises:
+        HTTPException 404: When the item is not found.
+        HTTPException 400: When the item is in an in-flight state, the input
+            is invalid, or the hash matches the currently active torrent.
+        HTTPException 500: When the Real-Debrid add operation fails.
+    """
+    # --- Step 1: Fetch item ---
+    result = await session.execute(
+        select(MediaItem).where(MediaItem.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
+
+    # --- Step 2: Validate state ---
+    if item.state not in _SWITCH_ALLOWED_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot switch torrent while item is in state '{item.state.value}'. "
+                f"Allowed states: {[s.value for s in _SWITCH_ALLOWED_STATES]}"
+            ),
+        )
+
+    # --- Step 3: Normalise hash ---
+    input_val = body.magnet_or_hash.strip()
+    if _HASH_RE.match(input_val):
+        info_hash: str = input_val.lower()
+        magnet_uri = f"magnet:?xt=urn:btih:{info_hash}"
+    elif input_val.startswith("magnet:"):
+        magnet_uri = input_val
+        hash_match = re.search(r"btih:([0-9a-fA-F]{40})", magnet_uri, re.IGNORECASE)
+        if not hash_match:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract a 40-character info hash from the magnet URI",
+            )
+        info_hash = hash_match.group(1).lower()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid input: must be a 40-character hex info hash or a magnet URI",
+        )
+
+    # --- Step 4: Guard against no-op (same hash already active) ---
+    existing_active = await session.execute(
+        select(RdTorrent).where(
+            RdTorrent.media_item_id == item_id,
+            RdTorrent.status == TorrentStatus.ACTIVE,
+        )
+    )
+    old_torrent = existing_active.scalar_one_or_none()
+    if old_torrent is not None and old_torrent.info_hash == info_hash:
+        raise HTTPException(
+            status_code=400,
+            detail="Already using this torrent",
+        )
+
+    # --- Step 5: Add new torrent to Real-Debrid ---
+    try:
+        add_response = await rd_client.add_magnet(magnet_uri)
+        new_rd_id: str = str(add_response.get("id", ""))
+        if not new_rd_id:
+            raise HTTPException(
+                status_code=500,
+                detail="Real-Debrid add_magnet returned an empty torrent ID",
+            )
+        logger.info(
+            "switch_torrent: RD add_magnet succeeded new_rd_id=%s item_id=%d",
+            new_rd_id,
+            item_id,
+        )
+    except RealDebridError as exc:
+        logger.error(
+            "switch_torrent: RD add_magnet failed for item_id=%d: %s", item_id, exc
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to add torrent to Real-Debrid: {exc}",
+        ) from exc
+
+    try:
+        await rd_client.select_files(new_rd_id, "all")
+        logger.info(
+            "switch_torrent: select_files succeeded new_rd_id=%s", new_rd_id
+        )
+    except RealDebridError as exc:
+        # select_files failure is non-fatal; RD will queue the torrent anyway.
+        logger.warning(
+            "switch_torrent: select_files failed new_rd_id=%s: %s", new_rd_id, exc
+        )
+
+    # --- Step 6: Register new torrent in dedup registry FIRST ---
+    # Register before cleanup so that if this fails, the old torrent is untouched.
+    await dedup_engine.register_torrent(
+        session,
+        rd_id=new_rd_id,
+        info_hash=info_hash,
+        magnet_uri=magnet_uri,
+        media_item_id=item_id,
+        filename=body.release_title or "Unknown",
+        filesize=body.size_bytes,
+        resolution=body.resolution,
+        cached=True,
+    )
+    logger.debug(
+        "switch_torrent: registered new torrent in dedup new_rd_id=%s info_hash=%s",
+        new_rd_id,
+        info_hash,
+    )
+
+    # --- Step 7: Clean up old torrent (symlinks, RD, registry) ---
+    # Safe to do now — new torrent is registered, so partial failure won't orphan the item.
+    await symlink_manager.remove_symlink(session, item_id)
+
+    if old_torrent is not None:
+        old_rd_id = old_torrent.rd_id
+
+        # Check whether any OTHER item references the same info_hash.
+        shared_count_result = await session.execute(
+            select(func.count()).select_from(RdTorrent).where(
+                RdTorrent.info_hash == old_torrent.info_hash,
+                RdTorrent.status == TorrentStatus.ACTIVE,
+                RdTorrent.media_item_id != item_id,
+            )
+        )
+        is_shared = (shared_count_result.scalar() or 0) > 0
+
+        # Always mark old torrent as REPLACED in the registry.
+        old_torrent.status = TorrentStatus.REPLACED
+
+        if is_shared:
+            # Other items still need this torrent in RD — don't delete it.
+            logger.info(
+                "switch_torrent: old torrent rd_id=%s is shared — marked REPLACED but kept in RD",
+                old_rd_id,
+            )
+        else:
+            # No other items use it — delete from RD account too.
+            logger.info(
+                "switch_torrent: marking old rd_id=%s as REPLACED for item_id=%d",
+                old_rd_id,
+                item_id,
+            )
+            if old_rd_id:
+                try:
+                    await rd_client.delete_torrent(old_rd_id)
+                    logger.info(
+                        "switch_torrent: deleted old rd_id=%s from RD", old_rd_id
+                    )
+                except RealDebridError as exc:
+                    logger.warning(
+                        "switch_torrent: failed to delete old rd_id=%s from RD: %s",
+                        old_rd_id,
+                        exc,
+                    )
+
+    # --- Step 8: Log to scrape_log ---
+    selected_result_payload: dict[str, Any] = {
+        "title": body.release_title,
+        "info_hash": info_hash,
+        "rd_id": new_rd_id,
+        "resolution": body.resolution,
+        "codec": body.codec,
+        "quality": body.quality,
+        "size_bytes": body.size_bytes,
+        "is_season_pack": body.is_season_pack,
+    }
+    scrape_log = ScrapeLog(
+        media_item_id=item_id,
+        scraper="manual_switch",
+        query_params=None,
+        results_count=1,
+        results_summary=None,
+        selected_result=json.dumps(selected_result_payload),
+        duration_ms=0,
+    )
+    session.add(scrape_log)
+
+    # --- Step 9: Transition to CHECKING ---
+    try:
+        await queue_manager.force_transition(session, item_id, QueueState.CHECKING)
+    except ItemNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    await session.commit()
+
+    logger.info(
+        "switch_torrent: done item_id=%d new_rd_id=%s state=CHECKING",
+        item_id,
+        new_rd_id,
+    )
+
+    # --- Step 10: Return success ---
+    return SwitchTorrentResponse(
+        status="switched",
+        item_id=item_id,
+        rd_id=new_rd_id,
+    )
 
 
 @router.delete("/{item_id}")

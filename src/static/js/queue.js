@@ -383,5 +383,17 @@ window.queuePage = function() {
         showToast('Re-scrape failed: ' + err.message, 'error');
       }
     },
+
+    browseAlternatives(item) {
+      if (!item) return;
+      const p = new URLSearchParams();
+      p.set('switch_item_id', item.id);
+      p.set('query', item.title);
+      if (item.imdb_id)    p.set('imdb_id',    item.imdb_id);
+      if (item.media_type) p.set('media_type', item.media_type);
+      if (item.season  != null) p.set('season',  item.season);
+      if (item.episode != null) p.set('episode', item.episode);
+      window.location.href = '/search?' + p.toString();
+    },
   };
 };

@@ -508,26 +508,32 @@ function buildResultCard(item, idx) {
         ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${VD.escapeHtml(breakdownStr)}</p>` : ''}
       </div>
 
-      <!-- Add button -->
+      <!-- Add / Switch button -->
       <div>
         <button
           class="add-btn inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg
-                 bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
+                 ${window._switchItemId ? 'bg-blue-600 hover:bg-blue-500' : 'bg-vd-accent hover:bg-vd-accent-hover'} text-white transition-colors
                  focus:outline-none focus:ring-2 focus:ring-vd-accent focus:ring-offset-1 focus:ring-offset-vd-card"
           data-hash="${VD.escapeHtml(item.info_hash)}"
           data-title="${VD.escapeHtml(item.title)}"
           data-season="${item.season}"
           data-episode="${item.episode}"
           data-season-pack="${item.is_season_pack}"
+          data-resolution="${VD.escapeAttr(item.resolution || '')}"
+          data-codec="${VD.escapeAttr(item.codec || '')}"
+          data-quality="${VD.escapeAttr(item.quality || '')}"
+          data-size="${item.size_bytes || 0}"
         >
           <svg class="add-icon w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            ${window._switchItemId
+              ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>'
+              : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>'}
           </svg>
           <svg class="add-spinner w-3.5 h-3.5 spinner hidden" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
           </svg>
-          Add
+          ${window._switchItemId ? 'Switch' : 'Add'}
         </button>
       </div>
     </div>
@@ -564,25 +570,31 @@ function buildResultCard(item, idx) {
         ${breakdownStr ? `<p class="text-xs text-vd-muted/60 mt-1 score-breakdown">${VD.escapeHtml(breakdownStr)}</p>` : ''}
       </div>
 
-      <!-- Add button -->
+      <!-- Add / Switch button -->
       <button
         class="add-btn w-full inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-lg
-               bg-vd-accent hover:bg-vd-accent-hover text-white transition-colors
+               ${window._switchItemId ? 'bg-blue-600 hover:bg-blue-500' : 'bg-vd-accent hover:bg-vd-accent-hover'} text-white transition-colors
                focus:outline-none focus:ring-2 focus:ring-vd-accent"
         data-hash="${VD.escapeHtml(item.info_hash)}"
         data-title="${VD.escapeHtml(item.title)}"
         data-season="${item.season}"
         data-episode="${item.episode}"
         data-season-pack="${item.is_season_pack}"
+        data-resolution="${VD.escapeAttr(item.resolution || '')}"
+        data-codec="${VD.escapeAttr(item.codec || '')}"
+        data-quality="${VD.escapeAttr(item.quality || '')}"
+        data-size="${item.size_bytes || 0}"
       >
         <svg class="add-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          ${window._switchItemId
+            ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>'
+            : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>'}
         </svg>
         <svg class="add-spinner w-4 h-4 spinner hidden" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
         </svg>
-        Add
+        ${window._switchItemId ? 'Switch' : 'Add'}
       </button>
     </div>
   `;
@@ -598,6 +610,12 @@ document.getElementById('results-list').addEventListener('click', function(e) {
 
   const infoHash = btn.dataset.hash;
   if (!infoHash || !_lastSearchPayload) return;
+
+  // Switch-torrent mode: delegate to switch handler
+  if (window._switchItemId) {
+    handleSwitch(btn, infoHash);
+    return;
+  }
 
   const isSeasonPack = btn.dataset.seasonPack === 'true';
   // Prefer user-supplied season/episode (from the search form) over the
@@ -764,6 +782,85 @@ async function handleAdd(btn, infoHash, payload) {
   }
 }
 
+// ─── Switch torrent (switch-torrent mode) ───────────────────────────────────
+
+async function handleSwitch(btn, infoHash) {
+  const switchItemId = window._switchItemId;
+  if (!switchItemId) return;
+
+  const card = document.getElementById('result-' + infoHash);
+  const allAddBtns = card ? card.querySelectorAll('.add-btn') : [btn];
+
+  allAddBtns.forEach(b => { b.disabled = true; });
+
+  const icon    = btn.querySelector('.add-icon');
+  const spinner = btn.querySelector('.add-spinner');
+  if (icon)    icon.classList.add('hidden');
+  if (spinner) spinner.classList.remove('hidden');
+
+  const isSeasonPack = btn.dataset.seasonPack === 'true';
+
+  const payload = {
+    magnet_or_hash: infoHash,
+    release_title:  btn.dataset.title  || null,
+    resolution:     btn.dataset.resolution || null,
+    size_bytes:     parseInt(btn.dataset.size, 10) || null,
+    codec:          btn.dataset.codec  || null,
+    quality:        btn.dataset.quality || null,
+    is_season_pack: isSeasonPack,
+  };
+
+  try {
+    const resp = await csrfFetch('/api/queue/' + switchItemId + '/switch-torrent', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+
+    let data = {};
+    try { data = await resp.json(); } catch(_) {}
+
+    if (!resp.ok) {
+      throw new Error(data.detail || data.message || 'Failed to switch torrent.');
+    }
+
+    // Mark all buttons in the card as switched
+    allAddBtns.forEach(b => {
+      b.disabled = true;
+      b.classList.remove('bg-blue-600', 'hover:bg-blue-500');
+      b.classList.add('bg-green-700', 'cursor-default');
+      const bIcon    = b.querySelector('.add-icon');
+      const bSpinner = b.querySelector('.add-spinner');
+      if (bIcon)    bIcon.classList.add('hidden');
+      if (bSpinner) bSpinner.classList.add('hidden');
+
+      const textNodes = [...b.childNodes].filter(n => n.nodeType === Node.TEXT_NODE);
+      textNodes.forEach(n => n.remove());
+
+      const iconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      iconSvg.setAttribute('class', 'w-3.5 h-3.5 flex-shrink-0');
+      iconSvg.setAttribute('fill', 'none');
+      iconSvg.setAttribute('stroke', 'currentColor');
+      iconSvg.setAttribute('viewBox', '0 0 24 24');
+      iconSvg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>';
+      b.appendChild(iconSvg);
+
+      const label = document.createElement('span');
+      label.textContent = 'Switched';
+      b.appendChild(label);
+    });
+
+    showToast('Torrent switched successfully', 'success');
+    setTimeout(function() { window.location.href = '/queue'; }, 1500);
+
+  } catch (err) {
+    allAddBtns.forEach(b => { b.disabled = false; });
+    if (icon)    icon.classList.remove('hidden');
+    if (spinner) spinner.classList.add('hidden');
+    showToast(err.message || 'Failed to switch torrent.', 'error');
+  }
+}
+
 // ─── Manual add ─────────────────────────────────────────────────────────────
 
 window.handleManualAdd = async function(event) {
@@ -844,10 +941,13 @@ window.handleManualAdd = async function(event) {
 
 // ─── Error display helper ────────────────────────────────────────────────────
 
-// ─── Auto-fill from URL params (discover → search flow) ────────────────────
+// ─── Auto-fill from URL params (discover → search flow, switch-torrent flow) ─
 
 // Stores original_language passed in from discover page for threading into add payload
 window._discoverOriginalLanguage = null;
+
+// Switch-torrent mode: set when navigated from queue "Browse Alternatives"
+window._switchItemId = null;
 
 (function() {
   var params = new URLSearchParams(window.location.search);
@@ -866,7 +966,19 @@ window._discoverOriginalLanguage = null;
     window.toggleShowFields(mediaType);
   }
 
-  // Store return destination
+  // Pre-fill season / episode when present (show mode)
+  var season = params.get('season');
+  if (season) {
+    var seasonEl = document.getElementById('season');
+    if (seasonEl) seasonEl.value = season;
+  }
+  var episode = params.get('episode');
+  if (episode) {
+    var episodeEl = document.getElementById('episode');
+    if (episodeEl) episodeEl.value = episode;
+  }
+
+  // Store return destination (discover flow)
   var fromPage = params.get('from');
   if (fromPage) window._searchReturnTo = fromPage;
 
@@ -874,11 +986,41 @@ window._discoverOriginalLanguage = null;
   var origLang = params.get('original_language');
   if (origLang) window._discoverOriginalLanguage = origLang;
 
-  // Auto-submit after a short delay (let DOM settle)
+  // Switch-torrent mode
+  var switchItemId = params.get('switch_item_id');
+  if (switchItemId) {
+    window._switchItemId = switchItemId;
+    _injectSwitchBanner(query);
+  }
+
+  // Auto-submit after a short delay (let DOM settle).
+  // Triggered by any URL with a query param (discover flow, movie detail, switch flow).
   setTimeout(function() {
     window.handleSearch(new Event('submit'));
   }, 100);
 })();
+
+function _injectSwitchBanner(queryText) {
+  var resultsSection = document.getElementById('results-section');
+  if (!resultsSection) return;
+  // Avoid double-injection
+  if (document.getElementById('switch-mode-banner')) return;
+
+  var banner = document.createElement('div');
+  banner.id = 'switch-mode-banner';
+  banner.className = 'flex items-center justify-between gap-4 px-4 py-3 bg-blue-900/40 border border-blue-700/50 rounded-xl text-sm text-blue-200';
+  banner.innerHTML =
+    '<div class="flex items-center gap-2">' +
+      '<svg class="w-4 h-4 flex-shrink-0 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+        '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>' +
+      '</svg>' +
+      '<span>Switching torrent for: <strong class="text-white">' + VD.escapeHtml(queryText) + '</strong> — pick a replacement below</span>' +
+    '</div>' +
+    '<a href="/queue" class="flex-shrink-0 text-xs font-medium text-blue-300 hover:text-white underline transition-colors">Cancel</a>';
+
+  // Insert before the results section so it is always visible
+  resultsSection.parentNode.insertBefore(banner, resultsSection);
+}
 
 function showResultsError(msg) {
   const section  = document.getElementById('results-section');
