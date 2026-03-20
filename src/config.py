@@ -147,6 +147,15 @@ class PlexConfig(BaseModel):
     watchlist_poll_minutes: int = Field(default=30, ge=15)
 
 
+class JellyfinConfig(BaseModel):
+    enabled: bool = False
+    url: str = "http://localhost:8096"
+    api_key: str = ""
+    movie_library_ids: list[str] = Field(default_factory=list)
+    show_library_ids: list[str] = Field(default_factory=list)
+    scan_after_symlink: bool = True
+
+
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 5100
@@ -244,6 +253,7 @@ class Settings(BaseSettings):
     mount_scanner: MountScannerConfig = MountScannerConfig()
     trakt: TraktConfig = TraktConfig()
     plex: PlexConfig = PlexConfig()
+    jellyfin: JellyfinConfig = JellyfinConfig()
     server: ServerConfig = ServerConfig()
     backup: BackupConfig = BackupConfig()
     scheduler: SchedulerConfig = SchedulerConfig()

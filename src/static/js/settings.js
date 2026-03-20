@@ -182,6 +182,19 @@
     setField('anidb-client-version', anidb.client_version != null ? anidb.client_version : 1);
     setField('anidb-refresh-hours', anidb.refresh_hours != null ? anidb.refresh_hours : 168);
     setField('anidb-title-languages', (anidb.title_languages || ['x-jat', 'en', 'ja']).join(', '));
+
+    // Jellyfin
+    if (s.jellyfin) {
+      setToggle('jf-enabled', s.jellyfin.enabled);
+      setField('jf-url', s.jellyfin.url || 'http://localhost:8096');
+      setToggle('jf-scan-after-symlink', s.jellyfin.scan_after_symlink !== false);
+      document.getElementById('jf-movie-library-ids').value = (s.jellyfin.movie_library_ids || []).join(',');
+      document.getElementById('jf-show-library-ids').value = (s.jellyfin.show_library_ids || []).join(',');
+      var jfMasked = document.getElementById('jf-api-key-masked');
+      if (jfMasked && s.jellyfin.api_key) {
+        jfMasked.textContent = 'Current: ' + s.jellyfin.api_key + ' — enter a new value to replace';
+      }
+    }
   }
 
   function setField(id, value) {
@@ -368,6 +381,20 @@
           }
         };
       }
+      case 'jellyfin': {
+        const payload = {
+          jellyfin: {
+            enabled: getToggle('jf-enabled'),
+            url: document.getElementById('jf-url').value.trim(),
+            scan_after_symlink: getToggle('jf-scan-after-symlink'),
+            movie_library_ids: document.getElementById('jf-movie-library-ids').value.split(',').filter(Boolean),
+            show_library_ids: document.getElementById('jf-show-library-ids').value.split(',').filter(Boolean),
+          }
+        };
+        const newKey = document.getElementById('jf-api-key').value.trim();
+        if (newKey) payload.jellyfin.api_key = newKey;
+        return payload;
+      }
       default:
         return {};
     }
@@ -428,6 +455,19 @@
           }
           // Clear the password field after a successful save
           document.getElementById('omdb-api-key').value = '';
+        }
+      }
+      if (section === 'jellyfin') {
+        const refreshed = await fetch('/api/settings');
+        if (refreshed.ok) {
+          const data = await refreshed.json();
+          currentSettings = data.settings || {};
+          const jf = currentSettings.jellyfin || {};
+          const maskedEl = document.getElementById('jf-api-key-masked');
+          if (maskedEl && jf.api_key) {
+            maskedEl.textContent = 'Current: ' + jf.api_key + ' — enter a new value to replace';
+          }
+          document.getElementById('jf-api-key').value = '';
         }
       }
     } catch (err) {
@@ -660,6 +700,69 @@
     const showIds  = [...document.querySelectorAll('.plex-show-section:checked')].map(el => el.value);
     document.getElementById('plex-movie-section-ids').value = movieIds.join(',');
     document.getElementById('plex-show-section-ids').value  = showIds.join(',');
+  };
+
+  // ---------------------------------------------------------------------------
+  // Jellyfin library helpers
+  // ---------------------------------------------------------------------------
+  window.fetchJellyfinLibraries = async function() {
+    try {
+      const resp = await fetch('/api/settings/jellyfin/libraries');
+      if (!resp.ok) throw new Error('Failed to fetch libraries');
+      const data = await resp.json();
+      syncJellyfinLibraryCheckboxes(data.libraries);
+    } catch (e) {
+      showToast('Failed to fetch Jellyfin libraries: ' + e.message, 'error');
+    }
+  };
+
+  function syncJellyfinLibraryCheckboxes(libraries) {
+    const container = document.getElementById('jf-libraries-container');
+    if (!container) return;
+
+    const movieIds = (document.getElementById('jf-movie-library-ids')?.value || '').split(',').filter(Boolean);
+    const showIds  = (document.getElementById('jf-show-library-ids')?.value  || '').split(',').filter(Boolean);
+
+    const movieLibs = libraries.filter(l => l.collection_type === 'movies');
+    const showLibs  = libraries.filter(l => l.collection_type === 'tvshows');
+
+    let html = '';
+
+    if (movieLibs.length > 0) {
+      html += '<div class="mb-3"><p class="text-sm font-medium text-gray-300 mb-2">Movie Libraries</p>';
+      for (const l of movieLibs) {
+        const checked = movieIds.includes(l.library_id) ? 'checked' : '';
+        html += `<label class="flex items-center gap-2 text-sm text-gray-300 mb-1 cursor-pointer">
+          <input type="checkbox" class="jf-movie-library" value="${VD.escapeAttr(l.library_id)}" ${checked}
+                 onchange="updateJellyfinLibraryIds()" />
+          ${VD.escapeHtml(l.name)} <span class="text-vd-muted text-xs">(${VD.escapeHtml(l.library_id.substring(0, 8))}&hellip;)</span>
+        </label>`;
+      }
+      html += '</div>';
+    }
+
+    if (showLibs.length > 0) {
+      html += '<div class="mb-3"><p class="text-sm font-medium text-gray-300 mb-2">TV Show Libraries</p>';
+      for (const l of showLibs) {
+        const checked = showIds.includes(l.library_id) ? 'checked' : '';
+        html += `<label class="flex items-center gap-2 text-sm text-gray-300 mb-1 cursor-pointer">
+          <input type="checkbox" class="jf-show-library" value="${VD.escapeAttr(l.library_id)}" ${checked}
+                 onchange="updateJellyfinLibraryIds()" />
+          ${VD.escapeHtml(l.name)} <span class="text-vd-muted text-xs">(${VD.escapeHtml(l.library_id.substring(0, 8))}&hellip;)</span>
+        </label>`;
+      }
+      html += '</div>';
+    }
+
+    if (!html) html = '<p class="text-sm text-vd-muted">No movie or TV show libraries found.</p>';
+    container.innerHTML = html;
+  }
+
+  window.updateJellyfinLibraryIds = function() {
+    const movieIds = [...document.querySelectorAll('.jf-movie-library:checked')].map(el => el.value);
+    const showIds  = [...document.querySelectorAll('.jf-show-library:checked')].map(el => el.value);
+    document.getElementById('jf-movie-library-ids').value = movieIds.join(',');
+    document.getElementById('jf-show-library-ids').value  = showIds.join(',');
   };
 
   // ---------------------------------------------------------------------------

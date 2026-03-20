@@ -154,6 +154,14 @@
         "watchlist_sync_enabled": false,
         "watchlist_poll_minutes": 30
     },
+    "jellyfin": {
+        "enabled": false,
+        "url": "http://localhost:8096",
+        "api_key": "",
+        "movie_library_ids": [],
+        "show_library_ids": [],
+        "scan_after_symlink": true
+    },
     "server": {
         "host": "0.0.0.0",
         "port": 5100

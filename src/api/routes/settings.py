@@ -13,6 +13,7 @@ from src.config import (
     AnidbConfig,
     BackupConfig,
     FiltersConfig,
+    JellyfinConfig,
     MountScannerConfig,
     OmdbConfig,
     PathsConfig,
@@ -60,6 +61,7 @@ class SettingsUpdate(BaseModel):
     mount_scanner: MountScannerConfig | None = None
     trakt: TraktConfig | None = None
     plex: PlexConfig | None = None
+    jellyfin: JellyfinConfig | None = None
     server: ServerConfig | None = None
     backup: BackupConfig | None = None
     scheduler: SchedulerConfig | None = None
@@ -286,3 +288,31 @@ async def plex_libraries() -> dict[str, Any]:
     """Fetch Plex library sections."""
     libs = await plex_client.get_libraries()
     return {"sections": [s.model_dump() for s in libs]}
+
+
+@router.post("/test/jellyfin")
+async def test_jellyfin() -> TestResult:
+    """Test Jellyfin server connection."""
+    from src.services.jellyfin import jellyfin_client
+    try:
+        ok = await jellyfin_client.test_connection()
+        if not ok:
+            return TestResult(
+                status="error",
+                message="Could not connect to Jellyfin — check URL and API key",
+            )
+        libs = await jellyfin_client.get_libraries()
+        return TestResult(
+            status="ok",
+            message=f"Connected to Jellyfin, found {len(libs)} library(ies)",
+        )
+    except Exception as exc:
+        return TestResult(status="error", message=f"Connection failed: {exc}")
+
+
+@router.get("/jellyfin/libraries")
+async def jellyfin_libraries() -> dict[str, Any]:
+    """Fetch Jellyfin library folders."""
+    from src.services.jellyfin import jellyfin_client
+    libs = await jellyfin_client.get_libraries()
+    return {"libraries": [lib.model_dump() for lib in libs]}

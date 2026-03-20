@@ -116,6 +116,21 @@
       <span id="test-result-plex" class="test-result text-sm text-vd-muted"></span>
     </div>
 
+    <!-- Jellyfin test -->
+    <div class="flex flex-col gap-2 flex-1">
+      <button onclick="runTest('jellyfin', this)"
+              class="flex items-center justify-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test Jellyfin
+      </button>
+      <span id="test-result-jellyfin" class="test-result text-sm text-vd-muted"></span>
+    </div>
+
     <!-- OMDb test -->
     <div class="flex flex-col gap-2 flex-1">
       <button onclick="runTest('omdb', this)"
@@ -1053,6 +1068,108 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
               </svg>
               Save Plex
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jellyfin section (collapsed by default) -->
+  <div id="section-jellyfin" class="settings-card bg-vd-card border border-vd-border rounded-lg hidden">
+    <button type="button"
+            onclick="toggleCard('jellyfin')"
+            class="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 rounded-t-lg transition-colors">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 text-vd-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/>
+        </svg>
+        <span class="font-semibold text-white">Jellyfin</span>
+      </div>
+      <svg id="chevron-jellyfin" class="w-4 h-4 text-vd-muted chevron rotated" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+      </svg>
+    </button>
+    <div id="body-jellyfin" class="card-body collapsed">
+      <div>
+        <div class="px-5 pb-5 space-y-4 border-t border-vd-border pt-4">
+
+          <!-- Enabled toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-400" for="jf-enabled">Enabled</label>
+              <p class="text-xs text-vd-muted">Enable Jellyfin integration for library scans</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-4">
+              <input type="checkbox" id="jf-enabled" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Server URL -->
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="jf-url">Server URL</label>
+            <input type="url" id="jf-url"
+                   placeholder="http://localhost:8096"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p class="text-xs text-vd-muted mt-1">Base URL of your Jellyfin server.</p>
+          </div>
+
+          <!-- API Key -->
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="jf-api-key">API Key</label>
+            <input type="password" id="jf-api-key" name="jf_api_key" autocomplete="new-password"
+                   placeholder="Enter new value to update"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent placeholder-gray-600">
+            <p id="jf-api-key-masked" class="text-xs text-vd-muted mt-1"></p>
+            <p class="text-xs text-vd-muted mt-1">Generate an API key in Jellyfin Dashboard &rarr; API Keys.</p>
+          </div>
+
+          <!-- Scan After Symlink toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-400" for="jf-scan-after-symlink">Scan After Symlink</label>
+              <p class="text-xs text-vd-muted">Trigger a Jellyfin library scan each time a new symlink is created</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-4">
+              <input type="checkbox" id="jf-scan-after-symlink" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Libraries -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <p class="text-sm text-gray-400">Libraries</p>
+              <button type="button" onclick="fetchJellyfinLibraries()"
+                      class="flex items-center gap-1.5 px-3 py-1.5 bg-vd-bg border border-vd-border hover:border-vd-accent text-gray-300 text-xs font-medium rounded-lg transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                Refresh Libraries
+              </button>
+            </div>
+            <p class="text-xs text-vd-muted mb-3">Select which Jellyfin libraries to scan when new media is added.</p>
+            <div id="jf-libraries-container" class="bg-vd-bg border border-vd-border rounded-lg p-3 min-h-[3rem]">
+              <p class="text-sm text-vd-muted">Click "Refresh Libraries" to load your Jellyfin libraries.</p>
+            </div>
+            <!-- Hidden inputs to persist selected library IDs as comma-separated values -->
+            <input type="hidden" id="jf-movie-library-ids" value="">
+            <input type="hidden" id="jf-show-library-ids" value="">
+          </div>
+
+          <div class="pt-2">
+            <button type="button" onclick="saveSection('jellyfin')"
+                    class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              Save Jellyfin
             </button>
           </div>
 
