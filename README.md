@@ -58,7 +58,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 **Symlink Library**
 - Standard mode: configurable naming with optional date prefix, year, resolution
 - Plex mode: `Title (Year) {tmdb-XXXXX}/Season XX/Title - S01E01.ext`
-- Optional NFO sidecar generation: writes `movie.nfo` / `tvshow.nfo` with TMDB/IMDB IDs alongside symlinks for instant metadata identification in Jellyfin, Kodi, and Emby
+- Full-metadata NFO sidecar generation: writes `movie.nfo` / `tvshow.nfo` / per-episode NFOs with complete TMDB metadata (title, plot, cast, ratings, genres, air dates) plus downloads `poster.jpg` and `fanart.jpg` artwork alongside symlinks. Enables instant metadata display in Jellyfin, Kodi, Emby, and Infuse (especially over Samba) without waiting for remote provider lookups. In-memory TMDB cache ensures season packs generate NFOs with minimal API calls (2 calls per show, not per episode)
 - Periodic symlink health verification
 - All paths are absolute host filesystem paths (safe for multi-container setups)
 
