@@ -481,7 +481,14 @@ class SymlinkManager:
         # --- Step 4: create target directory ---
         await asyncio.to_thread(os.makedirs, target_dir, exist_ok=True)
 
-        # --- Step 5: handle pre-existing symlink at target_path ---
+        # --- Step 5: write NFO + images BEFORE the symlink ---
+        # Jellyfin's real-time monitoring detects new files instantly.
+        # If the symlink is created first, Jellyfin scans before the NFO
+        # exists and fetches metadata from TMDB instead.  Writing the NFO
+        # first ensures it is already present when the symlink appears.
+        await self._write_nfo_sidecar(media_item, target_path)
+
+        # --- Step 6: handle pre-existing symlink at target_path ---
         target_is_symlink = await asyncio.to_thread(os.path.islink, target_path)
         if target_is_symlink:
             existing_target = await asyncio.to_thread(os.readlink, target_path)
@@ -495,7 +502,6 @@ class SymlinkManager:
                 symlink = await self._find_or_create_db_record(
                     session, media_item, source_path, target_path
                 )
-                await self._write_nfo_sidecar(media_item, target_path)
                 return symlink
             else:
                 # Stale symlink pointing elsewhere — remove it.
@@ -508,7 +514,7 @@ class SymlinkManager:
                 )
                 await asyncio.to_thread(os.unlink, target_path)
 
-        # --- Step 6: create the symlink ---
+        # --- Step 7: create the symlink ---
         try:
             await asyncio.to_thread(os.symlink, source_path, target_path)
         except FileExistsError:
@@ -521,12 +527,11 @@ class SymlinkManager:
             symlink = await self._find_or_create_db_record(
                 session, media_item, source_path, target_path
             )
-            await self._write_nfo_sidecar(media_item, target_path)
             return symlink
         except OSError as exc:
             raise SymlinkCreationError(target_path, source_path, str(exc)) from exc
 
-        # --- Step 7: record in DB ---
+        # --- Step 8: record in DB ---
         symlink = Symlink(
             media_item_id=media_item.id,
             source_path=source_path,
@@ -542,7 +547,6 @@ class SymlinkManager:
             source_path,
             media_item.id,
         )
-        await self._write_nfo_sidecar(media_item, target_path)
         return symlink
 
     async def verify_symlinks(self, session: AsyncSession) -> VerifyResult:
