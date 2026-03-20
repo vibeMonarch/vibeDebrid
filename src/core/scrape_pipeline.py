@@ -372,22 +372,6 @@ class ScrapePipeline:
         from src.services.tmdb import iso_to_language_name
         orig_lang_name = iso_to_language_name(item.original_language) or item.original_language
 
-        # Check for force_original_language flag in metadata and clear it.
-        force_original = False
-        if item.metadata_json:
-            try:
-                _meta = json.loads(item.metadata_json)
-                force_original = bool(_meta.pop("force_original_language", False))
-                if force_original:
-                    item.metadata_json = json.dumps(_meta)
-                    logger.info(
-                        "scrape_pipeline: force_original_language flag detected for "
-                        "item id=%d original_language=%r",
-                        item.id, orig_lang_name,
-                    )
-            except (ValueError, TypeError):
-                pass
-
         # Build cached_hashes from Torrentio results that have RD cache status.
         cached_hashes: set[str] = {
             r.info_hash for r in combined
@@ -502,17 +486,6 @@ class ScrapePipeline:
                             scrape_results_count=total_count,
                             filtered_results_count=len(ranked),
                         )
-
-        # When force_original is set, double the original_language score component
-        # to give it stronger weight over quality factors.
-        if force_original and orig_lang_name and ranked:
-            for fr in ranked:
-                ol_score = fr.score_breakdown.get("original_language", 0.0)
-                if ol_score != 0.0:
-                    extra = ol_score  # Double by adding an equal amount
-                    fr.score_breakdown["original_language"] = ol_score + extra
-                    fr.score += extra
-            ranked.sort(key=lambda fr: fr.score, reverse=True)
 
         filtered_count = len(ranked)
         best: FilteredResult | None = ranked[0] if ranked else None

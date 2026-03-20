@@ -8,7 +8,6 @@ Covers:
   - TmdbClient.get_show_details() returning original_language
   - FilterEngine._score_original_language() scoring logic
   - filter_and_rank() integration with original_language param
-  - POST /api/queue/{id}/rescrape-original endpoint
   - AddToQueueRequest.original_language field
   - Season pack split copying original_language from parent
 """
@@ -882,7 +881,7 @@ class TestFilterAndRankOriginalLanguage:
 
 
 # ===========================================================================
-# Section 6: Re-scrape endpoint — POST /api/queue/{id}/rescrape-original
+# Section 6: Fixtures and helpers for integration tests
 # ===========================================================================
 
 
@@ -933,144 +932,6 @@ async def _persist_item(
     session.add(item)
     await session.flush()
     return item
-
-
-class TestRescrapeOriginalLanguageEndpoint:
-    """POST /api/queue/{id}/rescrape-original endpoint tests."""
-
-    async def test_non_english_item_transitions_to_wanted(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """A non-English item should be transitioned to WANTED with force flag."""
-        item = await _persist_item(
-            session,
-            original_language="ja",
-            state=QueueState.COMPLETE,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-
-    async def test_english_item_returns_400(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """An English-original item must return 400 — no language preference to apply."""
-        item = await _persist_item(
-            session,
-            original_language="en",
-            state=QueueState.COMPLETE,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 400
-        assert "english" in resp.json()["detail"].lower()
-
-    async def test_nonexistent_item_returns_404(
-        self, http: AsyncClient
-    ) -> None:
-        """Requesting re-scrape for a non-existent item_id returns 404."""
-        resp = await http.post("/api/queue/999999/rescrape-original")
-        assert resp.status_code == 404
-
-    async def test_force_flag_set_in_metadata(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """After re-scrape, force_original_language flag is set in metadata_json."""
-        item = await _persist_item(
-            session,
-            original_language="ko",
-            state=QueueState.COMPLETE,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 200
-
-        await session.refresh(item)
-        assert item.metadata_json is not None
-        meta = json.loads(item.metadata_json)
-        assert meta.get("force_original_language") is True
-
-    async def test_item_state_transitions_to_wanted(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """After re-scrape, item state is WANTED."""
-        item = await _persist_item(
-            session,
-            original_language="ja",
-            state=QueueState.COMPLETE,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 200
-
-        await session.refresh(item)
-        assert item.state == QueueState.WANTED
-
-    async def test_no_original_language_but_has_tmdb_id_backfills(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """Item with no original_language but valid tmdb_id should try TMDB backfill."""
-        item = await _persist_item(
-            session,
-            original_language=None,
-            tmdb_id="12345",
-            state=QueueState.COMPLETE,
-        )
-        # Mock TMDB to return Japanese details — patch the singleton used by the
-        # inline `from src.services.tmdb import tmdb_client` in the route handler.
-        mock_detail = MagicMock()
-        mock_detail.original_language = "ja"
-
-        with patch(
-            "src.services.tmdb.tmdb_client.get_movie_details",
-            new_callable=AsyncMock,
-            return_value=mock_detail,
-        ):
-            resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-
-        assert resp.status_code == 200
-
-    async def test_no_original_language_no_tmdb_returns_400(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """Item with no original_language and no tmdb_id → 400."""
-        item = await _persist_item(
-            session,
-            original_language=None,
-            tmdb_id=None,
-            state=QueueState.COMPLETE,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 400
-
-    async def test_english_full_name_returns_400(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """original_language='English' (full name) also returns 400."""
-        item = await _persist_item(
-            session,
-            original_language="English",
-            state=QueueState.COMPLETE,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 400
-
-    async def test_existing_metadata_preserved_with_flag(
-        self, http: AsyncClient, session: AsyncSession
-    ) -> None:
-        """Existing metadata keys are preserved when force flag is added."""
-        existing_meta = json.dumps({"some_existing_key": "some_value"})
-        item = await _persist_item(
-            session,
-            original_language="ko",
-            state=QueueState.COMPLETE,
-            metadata_json=existing_meta,
-        )
-        resp = await http.post(f"/api/queue/{item.id}/rescrape-original")
-        assert resp.status_code == 200
-
-        await session.refresh(item)
-        meta = json.loads(item.metadata_json)
-        assert meta.get("force_original_language") is True
-        assert meta.get("some_existing_key") == "some_value"
 
 
 # ===========================================================================

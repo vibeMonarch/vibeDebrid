@@ -364,26 +364,6 @@ window.queuePage = function() {
       return map[code.toLowerCase()] || code.toUpperCase();
     },
 
-    async rescrapeOriginal(item) {
-      if (!item) return;
-      try {
-        const res = await csrfFetch('/api/queue/' + item.id + '/rescrape-original', { method: 'POST' });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          showToast('Re-scrape failed: ' + (body.detail || 'HTTP ' + res.status), 'error');
-          return;
-        }
-        showToast('"' + item.title + '" queued for re-scrape with original language preference', 'success');
-        await this.loadItems();
-        if (this.expandedId === item.id) {
-          this.detail = null;
-          await this.loadDetail(item.id);
-        }
-      } catch (err) {
-        showToast('Re-scrape failed: ' + err.message, 'error');
-      }
-    },
-
     browseAlternatives(item) {
       if (!item) return;
       const p = new URLSearchParams();
