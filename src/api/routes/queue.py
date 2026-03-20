@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
@@ -658,6 +658,25 @@ async def switch_torrent(
             "switch_torrent: select_files failed new_rd_id=%s: %s", new_rd_id, exc
         )
 
+    # Fetch actual RD filename so CHECKING can find the torrent on the mount.
+    # release_title from the search result often differs from RD's directory name.
+    rd_filename = body.release_title or "Unknown"
+    try:
+        rd_info = await rd_client.get_torrent_info(new_rd_id)
+        if rd_info.get("filename"):
+            rd_filename = rd_info["filename"]
+            logger.info(
+                "switch_torrent: resolved RD filename=%r for rd_id=%s",
+                rd_filename,
+                new_rd_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "switch_torrent: could not fetch RD filename for rd_id=%s: %s",
+            new_rd_id,
+            exc,
+        )
+
     # --- Step 6: Register new torrent in dedup registry FIRST ---
     # Register before cleanup so that if this fails, the old torrent is untouched.
     await dedup_engine.register_torrent(
@@ -666,7 +685,7 @@ async def switch_torrent(
         info_hash=info_hash,
         magnet_uri=magnet_uri,
         media_item_id=item_id,
-        filename=body.release_title or "Unknown",
+        filename=rd_filename,
         filesize=body.size_bytes,
         resolution=body.resolution,
         cached=True,
@@ -680,6 +699,39 @@ async def switch_torrent(
     # --- Step 7: Clean up old torrent (symlinks, RD, registry) ---
     # Safe to do now — new torrent is registered, so partial failure won't orphan the item.
     await symlink_manager.remove_symlink(session, item_id)
+
+    # --- Clean up stale mount index entries for the old torrent ---
+    # If the old torrent's filename (directory on mount) is known, delete
+    # mount_index rows whose filepath contains it. This prevents CHECKING
+    # from matching stale files after Zurg auto-recovery recreates them.
+    if old_torrent is not None and old_torrent.filename:
+        from src.models.mount_index import MountIndex as _MountIndex
+
+        old_dir_name = old_torrent.filename
+        # Escape SQL LIKE wildcards (% and _) so torrent names with
+        # underscores don't over-match unrelated entries.
+        escaped = (
+            old_dir_name
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        # Match both directory entries (.../dirname/file) and single-file
+        # entries (.../filename.ext) where the torrent is the final path
+        # component with no subdirectory.
+        stale_result = await session.execute(
+            delete(_MountIndex).where(
+                _MountIndex.filepath.like(f"%/{escaped}/%", escape="\\")
+                | _MountIndex.filepath.like(f"%/{escaped}", escape="\\")
+            )
+        )
+        purged = stale_result.rowcount
+        if purged:
+            logger.info(
+                "switch_torrent: purged %d mount index entries for old torrent %r",
+                purged,
+                old_dir_name,
+            )
 
     if old_torrent is not None:
         old_rd_id = old_torrent.rd_id

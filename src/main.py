@@ -713,6 +713,7 @@ async def _job_queue_processor() -> None:
                         continue
                 else:
                     # Single episode/movie: use the first (most recent) match
+                    torrent = None
                     matches = await mount_scanner.lookup(
                         session,
                         title=item.title,
@@ -951,6 +952,32 @@ async def _job_queue_processor() -> None:
                                 scan_dir = os.path.dirname(symlink.target_path)
                                 plex_scan_queue.append((item.media_type, scan_dir))
                             continue
+
+                    # Filesize verification: prefer matches whose size is close
+                    # to the RD torrent's reported size (protects against stale
+                    # mount_index entries from Zurg auto-recovery).
+                    if len(matches) > 1:
+                        if torrent is None:
+                            torrent = await _find_torrent_for_item(session, item)
+                        if torrent and torrent.filesize:
+                            expected = torrent.filesize
+                            # Accept files within 15% of expected size
+                            lo = expected * 0.85
+                            hi = expected * 1.15
+                            size_matched = [
+                                m for m in matches
+                                if m.filesize is not None and lo <= m.filesize <= hi
+                            ]
+                            if size_matched:
+                                logger.info(
+                                    "CHECKING item id=%d: filesize filter narrowed %d → %d matches "
+                                    "(expected %d bytes)",
+                                    item.id,
+                                    len(matches),
+                                    len(size_matched),
+                                    expected,
+                                )
+                                matches = size_matched
 
                     source_path = matches[0].filepath
                     logger.info(
