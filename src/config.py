@@ -101,6 +101,8 @@ class FiltersConfig(BaseModel):
     dub_penalty: int = Field(default=20, ge=0, le=50)
     dual_audio_bonus: int = Field(default=10, ge=0, le=30)
     cached_bonus: int = Field(default=25, ge=0, le=100)
+    title_similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    title_similarity_bonus: float = Field(default=15.0, ge=0.0, le=50.0)
 
 
 class RetryConfig(BaseModel):

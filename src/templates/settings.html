@@ -667,6 +667,22 @@
               <p class="text-xs text-vd-muted mt-1">Score bonus for torrents already cached in RD (instant download). 0–100.</p>
             </div>
           </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="filters-title-similarity-threshold">Title Similarity Threshold</label>
+              <input type="number" id="filters-title-similarity-threshold" min="0" max="1" step="0.05"
+                     placeholder="0.0"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Minimum title similarity score (0.0-1.0) to accept a result. Default 0.0 accepts all results. Raise to 0.2-0.3 to reject results with completely different titles.</p>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1" for="filters-title-similarity-bonus">Title Similarity Bonus (score points)</label>
+              <input type="number" id="filters-title-similarity-bonus" min="0" max="50" step="1"
+                     placeholder="15"
+                     class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              <p class="text-xs text-vd-muted mt-1">Maximum scoring bonus for results whose title closely matches the search query.</p>
+            </div>
+          </div>
           <div class="pt-2">
             <button type="button" onclick="saveSection('filters')"
                     class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">

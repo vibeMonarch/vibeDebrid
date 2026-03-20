@@ -127,6 +127,92 @@ _LANGUAGE_MULTI_BONUS: float = 10.0
 
 
 # ---------------------------------------------------------------------------
+# Title similarity helpers
+# ---------------------------------------------------------------------------
+
+_RELEASE_NOISE_RE = re.compile(
+    r"\b(?:\d{3,4}p|x26[45]|h\.?26[45]|hevc|av1|aac|"
+    r"web[.-]?dl|webrip|bluray|hdtv|remux|"
+    r"atmos|truehd|dts(?:[- ]hd)?|flac|"
+    r"s\d{1,2}(?:e\d{1,3})?|e\d{1,3}|"
+    r"complete|batch|season\s*\d*)\b",
+    re.IGNORECASE,
+)
+_RELEASE_GROUP_RE = re.compile(r"-\w+$")
+_NON_ALPHA_RE = re.compile(r"[^a-z0-9\s]")
+
+
+def _normalize_title_tokens(text: str) -> set[str]:
+    """Extract content-meaningful tokens from a torrent release name.
+
+    Strips release metadata (resolution, codec, audio, source, season/episode
+    markers, release group suffix) so that the remaining tokens reflect the
+    actual content title.  Years are intentionally preserved — numeric titles
+    like "2012" or "1917" participate in similarity scoring.
+    """
+    lowered = text.lower()
+    lowered = re.sub(r"\[.*?\]", " ", lowered)
+    lowered = _RELEASE_GROUP_RE.sub("", lowered)
+    lowered = _RELEASE_NOISE_RE.sub(" ", lowered)
+    lowered = lowered.replace(".", " ").replace("_", " ").replace("-", " ")
+    lowered = _NON_ALPHA_RE.sub(" ", lowered)
+    tokens = {t for t in lowered.split() if len(t) > 1}
+    return tokens
+
+
+def _normalize_reference_tokens(text: str) -> set[str]:
+    """Extract tokens from a clean TMDB reference title.
+
+    Applies lighter normalization than ``_normalize_title_tokens``: no release
+    noise stripping and no release-group suffix removal.  This prevents
+    hyphenated words in proper titles (e.g. "Spider-Man") from losing their
+    trailing component.
+
+    Args:
+        text: A canonical title string from TMDB or a known-titles list.
+
+    Returns:
+        Set of lowercase alphanumeric tokens with single-character tokens
+        filtered out.
+    """
+    lowered = text.lower()
+    lowered = lowered.replace(".", " ").replace("_", " ").replace("-", " ")
+    lowered = _NON_ALPHA_RE.sub(" ", lowered)
+    tokens = {t for t in lowered.split() if len(t) > 1}
+    return tokens
+
+
+def _title_similarity(
+    result_tokens: set[str],
+    ref_token_sets: list[set[str]],
+) -> float:
+    """Compute best Jaccard similarity between result tokens and any reference title.
+
+    Args:
+        result_tokens: Normalized token set from the scrape result title.
+        ref_token_sets: List of normalized token sets from known reference titles.
+
+    Returns:
+        Best Jaccard similarity score in range [0.0, 1.0].  Returns 1.0 when
+        no comparison is possible (benefit of the doubt).
+    """
+    if not ref_token_sets or not result_tokens:
+        return 1.0  # No comparison possible — benefit of the doubt
+
+    best = 0.0
+    for ref_tokens in ref_token_sets:
+        intersection = len(result_tokens & ref_tokens)
+        union = len(result_tokens | ref_tokens)
+        if union > 0:
+            sim = intersection / union
+            if sim > best:
+                best = sim
+                if best == 1.0:
+                    break
+    return best
+
+
+# ---------------------------------------------------------------------------
 # FilterEngine
 # ---------------------------------------------------------------------------
 
@@ -153,6 +239,7 @@ class FilterEngine:
         original_language: str | None = None,
         requested_season: int | None = None,
         requested_episode: int | None = None,
+        known_titles: list[str] | None = None,
     ) -> list[FilteredResult]:
         """Apply Tier 1 hard filters then Tier 2 quality scoring to a result list.
 
@@ -188,6 +275,10 @@ class FilterEngine:
             requested_episode: The episode number that was requested (after XEM
                 scene mapping, if applicable).  Behaviour mirrors
                 ``requested_season``.  Defaults to None.
+            known_titles: List of known canonical titles for the content (e.g.
+                primary title, original title, alternative titles).  Used for
+                title similarity scoring and hard-reject filtering.  When None,
+                title similarity features are disabled.  Defaults to None.
 
         Returns:
             List of FilteredResult objects sorted by score descending.
@@ -226,14 +317,33 @@ class FilterEngine:
             lang.lower() for lang in settings.filters.preferred_languages
         ]
 
+        # Pre-compute normalized reference token sets for title similarity.
+        # Reference titles come from TMDB (clean canonical strings), so we use
+        # the lighter _normalize_reference_tokens that does NOT strip hyphenated
+        # suffixes — this preserves words like "Man" in "Spider-Man".
+        ref_token_sets: list[set[str]] = []
+        if known_titles:
+            for t in known_titles:
+                tokens = _normalize_reference_tokens(t)
+                if tokens:
+                    ref_token_sets.append(tokens)
+
         ranked: list[FilteredResult] = []
         rejected_count = 0
 
         for result in results:
+            # Pre-compute result tokens once and share between hard-filter and
+            # scoring to avoid calling _normalize_title_tokens twice per result.
+            result_tokens: set[str] | None = (
+                _normalize_title_tokens(result.title) if ref_token_sets else None
+            )
+
             passed, reason = self._apply_hard_filters(
                 result, profile, prefer_season_packs, requested_season, requested_episode,
                 blocked_patterns=blocked_patterns,
                 preferred_lower=preferred_lower,
+                ref_token_sets=ref_token_sets if ref_token_sets else None,
+                result_tokens=result_tokens,
             )
             if not passed:
                 logger.debug(
@@ -248,6 +358,8 @@ class FilterEngine:
                 result, profile, resolved_cached, prefer_season_packs, original_language,
                 audio_patterns=audio_patterns,
                 preferred_lower=preferred_lower,
+                ref_token_sets=ref_token_sets if ref_token_sets else None,
+                result_tokens=result_tokens,
             )
             ranked.append(
                 FilteredResult(
@@ -289,6 +401,7 @@ class FilterEngine:
         original_language: str | None = None,
         requested_season: int | None = None,
         requested_episode: int | None = None,
+        known_titles: list[str] | None = None,
     ) -> FilteredResult | None:
         """Return the highest-scored result, or None if all were rejected.
 
@@ -308,6 +421,8 @@ class FilterEngine:
             requested_episode: The episode number that was requested.  When set
                 together with ``requested_season``, results with a mismatched
                 episode are hard-rejected.  Defaults to None.
+            known_titles: List of known canonical titles for title similarity
+                scoring and hard-reject filtering.  Defaults to None.
 
         Returns:
             The top-ranked FilteredResult, or None when the list is empty or
@@ -321,6 +436,7 @@ class FilterEngine:
             original_language=original_language,
             requested_season=requested_season,
             requested_episode=requested_episode,
+            known_titles=known_titles,
         )
         return ranked[0] if ranked else None
 
@@ -338,6 +454,8 @@ class FilterEngine:
         *,
         blocked_patterns: list[tuple[str, re.Pattern[str]]] | None = None,
         preferred_lower: list[str] | None = None,
+        ref_token_sets: list[set[str]] | None = None,
+        result_tokens: set[str] | None = None,
     ) -> tuple[bool, str | None]:
         """Evaluate Tier 1 hard-reject rules against a single result.
 
@@ -365,6 +483,18 @@ class FilterEngine:
             preferred_lower: Pre-lowercased copy of
                 ``settings.filters.preferred_languages``.  When None it is
                 computed inline (fallback for direct callers).
+            ref_token_sets: Pre-computed normalized token sets from known
+                canonical titles.  When provided and
+                ``settings.filters.title_similarity_threshold`` is > 0.0,
+                results with a Jaccard similarity below the threshold are
+                hard-rejected.  When None, title similarity filtering is
+                skipped entirely.
+            result_tokens: Pre-computed normalized token set for ``result.title``
+                from ``_normalize_title_tokens``.  When provided it is used
+                directly instead of calling ``_normalize_title_tokens`` again
+                (avoids double computation when the caller pre-computes tokens
+                for both hard-filter and scoring).  When None the tokens are
+                computed inline if ``ref_token_sets`` is set.
 
         Returns:
             A 2-tuple ``(passed, reason)`` where ``passed`` is True when the
@@ -498,6 +628,16 @@ class FilterEngine:
                     f"{profile.min_resolution!r}"
                 )
 
+        # 9. Title similarity floor (hard reject for very low similarity)
+        if ref_token_sets:
+            threshold = settings.filters.title_similarity_threshold
+            if threshold > 0.0:
+                # Use pre-computed tokens when available to avoid re-normalizing.
+                tokens = result_tokens if result_tokens is not None else _normalize_title_tokens(result.title)
+                sim = _title_similarity(tokens, ref_token_sets)
+                if sim < threshold:
+                    return False, f"title similarity {sim:.2f} below threshold {threshold:.2f}"
+
         return True, None
 
     # ------------------------------------------------------------------
@@ -514,6 +654,8 @@ class FilterEngine:
         *,
         audio_patterns: list[tuple[str, re.Pattern[str]]] | None = None,
         preferred_lower: list[str] | None = None,
+        ref_token_sets: list[set[str]] | None = None,
+        result_tokens: set[str] | None = None,
     ) -> tuple[float, dict[str, float]]:
         """Compute the composite quality score for a result.
 
@@ -537,6 +679,16 @@ class FilterEngine:
                 ``settings.filters.preferred_languages``.  When None it is
                 computed inline inside ``_score_language`` (fallback for direct
                 callers).
+            ref_token_sets: Pre-computed normalized token sets from known
+                canonical titles.  When provided, title similarity is scored
+                and added to the breakdown.  When None, title similarity
+                scoring is skipped.
+            result_tokens: Pre-computed normalized token set for ``result.title``
+                from ``_normalize_title_tokens``.  When provided it is used
+                directly instead of re-normalizing (avoids double computation
+                when the caller pre-computes tokens for both hard-filter and
+                scoring).  When None the tokens are computed inline if
+                ``ref_token_sets`` is set.
 
         Returns:
             A 2-tuple ``(total_score, breakdown)`` where ``breakdown`` maps
@@ -605,6 +757,14 @@ class FilterEngine:
         breakdown["original_language"] = self._score_original_language(
             result.languages, original_language
         )
+
+        # --- Title similarity bonus ---
+        if ref_token_sets:
+            # Use pre-computed tokens when available to avoid re-normalizing.
+            tokens = result_tokens if result_tokens is not None else _normalize_title_tokens(result.title)
+            sim = _title_similarity(tokens, ref_token_sets)
+            bonus = settings.filters.title_similarity_bonus
+            breakdown["title_match"] = round(sim * bonus, 2)
 
         total = sum(breakdown.values())
         return total, breakdown

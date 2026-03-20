@@ -108,9 +108,11 @@
     setField('filters-blocked-groups',      (filters.blocked_release_groups  || []).join(', '));
     setField('filters-preferred-languages', (filters.preferred_languages      || []).join(', '));
     setToggle('filters-prefer-original-language', filters.prefer_original_language === true);
-    setField('filters-dub-penalty',         filters.dub_penalty         != null ? filters.dub_penalty         : 20);
-    setField('filters-dual-audio-bonus',    filters.dual_audio_bonus    != null ? filters.dual_audio_bonus    : 10);
-    setField('filters-cached-bonus',        filters.cached_bonus        != null ? filters.cached_bonus        : 25);
+    setField('filters-dub-penalty',                   filters.dub_penalty                   != null ? filters.dub_penalty                   : 20);
+    setField('filters-dual-audio-bonus',              filters.dual_audio_bonus              != null ? filters.dual_audio_bonus              : 10);
+    setField('filters-cached-bonus',                  filters.cached_bonus                  != null ? filters.cached_bonus                  : 25);
+    setField('filters-title-similarity-threshold',    filters.title_similarity_threshold    != null ? filters.title_similarity_threshold    : 0.0);
+    setField('filters-title-similarity-bonus',        filters.title_similarity_bonus        != null ? filters.title_similarity_bonus        : 15);
 
     // Retry
     const retry = s.retry || {};
@@ -273,15 +275,19 @@
         const dubPenalty = parseInt(document.getElementById('filters-dub-penalty').value);
         const dualAudioBonus = parseInt(document.getElementById('filters-dual-audio-bonus').value);
         const cachedBonus = parseInt(document.getElementById('filters-cached-bonus').value);
+        const titleSimilarityThreshold = parseFloat(document.getElementById('filters-title-similarity-threshold').value);
+        const titleSimilarityBonus = parseFloat(document.getElementById('filters-title-similarity-bonus').value);
         return {
           filters: {
-            blocked_keywords:          keywords,
-            blocked_release_groups:    groups,
-            preferred_languages:       preferredLangs,
-            prefer_original_language:  getToggle('filters-prefer-original-language'),
-            dub_penalty:               isNaN(dubPenalty)      ? 20 : Math.min(50, Math.max(0, dubPenalty)),
-            dual_audio_bonus:          isNaN(dualAudioBonus)  ? 10 : Math.min(30, Math.max(0, dualAudioBonus)),
-            cached_bonus:              isNaN(cachedBonus)     ? 25 : Math.min(100, Math.max(0, cachedBonus)),
+            blocked_keywords:             keywords,
+            blocked_release_groups:       groups,
+            preferred_languages:          preferredLangs,
+            prefer_original_language:     getToggle('filters-prefer-original-language'),
+            dub_penalty:                  isNaN(dubPenalty)                  ? 20  : Math.min(50, Math.max(0, dubPenalty)),
+            dual_audio_bonus:             isNaN(dualAudioBonus)              ? 10  : Math.min(30, Math.max(0, dualAudioBonus)),
+            cached_bonus:                 isNaN(cachedBonus)                 ? 25  : Math.min(100, Math.max(0, cachedBonus)),
+            title_similarity_threshold:   isNaN(titleSimilarityThreshold)    ? 0.0 : Math.min(1.0, Math.max(0.0, titleSimilarityThreshold)),
+            title_similarity_bonus:       isNaN(titleSimilarityBonus)        ? 15  : Math.min(50, Math.max(0, titleSimilarityBonus)),
           }
         };
       }

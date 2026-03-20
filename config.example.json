@@ -96,7 +96,9 @@
         "required_language": null,
         "preferred_languages": [],
         "prefer_original_language": false,
-        "allow_multi_audio": true
+        "allow_multi_audio": true,
+        "title_similarity_threshold": 0.0,
+        "title_similarity_bonus": 15.0
     },
     "search": {
         "cache_check_limit": 20

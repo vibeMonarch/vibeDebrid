@@ -378,6 +378,14 @@ class ScrapePipeline:
             if getattr(r, "cached", False) and getattr(r, "info_hash", None)
         }
 
+        # Build known_titles for title similarity scoring.
+        known_titles: list[str] = [item.title]
+        if _tmdb_original_title and _tmdb_original_title.lower() != item.title.lower():
+            known_titles.append(_tmdb_original_title)
+        for alt in _alt_titles:
+            if alt.lower() not in {t.lower() for t in known_titles}:
+                known_titles.append(alt)
+
         # Filter and rank first, then probe RD cache on the top candidates.
         ranked = filter_engine.filter_and_rank(
             combined,  # type: ignore[arg-type]
@@ -387,6 +395,7 @@ class ScrapePipeline:
             original_language=orig_lang_name,
             requested_season=scene_season if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
             requested_episode=scene_episode if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
+            known_titles=known_titles,
         )
 
         # Extract XEM scene pack episode range early — needed for both dedup
@@ -1018,6 +1027,14 @@ class ScrapePipeline:
                     item.id,
                     exc,
                 )
+
+            # Extend caller's alt_titles so title similarity scoring in the
+            # filter engine benefits from all discovered title variants
+            # (AniDB + TMDB alternative titles).
+            if alt_titles is not None:
+                for c in candidates:
+                    if c not in alt_titles:
+                        alt_titles.append(c)
 
             primary_lower = item.title.lower()
             tried: list[str] = []
