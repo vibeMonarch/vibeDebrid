@@ -1359,11 +1359,11 @@ class SymlinkManager:
                 media_item.id,
                 exc,
             )
-        except Exception as exc:
+        except Exception:
             logger.warning(
-                "_write_nfo_sidecar: unexpected error for item id=%s — %s",
+                "_write_nfo_sidecar: unexpected error for item id=%s",
                 media_item.id,
-                exc,
+                exc_info=True,
             )
 
     async def _cleanup_orphaned_nfo(self, dir_path: str) -> None:

@@ -162,7 +162,8 @@ NON_EPISODE_NUMBERS: frozenset[int] = frozenset({264, 265, 480, 576, 720, 1080, 
 # Private regex for parse_episode_from_filename
 # ---------------------------------------------------------------------------
 
-_EPISODE_RE = re.compile(r"[Ss]\d{1,2}[Ee](\d{1,3})")
+SXXEXX_RE = re.compile(r"[Ss]\d{1,2}[Ee](\d{1,3})")
+_EPISODE_RE = SXXEXX_RE  # backward compat alias
 _BARE_EPISODE_RE = re.compile(r"[\s._-][Ee](\d{2,3})(?:\b|[\s._-])")
 
 

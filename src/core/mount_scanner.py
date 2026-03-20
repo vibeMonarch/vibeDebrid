@@ -39,7 +39,7 @@ from src.services.torrent_parser import ANIME_BARE_DASH_EP_RE as _ANIME_DASH_EP_
 from src.services.torrent_parser import BARE_TRAILING_EP_RE as _BARE_TRAILING_EP_RE
 from src.services.torrent_parser import EPISODE_WORD_RE as _EPISODE_WORD_RE
 from src.services.torrent_parser import NON_EPISODE_NUMBERS as _NON_EPISODE_NUMBERS
-from src.services.torrent_parser import _EPISODE_RE as _SXXEXX_RE
+from src.services.torrent_parser import SXXEXX_RE as _SXXEXX_RE
 
 logger = logging.getLogger(__name__)
 
