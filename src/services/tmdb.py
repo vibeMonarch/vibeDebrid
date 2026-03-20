@@ -102,6 +102,31 @@ class TmdbEpisodeAirInfo(BaseModel):
     air_date: str | None = None
 
 
+class TmdbCastMember(BaseModel):
+    """A single cast member from TMDB credits."""
+
+    name: str
+    character: str = ""
+    profile_path: str | None = None
+    order: int = 999
+
+
+class TmdbCrewMember(BaseModel):
+    """A single crew member from TMDB credits."""
+
+    name: str
+    job: str
+    department: str = ""
+    profile_path: str | None = None
+
+
+class TmdbCredits(BaseModel):
+    """Cast and crew credits from TMDB append_to_response=credits."""
+
+    cast: list[TmdbCastMember] = []
+    crew: list[TmdbCrewMember] = []
+
+
 class TmdbShowDetail(BaseModel):
     """Full show details from TMDB /tv/{id} endpoint."""
 
@@ -109,6 +134,7 @@ class TmdbShowDetail(BaseModel):
     title: str
     year: int | None = None
     overview: str = ""
+    tagline: str = ""
     poster_path: str | None = None
     backdrop_path: str | None = None
     status: str = ""  # "Returning Series", "Ended", "Canceled", etc.
@@ -122,6 +148,7 @@ class TmdbShowDetail(BaseModel):
     last_episode_to_air: TmdbEpisodeAirInfo | None = None
     original_language: str | None = None
     original_title: str | None = None  # original_name field from TMDB
+    credits: TmdbCredits | None = None
 
 
 class TmdbEpisodeInfo(BaseModel):
@@ -148,6 +175,7 @@ class TmdbMovieDetail(BaseModel):
     title: str
     year: int | None = None
     overview: str = ""
+    tagline: str = ""
     poster_path: str | None = None
     backdrop_path: str | None = None
     vote_average: float = 0.0
@@ -156,6 +184,7 @@ class TmdbMovieDetail(BaseModel):
     imdb_id: str | None = None
     original_language: str | None = None
     original_title: str | None = None  # original_title field from TMDB
+    credits: TmdbCredits | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -909,7 +938,7 @@ class TmdbClient:
             client = await self._get_client()
             response = await client.get(
                 f"/tv/{tmdb_id}",
-                params={"append_to_response": "external_ids"},
+                params={"append_to_response": "external_ids,credits"},
             )
         except httpx.ConnectError as exc:
             await breaker.record_failure()
@@ -985,11 +1014,38 @@ class TmdbClient:
         next_episode_to_air = _parse_episode_air_info(data.get("next_episode_to_air"))
         last_episode_to_air = _parse_episode_air_info(data.get("last_episode_to_air"))
 
+        # Parse credits from append_to_response block
+        raw_credits = data.get("credits") or {}
+        credits: TmdbCredits | None = None
+        if raw_credits:
+            cast: list[TmdbCastMember] = [
+                TmdbCastMember(
+                    name=m.get("name") or "",
+                    character=m.get("character") or "",
+                    profile_path=m.get("profile_path") or None,
+                    order=m.get("order") if isinstance(m.get("order"), int) else 999,
+                )
+                for m in (raw_credits.get("cast") or [])
+                if m.get("name")
+            ]
+            crew: list[TmdbCrewMember] = [
+                TmdbCrewMember(
+                    name=m.get("name") or "",
+                    job=m.get("job") or "",
+                    department=m.get("department") or "",
+                    profile_path=m.get("profile_path") or None,
+                )
+                for m in (raw_credits.get("crew") or [])
+                if m.get("name")
+            ]
+            credits = TmdbCredits(cast=cast, crew=crew)
+
         result = TmdbShowDetail(
             tmdb_id=tmdb_id,
             title=title,
             year=year,
             overview=data.get("overview") or "",
+            tagline=data.get("tagline") or "",
             poster_path=data.get("poster_path") or None,
             backdrop_path=data.get("backdrop_path") or None,
             status=data.get("status") or "",
@@ -1003,6 +1059,7 @@ class TmdbClient:
             last_episode_to_air=last_episode_to_air,
             original_language=data.get("original_language") or None,
             original_title=data.get("original_name") or None,
+            credits=credits,
         )
 
         logger.debug(
@@ -1383,7 +1440,7 @@ class TmdbClient:
             client = await self._get_client()
             response = await client.get(
                 f"/movie/{tmdb_id}",
-                params={"append_to_response": "external_ids"},
+                params={"append_to_response": "external_ids,credits"},
             )
         except httpx.ConnectError as exc:
             await breaker.record_failure()
@@ -1445,11 +1502,38 @@ class TmdbClient:
         runtime_raw = data.get("runtime")
         runtime: int | None = int(runtime_raw) if isinstance(runtime_raw, int) and runtime_raw > 0 else None
 
+        # Parse credits from append_to_response block
+        raw_credits = data.get("credits") or {}
+        credits: TmdbCredits | None = None
+        if raw_credits:
+            cast: list[TmdbCastMember] = [
+                TmdbCastMember(
+                    name=m.get("name") or "",
+                    character=m.get("character") or "",
+                    profile_path=m.get("profile_path") or None,
+                    order=m.get("order") if isinstance(m.get("order"), int) else 999,
+                )
+                for m in (raw_credits.get("cast") or [])
+                if m.get("name")
+            ]
+            crew: list[TmdbCrewMember] = [
+                TmdbCrewMember(
+                    name=m.get("name") or "",
+                    job=m.get("job") or "",
+                    department=m.get("department") or "",
+                    profile_path=m.get("profile_path") or None,
+                )
+                for m in (raw_credits.get("crew") or [])
+                if m.get("name")
+            ]
+            credits = TmdbCredits(cast=cast, crew=crew)
+
         result = TmdbMovieDetail(
             tmdb_id=tmdb_id,
             title=title,
             year=year,
             overview=data.get("overview") or "",
+            tagline=data.get("tagline") or "",
             poster_path=data.get("poster_path") or None,
             backdrop_path=data.get("backdrop_path") or None,
             vote_average=float(data.get("vote_average") or 0.0),
@@ -1458,6 +1542,7 @@ class TmdbClient:
             imdb_id=imdb_id,
             original_language=data.get("original_language") or None,
             original_title=data.get("original_title") or None,
+            credits=credits,
         )
 
         logger.debug(

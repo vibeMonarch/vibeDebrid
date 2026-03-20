@@ -38,12 +38,20 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+
 from src.config import settings
 from src.models.media_item import MediaItem, MediaType
 from src.models.symlink import Symlink
+from src.services.tmdb import TmdbClient, TmdbMovieDetail, TmdbShowDetail
 from src.services.torrent_parser import parse_episode_from_filename as _parse_episode_from_filename_impl
 
 logger = logging.getLogger(__name__)
+
+_tmdb_client = TmdbClient()
+
+_TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
+_SIDECAR_FILES = {"movie.nfo", "tvshow.nfo", "poster.jpg", "fanart.jpg"}
 
 
 # ---------------------------------------------------------------------------
@@ -821,71 +829,330 @@ class SymlinkManager:
         await session.flush()
         return symlink
 
-    def _build_nfo_xml(self, root_tag: str, media_item: MediaItem) -> str:
-        """Build NFO XML content for movies or TV shows.
-
-        Only includes provider IDs — no title, year, or other metadata.
-        Jellyfin gives NFO data priority over remote providers, so including
-        sparse metadata (title without plot/poster) would prevent Jellyfin
-        from fetching the full metadata from TMDB.  By providing only IDs,
-        Jellyfin uses them to identify the correct TMDB entry and then
-        fetches all metadata remotely.
+    def _build_movie_nfo_xml(self, detail: TmdbMovieDetail) -> str:
+        """Build a rich Kodi/Jellyfin-compatible movie NFO XML string.
 
         Args:
-            root_tag: Root element name ("movie" or "tvshow").
-            media_item: The MediaItem providing metadata.
+            detail: Full movie details fetched from TMDB.
+
+        Returns:
+            UTF-8 XML string with ``<movie>`` root element.
         """
-        root = ET.Element(root_tag)
-        has_tmdb = bool(media_item.tmdb_id)
-        if has_tmdb:
-            uid = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
-            uid.text = str(media_item.tmdb_id)
-            ET.SubElement(root, "tmdbid").text = str(media_item.tmdb_id)
-        if media_item.imdb_id:
-            attrs: dict[str, str] = {"type": "imdb"}
-            if not has_tmdb:
-                attrs["default"] = "true"
-            uid = ET.SubElement(root, "uniqueid", **attrs)
-            uid.text = media_item.imdb_id
-            ET.SubElement(root, "imdbid").text = media_item.imdb_id
+        root = ET.Element("movie")
+
+        def _sub(tag: str, text: str | int | float | None) -> None:
+            """Append a child element only when text is non-empty."""
+            if text is None:
+                return
+            s = str(text).strip()
+            if s:
+                ET.SubElement(root, tag).text = s
+
+        _sub("title", detail.title)
+        _sub("originaltitle", detail.original_title)
+        _sub("year", detail.year)
+        _sub("plot", detail.overview)
+        _sub("tagline", detail.tagline)
+        _sub("runtime", detail.runtime)
+        if detail.vote_average:
+            _sub("rating", round(detail.vote_average, 1))
+
+        if detail.poster_path:
+            thumb = ET.SubElement(root, "thumb", aspect="poster")
+            thumb.text = f"{_TMDB_IMAGE_BASE}/original{detail.poster_path}"
+        if detail.backdrop_path:
+            fanart_el = ET.SubElement(root, "fanart")
+            ET.SubElement(fanart_el, "thumb").text = (
+                f"{_TMDB_IMAGE_BASE}/original{detail.backdrop_path}"
+            )
+
+        for genre in detail.genres:
+            name = genre.get("name", "")
+            if name:
+                ET.SubElement(root, "genre").text = name
+
+        # uniqueid elements — TMDB is the default
+        uid_tmdb = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
+        uid_tmdb.text = str(detail.tmdb_id)
+        ET.SubElement(root, "tmdbid").text = str(detail.tmdb_id)
+        if detail.imdb_id:
+            uid_imdb = ET.SubElement(root, "uniqueid", type="imdb")
+            uid_imdb.text = detail.imdb_id
+            ET.SubElement(root, "imdbid").text = detail.imdb_id
+
+        # Director(s) from crew
+        if detail.credits:
+            for crew_member in detail.credits.crew:
+                if crew_member.job == "Director":
+                    _sub("director", crew_member.name)
+            for cast_member in sorted(detail.credits.cast, key=lambda c: c.order)[:10]:
+                actor_el = ET.SubElement(root, "actor")
+                ET.SubElement(actor_el, "name").text = cast_member.name
+                if cast_member.character:
+                    ET.SubElement(actor_el, "role").text = cast_member.character
+                if cast_member.profile_path:
+                    ET.SubElement(actor_el, "thumb").text = (
+                        f"{_TMDB_IMAGE_BASE}/w185{cast_member.profile_path}"
+                    )
+
         ET.indent(root, space="  ")
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(
-            root, encoding="unicode"
-        ) + "\n"
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            + ET.tostring(root, encoding="unicode")
+            + "\n"
+        )
+
+    def _build_show_nfo_xml(self, detail: TmdbShowDetail) -> str:
+        """Build a rich Kodi/Jellyfin-compatible tvshow NFO XML string.
+
+        Args:
+            detail: Full TV show details fetched from TMDB.
+
+        Returns:
+            UTF-8 XML string with ``<tvshow>`` root element.
+        """
+        root = ET.Element("tvshow")
+
+        def _sub(tag: str, text: str | int | float | None) -> None:
+            """Append a child element only when text is non-empty."""
+            if text is None:
+                return
+            s = str(text).strip()
+            if s:
+                ET.SubElement(root, tag).text = s
+
+        _sub("title", detail.title)
+        _sub("originaltitle", detail.original_title)
+        _sub("year", detail.year)
+        _sub("plot", detail.overview)
+        _sub("tagline", detail.tagline)
+        _sub("status", detail.status)
+        if detail.vote_average:
+            _sub("rating", round(detail.vote_average, 1))
+
+        if detail.poster_path:
+            thumb = ET.SubElement(root, "thumb", aspect="poster")
+            thumb.text = f"{_TMDB_IMAGE_BASE}/original{detail.poster_path}"
+        if detail.backdrop_path:
+            fanart_el = ET.SubElement(root, "fanart")
+            ET.SubElement(fanart_el, "thumb").text = (
+                f"{_TMDB_IMAGE_BASE}/original{detail.backdrop_path}"
+            )
+
+        for genre in detail.genres:
+            name = genre.get("name", "")
+            if name:
+                ET.SubElement(root, "genre").text = name
+
+        # uniqueid elements — TMDB is the default
+        uid_tmdb = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
+        uid_tmdb.text = str(detail.tmdb_id)
+        ET.SubElement(root, "tmdbid").text = str(detail.tmdb_id)
+        if detail.imdb_id:
+            uid_imdb = ET.SubElement(root, "uniqueid", type="imdb")
+            uid_imdb.text = detail.imdb_id
+            ET.SubElement(root, "imdbid").text = detail.imdb_id
+        if detail.tvdb_id:
+            uid_tvdb = ET.SubElement(root, "uniqueid", type="tvdb")
+            uid_tvdb.text = str(detail.tvdb_id)
+            ET.SubElement(root, "tvdbid").text = str(detail.tvdb_id)
+
+        # Cast from credits
+        if detail.credits:
+            for cast_member in sorted(detail.credits.cast, key=lambda c: c.order)[:10]:
+                actor_el = ET.SubElement(root, "actor")
+                ET.SubElement(actor_el, "name").text = cast_member.name
+                if cast_member.character:
+                    ET.SubElement(actor_el, "role").text = cast_member.character
+                if cast_member.profile_path:
+                    ET.SubElement(actor_el, "thumb").text = (
+                        f"{_TMDB_IMAGE_BASE}/w185{cast_member.profile_path}"
+                    )
+
+        ET.indent(root, space="  ")
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            + ET.tostring(root, encoding="unicode")
+            + "\n"
+        )
+
+    async def _download_tmdb_image(
+        self,
+        image_path: str,
+        dest_path: str,
+        size: str = "w500",
+        *,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        """Download a TMDB image to the local filesystem.
+
+        Skips silently when *dest_path* already exists.  All failures are
+        caught and logged — this helper must never propagate an exception.
+
+        When *client* is provided it is used directly (neither created nor
+        closed by this method).  When *client* is ``None`` a temporary
+        ``httpx.AsyncClient`` is created for the single request (backward
+        compatibility for standalone callers).
+
+        Args:
+            image_path: TMDB image path (e.g. ``/abc123.jpg``).
+            dest_path: Absolute destination path on the local filesystem.
+            size: TMDB image size key (``w500``, ``w1280``, ``original``, …).
+            client: Optional pre-created ``httpx.AsyncClient`` to reuse.
+        """
+        already_exists = await asyncio.to_thread(os.path.exists, dest_path)
+        if already_exists:
+            return
+
+        url = f"{_TMDB_IMAGE_BASE}/{size}{image_path}"
+
+        def _write_bytes(path: str, content: bytes) -> None:
+            """Atomically write *content* to *path* via a temp file."""
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "wb") as f:
+                f.write(content)
+            os.replace(tmp_path, path)
+
+        async def _do_download(http_client: httpx.AsyncClient) -> None:
+            try:
+                response = await http_client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                data = response.content
+            except httpx.TimeoutException as exc:
+                logger.warning("_download_tmdb_image: timeout fetching %s — %s", url, exc)
+                return
+            except httpx.HTTPError as exc:
+                logger.warning("_download_tmdb_image: HTTP error fetching %s — %s", url, exc)
+                return
+
+            try:
+                await asyncio.to_thread(_write_bytes, dest_path, data)
+                logger.info("_download_tmdb_image: saved %s", dest_path)
+            except OSError as exc:
+                logger.warning("_download_tmdb_image: failed to write %s — %s", dest_path, exc)
+
+        if client is not None:
+            await _do_download(client)
+        else:
+            async with httpx.AsyncClient(timeout=20.0) as tmp_client:
+                await _do_download(tmp_client)
 
     async def _write_nfo_sidecar(self, media_item: MediaItem, target_path: str) -> None:
-        """Write an NFO sidecar file alongside the symlink if enabled.
+        """Write an NFO sidecar file and images alongside the symlink if enabled.
 
-        For movies, writes movie.nfo in the movie directory.
-        For shows, writes tvshow.nfo in the show root directory
+        Fetches full TMDB metadata to build a rich Kodi/Jellyfin-compatible
+        NFO.  If the TMDB fetch fails or no tmdb_id is available, the NFO is
+        skipped entirely (IDs-only NFOs are useless for Jellyfin).
+
+        For movies, writes ``movie.nfo``, ``poster.jpg``, and ``fanart.jpg``
+        in the movie directory.  For shows, writes ``tvshow.nfo``,
+        ``poster.jpg``, and ``fanart.jpg`` in the show root directory
         (parent of the Season XX folder).
+
+        All three sidecar files are checked independently: if all exist the
+        method returns early with no network I/O.  Writing uses atomic
+        temp-file + rename so a crash mid-write never leaves corrupt files.
+
+        All failures are caught and logged — this method must never block
+        symlink creation.
         """
         if not settings.symlink_naming.generate_nfo:
+            return
+
+        # Validate tmdb_id early — skip if missing or non-integer
+        raw_tmdb_id = media_item.tmdb_id
+        if not raw_tmdb_id:
+            return
+        try:
+            tmdb_id = int(raw_tmdb_id)
+        except (ValueError, TypeError):
+            logger.debug(
+                "_write_nfo_sidecar: non-integer tmdb_id=%r for item id=%s, skipping",
+                raw_tmdb_id,
+                media_item.id,
+            )
             return
 
         try:
             target_dir = os.path.dirname(target_path)
 
             if media_item.media_type == MediaType.MOVIE:
-                nfo_path = os.path.join(target_dir, "movie.nfo")
-                nfo_content = self._build_nfo_xml("movie", media_item)
+                nfo_dir = target_dir
+                nfo_filename = "movie.nfo"
             else:
                 # target_dir is .../Show Name (2024)/Season 01
                 # show root is .../Show Name (2024)
-                show_root = os.path.dirname(target_dir)
-                nfo_path = os.path.join(show_root, "tvshow.nfo")
-                nfo_content = self._build_nfo_xml("tvshow", media_item)
+                nfo_dir = os.path.dirname(target_dir)
+                nfo_filename = "tvshow.nfo"
 
-            exists = await asyncio.to_thread(os.path.exists, nfo_path)
-            if exists:
+            nfo_path = os.path.join(nfo_dir, nfo_filename)
+            poster_path = os.path.join(nfo_dir, "poster.jpg")
+            fanart_path = os.path.join(nfo_dir, "fanart.jpg")
+
+            # Skip only when ALL three sidecar files are already present.
+            # Checking all three means a previous partial write (e.g. images
+            # downloaded but NFO missing, or vice versa) is retried correctly.
+            def _all_exist(*paths: str) -> bool:
+                return all(os.path.exists(p) for p in paths)
+
+            if await asyncio.to_thread(_all_exist, nfo_path, poster_path, fanart_path):
                 return
 
-            def _write(path: str, content: str) -> None:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
+            # Fetch full TMDB details
+            if media_item.media_type == MediaType.MOVIE:
+                detail: TmdbMovieDetail | TmdbShowDetail | None = (
+                    await _tmdb_client.get_movie_details_full(tmdb_id)
+                )
+            else:
+                detail = await _tmdb_client.get_show_details(tmdb_id)
 
-            await asyncio.to_thread(_write, nfo_path, nfo_content)
-            logger.info("_write_nfo_sidecar: wrote %s", nfo_path)
+            if detail is None:
+                logger.debug(
+                    "_write_nfo_sidecar: TMDB fetch returned None for item id=%s tmdb_id=%d, "
+                    "skipping NFO",
+                    media_item.id,
+                    tmdb_id,
+                )
+                return
+
+            # Build NFO XML and write atomically (temp + rename)
+            if isinstance(detail, TmdbMovieDetail):
+                nfo_content = self._build_movie_nfo_xml(detail)
+            else:
+                nfo_content = self._build_show_nfo_xml(detail)
+
+            def _write_text(path: str, content: str) -> None:
+                """Atomically write *content* to *path* via a temp file."""
+                tmp_path = path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                os.replace(tmp_path, path)
+
+            # Only write NFO if it does not already exist (avoids redundant
+            # re-fetch overhead when only images were missing).
+            nfo_exists = await asyncio.to_thread(os.path.exists, nfo_path)
+            if not nfo_exists:
+                await asyncio.to_thread(_write_text, nfo_path, nfo_content)
+                logger.info("_write_nfo_sidecar: wrote %s", nfo_path)
+
+            # Download poster and fanart using a single shared HTTP client to
+            # avoid two separate TCP handshakes per item.
+            if detail.poster_path or detail.backdrop_path:
+                async with httpx.AsyncClient(timeout=20.0) as img_client:
+                    if detail.poster_path:
+                        await self._download_tmdb_image(
+                            detail.poster_path,
+                            poster_path,
+                            size="w500",
+                            client=img_client,
+                        )
+                    if detail.backdrop_path:
+                        await self._download_tmdb_image(
+                            detail.backdrop_path,
+                            fanart_path,
+                            size="w1280",
+                            client=img_client,
+                        )
 
         except OSError as exc:
             logger.warning(
@@ -893,30 +1160,55 @@ class SymlinkManager:
                 media_item.id,
                 exc,
             )
+        except Exception as exc:
+            logger.warning(
+                "_write_nfo_sidecar: unexpected error for item id=%s — %s",
+                media_item.id,
+                exc,
+            )
 
     async def _cleanup_orphaned_nfo(self, dir_path: str) -> None:
-        """Remove NFO files from dir if no other files remain."""
+        """Remove sidecar files from dir_path when no non-sidecar files remain.
+
+        Sidecar files are: ``movie.nfo``, ``tvshow.nfo``, ``poster.jpg``,
+        ``fanart.jpg``.  They are only deleted when no other (non-sidecar)
+        files exist in the directory.
+        """
         if not settings.symlink_naming.generate_nfo:
             return
-        for nfo_name in ("movie.nfo", "tvshow.nfo"):
-            nfo_path = os.path.join(dir_path, nfo_name)
-            try:
-                exists = await asyncio.to_thread(os.path.exists, nfo_path)
-                if not exists:
-                    continue
 
-                def _has_other_files(d: str) -> bool:
+        try:
+            def _scan(d: str) -> tuple[list[str], bool]:
+                """Return (sidecar_paths_present, has_non_sidecar_files)."""
+                present: list[str] = []
+                has_others = False
+                try:
                     for entry in os.listdir(d):
-                        if not entry.endswith(".nfo"):
-                            return True
-                    return False
+                        full = os.path.join(d, entry)
+                        if entry in _SIDECAR_FILES:
+                            if os.path.isfile(full):
+                                present.append(full)
+                        else:
+                            has_others = True
+                except OSError:
+                    pass
+                return present, has_others
 
-                has_others = await asyncio.to_thread(_has_other_files, dir_path)
-                if not has_others:
-                    await asyncio.to_thread(os.unlink, nfo_path)
-                    logger.info("_cleanup_orphaned_nfo: removed %s", nfo_path)
-            except OSError as exc:
-                logger.debug("_cleanup_orphaned_nfo: error cleaning %s — %s", nfo_path, exc)
+            sidecar_paths, has_others = await asyncio.to_thread(_scan, dir_path)
+            if has_others or not sidecar_paths:
+                return
+
+            for sidecar_path in sidecar_paths:
+                try:
+                    await asyncio.to_thread(os.unlink, sidecar_path)
+                    logger.info("_cleanup_orphaned_nfo: removed %s", sidecar_path)
+                except OSError as exc:
+                    logger.debug(
+                        "_cleanup_orphaned_nfo: error removing %s — %s", sidecar_path, exc
+                    )
+
+        except OSError as exc:
+            logger.debug("_cleanup_orphaned_nfo: error scanning %s — %s", dir_path, exc)
 
     async def _try_remove_empty_dir(self, dir_path: str) -> None:
         """Remove *dir_path* if it is empty and safe to remove.

@@ -31,8 +31,9 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +53,7 @@ from src.core.symlink_manager import (
 )
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
+from src.services.tmdb import TmdbCastMember, TmdbCredits, TmdbCrewMember, TmdbMovieDetail, TmdbShowDetail
 
 # Naming config with date_prefix disabled — used in tests that assert exact
 # path equality so they are not coupled to the timestamp feature.
@@ -1837,95 +1839,211 @@ class TestNfoGeneration:
     # XML builder: movies
     # ------------------------------------------------------------------
 
+    def _make_movie_detail(self, **kwargs: object) -> TmdbMovieDetail:
+        """Create a TmdbMovieDetail with sensible defaults for testing."""
+        defaults: dict[str, object] = {
+            "tmdb_id": 12345,
+            "title": "Test Movie",
+            "original_title": "Test Movie Original",
+            "year": 2024,
+            "overview": "A test movie overview.",
+            "tagline": "Test tagline",
+            "poster_path": "/poster123.jpg",
+            "backdrop_path": "/backdrop123.jpg",
+            "vote_average": 7.5,
+            "runtime": 120,
+            "genres": [{"id": 28, "name": "Action"}, {"id": 53, "name": "Thriller"}],
+            "imdb_id": "tt1234567",
+            "credits": TmdbCredits(
+                cast=[
+                    TmdbCastMember(
+                        name="Actor One", character="Hero", profile_path="/a1.jpg", order=0
+                    ),
+                    TmdbCastMember(
+                        name="Actor Two", character="Villain", profile_path=None, order=1
+                    ),
+                ],
+                crew=[
+                    TmdbCrewMember(name="Director One", job="Director", department="Directing"),
+                ],
+            ),
+        }
+        defaults.update(kwargs)
+        return TmdbMovieDetail(**defaults)  # type: ignore[arg-type]
+
+    def _make_show_detail(self, **kwargs: object) -> TmdbShowDetail:
+        """Create a TmdbShowDetail with sensible defaults for testing."""
+        defaults: dict[str, object] = {
+            "tmdb_id": 67890,
+            "title": "Test Show",
+            "original_title": "Test Show Original",
+            "year": 2023,
+            "overview": "A test show overview.",
+            "tagline": "",
+            "poster_path": "/showposter.jpg",
+            "backdrop_path": "/showbackdrop.jpg",
+            "vote_average": 8.2,
+            "status": "Returning Series",
+            "genres": [{"id": 18, "name": "Drama"}],
+            "imdb_id": "tt7654321",
+            "tvdb_id": 99999,
+            "credits": TmdbCredits(
+                cast=[
+                    TmdbCastMember(
+                        name="Show Actor", character="Lead", profile_path="/sa.jpg", order=0
+                    ),
+                ],
+                crew=[],
+            ),
+        }
+        defaults.update(kwargs)
+        return TmdbShowDetail(**defaults)  # type: ignore[arg-type]
+
     def test_movie_nfo_xml_content(self) -> None:
-        """_build_nfo_xml('movie') produces IDs only — no title/year (Jellyfin priority issue)."""
+        """_build_movie_nfo_xml produces rich metadata including title, year, genres, cast."""
         import xml.etree.ElementTree as ET
 
-        item = self._make_movie_item()
+        detail = self._make_movie_detail()
         manager = SymlinkManager()
-        xml_str = manager._build_nfo_xml("movie", item)
+        xml_str = manager._build_movie_nfo_xml(detail)
 
         assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
         assert root.tag == "movie"
-        # No title/year — Jellyfin gives NFO priority over remote providers,
-        # so including sparse metadata prevents full TMDB fetch.
-        assert root.findtext("title") is None
-        assert root.findtext("year") is None
 
+        # Rich metadata fields
+        assert root.findtext("title") == "Test Movie"
+        assert root.findtext("originaltitle") == "Test Movie Original"
+        assert root.findtext("year") == "2024"
+        assert root.findtext("plot") == "A test movie overview."
+        assert root.findtext("tagline") == "Test tagline"
+        assert root.findtext("runtime") == "120"
+        assert root.findtext("rating") == "7.5"
+
+        # Image URLs use full-resolution for compatibility
+        thumb = root.find("thumb")
+        assert thumb is not None
+        assert thumb.get("aspect") == "poster"
+        assert thumb.text == "https://image.tmdb.org/t/p/original/poster123.jpg"
+        fanart_el = root.find("fanart")
+        assert fanart_el is not None
+        assert fanart_el.find("thumb").text == "https://image.tmdb.org/t/p/original/backdrop123.jpg"
+
+        # Genres
+        genre_names = [el.text for el in root.findall("genre")]
+        assert "Action" in genre_names
+        assert "Thriller" in genre_names
+
+        # uniqueid elements
         uid_elements = root.findall("uniqueid")
         uid_by_type = {el.get("type"): el.text for el in uid_elements}
         assert uid_by_type.get("tmdb") == "12345"
         assert uid_by_type.get("imdb") == "tt1234567"
-        # TMDB uniqueid must have default="true" for Jellyfin/Kodi identification
         tmdb_el = [el for el in uid_elements if el.get("type") == "tmdb"][0]
         assert tmdb_el.get("default") == "true"
-        # IMDB should NOT have default when TMDB is present
         imdb_el = [el for el in uid_elements if el.get("type") == "imdb"][0]
         assert imdb_el.get("default") is None
-        # Legacy tags for broader Jellyfin/Kodi compatibility
         assert root.findtext("tmdbid") == "12345"
         assert root.findtext("imdbid") == "tt1234567"
+
+        # Director and cast
+        assert root.findtext("director") == "Director One"
+        actor_els = root.findall("actor")
+        assert len(actor_els) == 2
+        assert actor_els[0].findtext("name") == "Actor One"
+        assert actor_els[0].findtext("role") == "Hero"
+        assert actor_els[0].findtext("thumb") == "https://image.tmdb.org/t/p/w185/a1.jpg"
+        # Actor with no profile_path should not have a <thumb> child
+        assert actor_els[1].find("thumb") is None
 
     # ------------------------------------------------------------------
     # XML builder: shows
     # ------------------------------------------------------------------
 
     def test_tvshow_nfo_xml_content(self) -> None:
-        """_build_nfo_xml('tvshow') produces IDs only — no title/year."""
+        """_build_show_nfo_xml produces rich metadata including status, tvdb_id, cast."""
         import xml.etree.ElementTree as ET
 
-        item = self._make_show_item()
+        detail = self._make_show_detail()
         manager = SymlinkManager()
-        xml_str = manager._build_nfo_xml("tvshow", item)
+        xml_str = manager._build_show_nfo_xml(detail)
 
         assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
         assert root.tag == "tvshow"
-        assert root.findtext("title") is None
-        assert root.findtext("year") is None
+
+        assert root.findtext("title") == "Test Show"
+        assert root.findtext("originaltitle") == "Test Show Original"
+        assert root.findtext("year") == "2023"
+        assert root.findtext("plot") == "A test show overview."
+        assert root.findtext("status") == "Returning Series"
+        assert root.findtext("rating") == "8.2"
+        # Empty tagline should be omitted
+        assert root.findtext("tagline") is None
+        # Shows have no <runtime> element
+        assert root.findtext("runtime") is None
 
         uid_elements = root.findall("uniqueid")
         uid_by_type = {el.get("type"): el.text for el in uid_elements}
         assert uid_by_type.get("tmdb") == "67890"
         assert uid_by_type.get("imdb") == "tt7654321"
+        assert uid_by_type.get("tvdb") == "99999"
         tmdb_el = [el for el in uid_elements if el.get("type") == "tmdb"][0]
         assert tmdb_el.get("default") == "true"
+        assert root.findtext("tvdbid") == "99999"
 
     # ------------------------------------------------------------------
-    # Missing IDs: no <uniqueid> elements produced
+    # Optional field omission: empty/None values produce no elements
     # ------------------------------------------------------------------
 
-    def test_nfo_skips_missing_ids(self) -> None:
-        """When tmdb_id and imdb_id are both absent, no <uniqueid> elements are emitted."""
+    def test_nfo_skips_empty_fields(self) -> None:
+        """Fields that are None/empty are omitted from the NFO XML entirely."""
         import xml.etree.ElementTree as ET
 
-        item = self._make_movie_item(tmdb_id=None, imdb_id=None)
+        detail = self._make_movie_detail(
+            original_title=None,
+            tagline="",
+            overview="",
+            runtime=None,
+            vote_average=0.0,
+            genres=[],
+            imdb_id=None,
+            poster_path=None,
+            backdrop_path=None,
+            credits=None,
+        )
         manager = SymlinkManager()
-        xml_str = manager._build_nfo_xml("movie", item)
+        xml_str = manager._build_movie_nfo_xml(detail)
 
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
-        assert root.findall("uniqueid") == []
-        assert root.findtext("tmdbid") is None
+        assert root.findtext("originaltitle") is None
+        assert root.findtext("tagline") is None
+        assert root.findtext("plot") is None
+        assert root.findtext("runtime") is None
+        assert root.findtext("rating") is None
+        assert root.findall("genre") == []
         assert root.findtext("imdbid") is None
+        assert root.find("thumb") is None
+        assert root.find("fanart") is None
+        assert root.findall("director") == []
+        assert root.findall("actor") == []
+        # TMDB uniqueid is always present since tmdb_id is required
+        assert root.findtext("tmdbid") == "12345"
 
-    def test_nfo_imdb_default_when_no_tmdb(self) -> None:
-        """When tmdb_id is absent, IMDB uniqueid gets default='true'."""
+    def test_nfo_imdb_absent_when_no_imdb_id(self) -> None:
+        """When imdb_id is absent from TMDB detail, no IMDB uniqueid is emitted."""
         import xml.etree.ElementTree as ET
 
-        item = self._make_movie_item(tmdb_id=None, imdb_id="tt9999999")
+        detail = self._make_movie_detail(imdb_id=None)
         manager = SymlinkManager()
-        xml_str = manager._build_nfo_xml("movie", item)
+        xml_str = manager._build_movie_nfo_xml(detail)
 
         root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
         uid_elements = root.findall("uniqueid")
         assert len(uid_elements) == 1
-        assert uid_elements[0].get("type") == "imdb"
+        assert uid_elements[0].get("type") == "tmdb"
         assert uid_elements[0].get("default") == "true"
-        assert uid_elements[0].text == "tt9999999"
-        # Legacy tag present
-        assert root.findtext("imdbid") == "tt9999999"
-        assert root.findtext("tmdbid") is None
+        assert root.findtext("imdbid") is None
 
     # ------------------------------------------------------------------
     # generate_nfo disabled: _write_nfo_sidecar does nothing
@@ -1965,3 +2083,284 @@ class TestNfoGeneration:
             mock_settings.symlink_naming = naming_cfg
             # Must not raise — OSError is swallowed with a warning
             await manager._write_nfo_sidecar(item, target_path)
+
+    # ------------------------------------------------------------------
+    # _download_tmdb_image tests
+    # ------------------------------------------------------------------
+
+    async def test_download_image_skips_when_exists(self, tmp_path: Path) -> None:
+        """_download_tmdb_image returns early without any HTTP call when dest already exists."""
+        dest = tmp_path / "poster.jpg"
+        dest.write_bytes(b"existing image data")
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        manager = SymlinkManager()
+
+        await manager._download_tmdb_image("/poster123.jpg", str(dest), client=mock_client)
+
+        # File content is unchanged and no HTTP call was issued
+        assert dest.read_bytes() == b"existing image data"
+        mock_client.get.assert_not_called()
+
+    async def test_download_image_success(self, tmp_path: Path) -> None:
+        """_download_tmdb_image fetches image bytes and writes them atomically."""
+        dest = tmp_path / "poster.jpg"
+        fake_image = b"\x89PNG\r\n fake image bytes"
+
+        mock_response = MagicMock()
+        mock_response.content = fake_image
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        manager = SymlinkManager()
+        await manager._download_tmdb_image("/poster123.jpg", str(dest), size="w500", client=mock_client)
+
+        assert dest.exists()
+        assert dest.read_bytes() == fake_image
+        mock_client.get.assert_awaited_once()
+
+    async def test_download_image_timeout_non_fatal(self, tmp_path: Path) -> None:
+        """A TimeoutException during image download is swallowed; no file is created."""
+        dest = tmp_path / "poster.jpg"
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+
+        manager = SymlinkManager()
+        # Must not raise
+        await manager._download_tmdb_image("/poster123.jpg", str(dest), client=mock_client)
+
+        assert not dest.exists()
+
+    async def test_download_image_http_error_non_fatal(self, tmp_path: Path) -> None:
+        """An HTTP error (e.g. 404) during image download is swallowed; no file is created."""
+        dest = tmp_path / "poster.jpg"
+
+        # Build a minimal HTTPStatusError the way httpx would
+        request = httpx.Request("GET", "https://image.tmdb.org/t/p/w500/poster123.jpg")
+        response = httpx.Response(404, request=request)
+        error = httpx.HTTPStatusError("404 not found", request=request, response=response)
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=MagicMock(
+            raise_for_status=MagicMock(side_effect=error),
+            content=b"",
+        ))
+
+        manager = SymlinkManager()
+        # Must not raise
+        await manager._download_tmdb_image("/poster123.jpg", str(dest), client=mock_client)
+
+        assert not dest.exists()
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: movie happy path
+    # ------------------------------------------------------------------
+
+    async def test_write_nfo_sidecar_movie_happy_path(self, tmp_path: Path) -> None:
+        """_write_nfo_sidecar writes movie.nfo and calls _download_tmdb_image twice."""
+        movie_dir = tmp_path / "movies" / "Test Movie (2024)"
+        movie_dir.mkdir(parents=True)
+        target_path = str(movie_dir / "Test.Movie.2024.mkv")
+
+        item = self._make_movie_item(tmdb_id="12345")
+        detail = self._make_movie_detail()
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_movie_details_full = AsyncMock(return_value=detail)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb), \
+             patch.object(manager, "_download_tmdb_image", new_callable=AsyncMock) as mock_dl:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        nfo_path = movie_dir / "movie.nfo"
+        assert nfo_path.exists(), "movie.nfo was not written"
+        content = nfo_path.read_text()
+        assert "<movie>" in content
+
+        # poster + fanart = 2 calls
+        assert mock_dl.await_count == 2
+        mock_tmdb.get_movie_details_full.assert_awaited_once_with(12345)
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: show directory placement
+    # ------------------------------------------------------------------
+
+    async def test_write_nfo_sidecar_show_directory_placement(self, tmp_path: Path) -> None:
+        """tvshow.nfo is written in the show root, not in the Season XX subdirectory."""
+        show_root = tmp_path / "shows" / "Test Show (2023)"
+        season_dir = show_root / "Season 01"
+        season_dir.mkdir(parents=True)
+        target_path = str(season_dir / "Test.Show.S01E03.mkv")
+
+        item = self._make_show_item(tmdb_id="67890")
+        detail = self._make_show_detail()
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_show_details = AsyncMock(return_value=detail)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb), \
+             patch.object(manager, "_download_tmdb_image", new_callable=AsyncMock):
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        # NFO must be in the show root, not in Season 01
+        assert (show_root / "tvshow.nfo").exists(), "tvshow.nfo missing from show root"
+        assert not (season_dir / "tvshow.nfo").exists(), "tvshow.nfo must not be in Season dir"
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: all sidecar files present → skip TMDB
+    # ------------------------------------------------------------------
+
+    async def test_write_nfo_sidecar_skips_when_all_exist(self, tmp_path: Path) -> None:
+        """_write_nfo_sidecar makes no TMDB call when all three sidecar files exist."""
+        movie_dir = tmp_path / "Test Movie (2024)"
+        movie_dir.mkdir()
+        (movie_dir / "movie.nfo").write_text("<movie/>")
+        (movie_dir / "poster.jpg").write_bytes(b"poster")
+        (movie_dir / "fanart.jpg").write_bytes(b"fanart")
+
+        target_path = str(movie_dir / "movie.mkv")
+        item = self._make_movie_item(tmdb_id="12345")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_movie_details_full = AsyncMock()
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb):
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        mock_tmdb.get_movie_details_full.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: NFO present but images missing → retry images only
+    # ------------------------------------------------------------------
+
+    async def test_write_nfo_sidecar_retries_missing_images(self, tmp_path: Path) -> None:
+        """When movie.nfo exists but images are absent, TMDB is called for image paths."""
+        movie_dir = tmp_path / "Test Movie (2024)"
+        movie_dir.mkdir()
+        (movie_dir / "movie.nfo").write_text("<movie/>")
+        # No poster.jpg or fanart.jpg
+
+        target_path = str(movie_dir / "movie.mkv")
+        item = self._make_movie_item(tmdb_id="12345")
+        detail = self._make_movie_detail()
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_movie_details_full = AsyncMock(return_value=detail)
+
+        nfo_write_count = 0
+        original_nfo = (movie_dir / "movie.nfo").read_text()
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb), \
+             patch.object(manager, "_download_tmdb_image", new_callable=AsyncMock) as mock_dl:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        # TMDB must have been called to get poster/backdrop paths
+        mock_tmdb.get_movie_details_full.assert_awaited_once_with(12345)
+        # Images were downloaded
+        assert mock_dl.await_count == 2
+        # NFO was NOT re-written (file content unchanged)
+        assert (movie_dir / "movie.nfo").read_text() == original_nfo
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: unexpected error → non-fatal
+    # ------------------------------------------------------------------
+
+    async def test_write_nfo_sidecar_unexpected_error_non_fatal(self, tmp_path: Path) -> None:
+        """An unexpected RuntimeError inside _write_nfo_sidecar never propagates."""
+        movie_dir = tmp_path / "Test Movie (2024)"
+        movie_dir.mkdir()
+        target_path = str(movie_dir / "movie.mkv")
+
+        item = self._make_movie_item(tmdb_id="12345")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_movie_details_full = AsyncMock(
+            side_effect=RuntimeError("something unexpected")
+        )
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb):
+            mock_settings.symlink_naming = naming_cfg
+            # Must not raise — caught by the broad except Exception handler
+            await manager._write_nfo_sidecar(item, target_path)
+
+    # ------------------------------------------------------------------
+    # _cleanup_orphaned_nfo: removes all sidecar files when only sidecars remain
+    # ------------------------------------------------------------------
+
+    async def test_cleanup_orphaned_nfo_with_images(self, tmp_path: Path) -> None:
+        """_cleanup_orphaned_nfo removes tvshow.nfo, poster.jpg, fanart.jpg when no other files."""
+        show_dir = tmp_path / "Test Show (2023)"
+        show_dir.mkdir()
+        nfo = show_dir / "tvshow.nfo"
+        poster = show_dir / "poster.jpg"
+        fanart = show_dir / "fanart.jpg"
+        nfo.write_text("<tvshow/>")
+        poster.write_bytes(b"poster data")
+        fanart.write_bytes(b"fanart data")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._cleanup_orphaned_nfo(str(show_dir))
+
+        assert not nfo.exists(), "tvshow.nfo should have been removed"
+        assert not poster.exists(), "poster.jpg should have been removed"
+        assert not fanart.exists(), "fanart.jpg should have been removed"
+
+    # ------------------------------------------------------------------
+    # _cleanup_orphaned_nfo: keeps sidecars when other files are present
+    # ------------------------------------------------------------------
+
+    async def test_cleanup_keeps_sidecars_when_other_files_present(self, tmp_path: Path) -> None:
+        """_cleanup_orphaned_nfo leaves sidecar files alone when other files exist."""
+        season_dir = tmp_path / "Test Show (2023)" / "Season 01"
+        season_dir.mkdir(parents=True)
+        nfo = season_dir / "tvshow.nfo"
+        poster = season_dir / "poster.jpg"
+        fanart = season_dir / "fanart.jpg"
+        symlink_file = season_dir / "Test.Show.S01E01.mkv"
+        nfo.write_text("<tvshow/>")
+        poster.write_bytes(b"poster data")
+        fanart.write_bytes(b"fanart data")
+        symlink_file.write_bytes(b"video content")  # non-sidecar file
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._cleanup_orphaned_nfo(str(season_dir))
+
+        # All sidecar files must remain because a non-sidecar file is present
+        assert nfo.exists(), "tvshow.nfo should NOT have been removed"
+        assert poster.exists(), "poster.jpg should NOT have been removed"
+        assert fanart.exists(), "fanart.jpg should NOT have been removed"
