@@ -39,6 +39,7 @@ from src.services.torrent_parser import ANIME_BARE_DASH_EP_RE as _ANIME_DASH_EP_
 from src.services.torrent_parser import BARE_TRAILING_EP_RE as _BARE_TRAILING_EP_RE
 from src.services.torrent_parser import EPISODE_WORD_RE as _EPISODE_WORD_RE
 from src.services.torrent_parser import NON_EPISODE_NUMBERS as _NON_EPISODE_NUMBERS
+from src.services.torrent_parser import _EPISODE_RE as _SXXEXX_RE
 
 logger = logging.getLogger(__name__)
 
@@ -1433,6 +1434,13 @@ def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, A
     if tv_match:
         season = int(tv_match.group(1))
         episode = int(tv_match.group(2))
+
+    # Fallback: SxxExx regex — PTN fails on 3-digit episode numbers like
+    # S01E001 (puts "E001" in excess).  The regex handles 1-3 digit episodes.
+    if episode is None:
+        sxxexx_match = _SXXEXX_RE.search(os.path.splitext(filename)[0])
+        if sxxexx_match:
+            episode = int(sxxexx_match.group(1))
 
     # Fallback: explicit "Episode XX" keyword (common in anime BluRay releases).
     # e.g. "Attack on Titan - Episode 60 - The Other Side of the Sea.mkv"
