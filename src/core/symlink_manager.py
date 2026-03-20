@@ -848,7 +848,14 @@ class SymlinkManager:
                 poster = os.path.join(nfo_dir, "poster.jpg")
                 fanart = os.path.join(nfo_dir, "fanart.jpg")
                 paths = [nfo_path, poster, fanart]
-                if mt == MediaType.SHOW and season is not None and episode is not None:
+                # For season packs, episode is None on the media_item —
+                # parse it from the target filename instead.
+                eff_episode = episode
+                if mt == MediaType.SHOW and eff_episode is None:
+                    eff_episode = _parse_episode_from_filename_impl(
+                        os.path.basename(tp)
+                    )
+                if mt == MediaType.SHOW and season is not None and eff_episode is not None:
                     ep_nfo = os.path.splitext(tp)[0] + ".nfo"
                     paths.append(ep_nfo)
                 return not all(os.path.exists(p) for p in paths)
@@ -1241,7 +1248,16 @@ class SymlinkManager:
             def _all_exist(*paths: str) -> bool:
                 return all(os.path.exists(p) for p in paths)
 
-            if media_item.media_type == MediaType.SHOW and media_item.season is not None and media_item.episode is not None:
+            # Determine episode number — from media_item for single episodes,
+            # or parsed from the target filename for season packs.
+            effective_season = media_item.season
+            effective_episode = media_item.episode
+            if media_item.media_type == MediaType.SHOW and effective_episode is None:
+                effective_episode = _parse_episode_from_filename_impl(
+                    os.path.basename(target_path)
+                )
+
+            if media_item.media_type == MediaType.SHOW and effective_season is not None and effective_episode is not None:
                 episode_nfo_path = os.path.splitext(target_path)[0] + ".nfo"
                 paths_to_check = [nfo_path, poster_path, fanart_path, episode_nfo_path]
             else:
@@ -1292,27 +1308,27 @@ class SymlinkManager:
             if (
                 episode_nfo_path is not None
                 and media_item.media_type == MediaType.SHOW
-                and media_item.season is not None
-                and media_item.episode is not None
+                and effective_season is not None
+                and effective_episode is not None
             ):
                 episode_nfo_exists = await asyncio.to_thread(os.path.exists, episode_nfo_path)
                 if not episode_nfo_exists:
                     # Fetch season detail — benefits from the TMDB cache so all
                     # episodes of the same season share a single API call.
                     season_detail: TmdbSeasonDetail | None = (
-                        await _tmdb_client.get_season_details(tmdb_id, media_item.season)
+                        await _tmdb_client.get_season_details(tmdb_id, effective_season)
                     )
                     # Find the matching episode from the season response.
                     ep_info: TmdbEpisodeInfo | None = None
                     if season_detail is not None:
                         for ep in season_detail.episodes:
-                            if ep.episode_number == media_item.episode:
+                            if ep.episode_number == effective_episode:
                                 ep_info = ep
                                 break
                     episode_nfo_content = self._build_episode_nfo_xml(
                         show_title=media_item.title,
-                        season=media_item.season,
-                        episode=media_item.episode,
+                        season=effective_season,
+                        episode=effective_episode,
                         episode_info=ep_info,
                     )
                     await asyncio.to_thread(_write_text, episode_nfo_path, episode_nfo_content)
