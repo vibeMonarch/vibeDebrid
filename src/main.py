@@ -622,16 +622,41 @@ async def _job_queue_processor() -> None:
 
                     # Filter out sample files and files with no parsed episode
                     if matches:
-                        matches = [
+                        filtered = [
                             m for m in matches
                             if m.parsed_episode is not None
                             and not os.path.basename(m.filepath).lower().startswith("sample")
                         ]
-                        if not matches:
-                            logger.warning(
-                                "CHECKING season pack id=%d: no valid episode files after filtering",
-                                item.id,
+                        if not filtered and matches:
+                            # All files lack parsed_episode — trigger a targeted
+                            # re-scan so updated parser fallbacks (e.g. 3-digit
+                            # S01E001 episodes) can fill in the episode numbers.
+                            logger.info(
+                                "CHECKING season pack id=%d: %d files found but none "
+                                "have parsed_episode, triggering re-scan",
+                                item.id, len(matches),
                             )
+                            torrent = await _find_torrent_for_item(session, item)
+                            if torrent and torrent.filename:
+                                rescan = await mount_scanner.scan_directory(session, torrent.filename)
+                                if rescan.files_indexed > 0:
+                                    matches = await mount_scanner.lookup(
+                                        session,
+                                        title=item.title,
+                                        season=item.season,
+                                        episode=None,
+                                    )
+                                    filtered = [
+                                        m for m in matches
+                                        if m.parsed_episode is not None
+                                        and not os.path.basename(m.filepath).lower().startswith("sample")
+                                    ]
+                            if not filtered:
+                                logger.warning(
+                                    "CHECKING season pack id=%d: no valid episode files after filtering",
+                                    item.id,
+                                )
+                        matches = filtered
 
                     if not matches:
                         timeout_threshold = datetime.now(timezone.utc) - timedelta(
