@@ -2364,3 +2364,483 @@ class TestNfoGeneration:
         assert nfo.exists(), "tvshow.nfo should NOT have been removed"
         assert poster.exists(), "poster.jpg should NOT have been removed"
         assert fanart.exists(), "fanart.jpg should NOT have been removed"
+
+    # ------------------------------------------------------------------
+    # Episode NFO XML builder (2a, 2b)
+    # ------------------------------------------------------------------
+
+    def test_episode_nfo_xml_content(self) -> None:
+        """_build_episode_nfo_xml with full TmdbEpisodeInfo produces expected XML."""
+        import xml.etree.ElementTree as ET
+
+        from src.services.tmdb import TmdbEpisodeInfo
+
+        ep_info = TmdbEpisodeInfo(
+            episode_number=3,
+            name="Test Episode Title",
+            air_date="2023-06-15",
+            overview="A compelling episode overview.",
+            still_path="/still303.jpg",
+        )
+
+        manager = SymlinkManager()
+        xml_str = manager._build_episode_nfo_xml(
+            show_title="Generic Show",
+            season=1,
+            episode=3,
+            episode_info=ep_info,
+        )
+
+        assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
+        root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
+
+        # Root element
+        assert root.tag == "episodedetails"
+
+        # Required fields from episode_info
+        assert root.findtext("title") == "Test Episode Title"
+        assert root.findtext("showtitle") == "Generic Show"
+        assert root.findtext("season") == "1"
+        assert root.findtext("episode") == "3"
+        assert root.findtext("plot") == "A compelling episode overview."
+        assert root.findtext("aired") == "2023-06-15"
+
+        # Still image as <thumb>
+        thumb = root.find("thumb")
+        assert thumb is not None
+        assert thumb.text == "https://image.tmdb.org/t/p/w500/still303.jpg"
+
+    def test_episode_nfo_minimal_without_info(self) -> None:
+        """_build_episode_nfo_xml with episode_info=None produces minimal output."""
+        import xml.etree.ElementTree as ET
+
+        manager = SymlinkManager()
+        xml_str = manager._build_episode_nfo_xml(
+            show_title="Generic Show",
+            season=2,
+            episode=7,
+            episode_info=None,
+        )
+
+        root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
+        assert root.tag == "episodedetails"
+
+        # Minimal required fields
+        assert root.findtext("showtitle") == "Generic Show"
+        assert root.findtext("season") == "2"
+        assert root.findtext("episode") == "7"
+        # title must still be present (generic fallback)
+        assert root.findtext("title") is not None
+        assert root.findtext("title") != ""
+
+        # These fields must NOT appear when episode_info is None
+        assert root.findtext("plot") is None
+        assert root.findtext("aired") is None
+        assert root.find("thumb") is None
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: creates episode NFO alongside symlink (2c, 2d)
+    # ------------------------------------------------------------------
+
+    async def test_write_nfo_sidecar_creates_episode_nfo(self, tmp_path: Path) -> None:
+        """_write_nfo_sidecar writes tvshow.nfo in show root and episode.nfo in season dir."""
+        from src.services.tmdb import TmdbEpisodeInfo, TmdbSeasonDetail
+
+        show_root = tmp_path / "shows" / "Generic Show (2023)"
+        season_dir = show_root / "Season 01"
+        season_dir.mkdir(parents=True)
+        target_path = str(season_dir / "Generic.Show.S01E03.mkv")
+
+        item = self._make_show_item(tmdb_id="67890", season=1, episode=3)
+        show_detail = self._make_show_detail()
+        season_detail = TmdbSeasonDetail(
+            season_number=1,
+            name="Season 1",
+            episodes=[
+                TmdbEpisodeInfo(
+                    episode_number=3,
+                    name="Third Episode",
+                    air_date="2023-02-15",
+                    overview="The third episode plot.",
+                    still_path="/still_ep3.jpg",
+                ),
+            ],
+        )
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_show_details = AsyncMock(return_value=show_detail)
+        mock_tmdb.get_season_details = AsyncMock(return_value=season_detail)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb), \
+             patch.object(manager, "_download_tmdb_image", new_callable=AsyncMock):
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        # tvshow.nfo must be in show root, not in Season 01
+        assert (show_root / "tvshow.nfo").exists(), "tvshow.nfo missing from show root"
+        assert not (season_dir / "tvshow.nfo").exists(), "tvshow.nfo must not be in Season dir"
+
+        # Episode NFO must be alongside the symlink (same stem, .nfo extension)
+        expected_ep_nfo = season_dir / "Generic.Show.S01E03.nfo"
+        assert expected_ep_nfo.exists(), f"episode NFO not found at {expected_ep_nfo}"
+
+        # Episode NFO must contain episode-specific data
+        ep_nfo_content = expected_ep_nfo.read_text()
+        assert "Third Episode" in ep_nfo_content
+        assert "2023-02-15" in ep_nfo_content
+
+    def test_episode_nfo_path_matches_symlink(self, tmp_path: Path) -> None:
+        """The episode NFO path is the symlink target path with .nfo extension replacing the original."""
+        target_path = str(tmp_path / "Show (2023)" / "Season 01" / "Show.S01E05.mkv")
+        expected_nfo = str(tmp_path / "Show (2023)" / "Season 01" / "Show.S01E05.nfo")
+
+        # The path is constructed by os.path.splitext(target_path)[0] + ".nfo"
+        actual = os.path.splitext(target_path)[0] + ".nfo"
+        assert actual == expected_nfo
+
+    def test_episode_nfo_path_different_extension(self, tmp_path: Path) -> None:
+        """Episode NFO path is correct when source file is .mp4 instead of .mkv."""
+        target_path = str(tmp_path / "Show (2023)" / "Season 02" / "Show.S02E01.mp4")
+        expected_nfo = str(tmp_path / "Show (2023)" / "Season 02" / "Show.S02E01.nfo")
+
+        actual = os.path.splitext(target_path)[0] + ".nfo"
+        assert actual == expected_nfo
+
+    # ------------------------------------------------------------------
+    # _write_nfo_sidecar: all-exist check includes episode NFO (2e)
+    # ------------------------------------------------------------------
+
+    async def test_all_exist_includes_episode_nfo(self, tmp_path: Path) -> None:
+        """_write_nfo_sidecar is called when episode NFO is missing, skipped when all present."""
+        from src.services.tmdb import TmdbEpisodeInfo, TmdbSeasonDetail
+
+        show_root = tmp_path / "shows" / "Generic Show (2023)"
+        season_dir = show_root / "Season 01"
+        season_dir.mkdir(parents=True)
+        target_path = str(season_dir / "Generic.Show.S01E04.mkv")
+
+        # Create tvshow.nfo, poster, fanart — but NOT the episode NFO
+        (show_root / "tvshow.nfo").write_text("<tvshow/>")
+        (show_root / "poster.jpg").write_bytes(b"poster")
+        (show_root / "fanart.jpg").write_bytes(b"fanart")
+
+        item = self._make_show_item(tmdb_id="67890", season=1, episode=4)
+        show_detail = self._make_show_detail()
+        season_detail = TmdbSeasonDetail(
+            season_number=1,
+            name="Season 1",
+            episodes=[
+                TmdbEpisodeInfo(
+                    episode_number=4,
+                    name="Fourth Episode",
+                    air_date="2023-03-01",
+                    overview="Fourth episode plot.",
+                    still_path=None,
+                ),
+            ],
+        )
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        mock_tmdb = MagicMock()
+        mock_tmdb.get_show_details = AsyncMock(return_value=show_detail)
+        mock_tmdb.get_season_details = AsyncMock(return_value=season_detail)
+
+        # First call: episode NFO missing → TMDB is called
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb), \
+             patch.object(manager, "_download_tmdb_image", new_callable=AsyncMock):
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        ep_nfo_path = season_dir / "Generic.Show.S01E04.nfo"
+        assert ep_nfo_path.exists(), "episode NFO should have been created"
+        mock_tmdb.get_show_details.assert_awaited_once()
+
+        # Second call: all files present → TMDB must NOT be called again
+        mock_tmdb.get_show_details.reset_mock()
+        mock_tmdb.get_season_details.reset_mock()
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("src.core.symlink_manager._tmdb_client", mock_tmdb), \
+             patch.object(manager, "_download_tmdb_image", new_callable=AsyncMock):
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        mock_tmdb.get_show_details.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Group 16: TestSidecarRetry
+# ---------------------------------------------------------------------------
+
+
+class TestSidecarRetry:
+    """Tests for SymlinkManager.retry_missing_sidecars."""
+
+    def _make_show_item_with_tmdb(
+        self, session: None = None, **kwargs: object
+    ) -> MediaItem:
+        """Return an unsaved show MediaItem with tmdb_id and season/episode set."""
+        defaults: dict[str, object] = {
+            "imdb_id": "tt7654321",
+            "title": "Generic Retry Show",
+            "year": 2023,
+            "media_type": MediaType.SHOW,
+            "season": 1,
+            "episode": 2,
+            "state": QueueState.COMPLETE,
+            "retry_count": 0,
+            "tmdb_id": "99999",
+        }
+        defaults.update(kwargs)
+        return MediaItem(**defaults)  # type: ignore[arg-type]
+
+    # ------------------------------------------------------------------
+    # a) Disabled: returns 0 without DB query
+    # ------------------------------------------------------------------
+
+    async def test_retry_skips_when_disabled(self, session: AsyncSession) -> None:
+        """retry_missing_sidecars returns 0 immediately when generate_nfo=False."""
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=False)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            result = await manager.retry_missing_sidecars(session)
+
+        assert result == 0
+
+    # ------------------------------------------------------------------
+    # b) Finds and retries items with missing sidecars
+    # ------------------------------------------------------------------
+
+    async def test_retry_finds_missing_sidecars(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """retry_missing_sidecars calls _write_nfo_sidecar for items without sidecar files."""
+        # Create a real MediaItem and Symlink in DB
+        item = self._make_show_item_with_tmdb()
+        session.add(item)
+        await session.flush()
+
+        # Create a real directory structure and a valid symlink target
+        show_root = tmp_path / "Generic Retry Show (2023)"
+        season_dir = show_root / "Season 01"
+        season_dir.mkdir(parents=True)
+        target_path = str(season_dir / "Generic.Retry.Show.S01E02.mkv")
+
+        # Write a minimal source file so the path is valid on disk
+        source_file = tmp_path / "source.mkv"
+        source_file.write_bytes(b"fake video")
+
+        # Create the symlink on disk
+        os.symlink(str(source_file), target_path)
+
+        symlink = Symlink(
+            media_item_id=item.id,
+            source_path=str(source_file),
+            target_path=target_path,
+            valid=True,
+        )
+        session.add(symlink)
+        await session.flush()
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch.object(manager, "_write_nfo_sidecar", new_callable=AsyncMock) as mock_write:
+            mock_settings.symlink_naming = naming_cfg
+            result = await manager.retry_missing_sidecars(session)
+
+        # _write_nfo_sidecar must have been called for the item with missing sidecars
+        assert result >= 1
+        mock_write.assert_awaited()
+
+    # ------------------------------------------------------------------
+    # c) Skips when all sidecar files are present
+    # ------------------------------------------------------------------
+
+    async def test_retry_skips_complete_sidecars(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """retry_missing_sidecars skips items that already have all sidecar files."""
+        item = self._make_show_item_with_tmdb()
+        session.add(item)
+        await session.flush()
+
+        # Create complete directory structure with all sidecar files
+        show_root = tmp_path / "Generic Retry Show (2023)"
+        season_dir = show_root / "Season 01"
+        season_dir.mkdir(parents=True)
+        target_path = str(season_dir / "Generic.Retry.Show.S01E02.mkv")
+
+        # Create source file + symlink
+        source_file = tmp_path / "source_c.mkv"
+        source_file.write_bytes(b"fake video")
+        os.symlink(str(source_file), target_path)
+
+        # Create ALL sidecar files so nothing is missing
+        (show_root / "tvshow.nfo").write_text("<tvshow/>")
+        (show_root / "poster.jpg").write_bytes(b"poster")
+        (show_root / "fanart.jpg").write_bytes(b"fanart")
+        ep_nfo = season_dir / "Generic.Retry.Show.S01E02.nfo"
+        ep_nfo.write_text("<episodedetails/>")
+
+        symlink = Symlink(
+            media_item_id=item.id,
+            source_path=str(source_file),
+            target_path=target_path,
+            valid=True,
+        )
+        session.add(symlink)
+        await session.flush()
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch.object(manager, "_write_nfo_sidecar", new_callable=AsyncMock) as mock_write:
+            mock_settings.symlink_naming = naming_cfg
+            result = await manager.retry_missing_sidecars(session)
+
+        # No retries needed — all sidecar files are present
+        assert result == 0
+        mock_write.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # d) Respects max_retries limit
+    # ------------------------------------------------------------------
+
+    async def test_retry_respects_max_retries(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """retry_missing_sidecars processes at most max_retries items per call."""
+        total_items = 15
+        max_retries = 5
+
+        for i in range(total_items):
+            item = MediaItem(
+                imdb_id=f"tt{9900000 + i}",
+                title=f"Retry Show {i}",
+                year=2023,
+                media_type=MediaType.SHOW,
+                season=1,
+                episode=i + 1,
+                state=QueueState.COMPLETE,
+                retry_count=0,
+                tmdb_id=f"{80000 + i}",
+            )
+            session.add(item)
+            await session.flush()
+
+            # Create a real target dir + symlink for this item
+            show_root = tmp_path / f"Retry Show {i} (2023)"
+            season_dir = show_root / "Season 01"
+            season_dir.mkdir(parents=True)
+            target_path = str(season_dir / f"Retry.Show.{i}.S01E{i+1:02d}.mkv")
+
+            source_file = tmp_path / f"source_{i}.mkv"
+            source_file.write_bytes(b"video")
+            os.symlink(str(source_file), target_path)
+
+            symlink = Symlink(
+                media_item_id=item.id,
+                source_path=str(source_file),
+                target_path=target_path,
+                valid=True,
+            )
+            session.add(symlink)
+            await session.flush()
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch.object(manager, "_write_nfo_sidecar", new_callable=AsyncMock) as mock_write:
+            mock_settings.symlink_naming = naming_cfg
+            result = await manager.retry_missing_sidecars(session, max_retries=max_retries)
+
+        assert result == max_retries
+        assert mock_write.await_count == max_retries
+
+
+# ---------------------------------------------------------------------------
+# Group 17: TestCleanupEpisodeNfo
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupEpisodeNfo:
+    """Tests for _cleanup_orphaned_nfo with episode NFO files."""
+
+    async def test_cleanup_removes_episode_nfo(self, tmp_path: Path) -> None:
+        """_cleanup_orphaned_nfo removes episode .nfo files along with standard sidecars."""
+        show_dir = tmp_path / "Generic Show (2023)"
+        show_dir.mkdir()
+
+        # Create standard sidecars
+        (show_dir / "tvshow.nfo").write_text("<tvshow/>")
+        (show_dir / "poster.jpg").write_bytes(b"poster")
+        (show_dir / "fanart.jpg").write_bytes(b"fanart")
+
+        # Create an episode NFO (a .nfo file that is not tvshow.nfo/movie.nfo)
+        ep_nfo = show_dir / "Show.S01E01.nfo"
+        ep_nfo.write_text("<episodedetails/>")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._cleanup_orphaned_nfo(str(show_dir))
+
+        # All sidecar files including the episode NFO must be removed
+        assert not (show_dir / "tvshow.nfo").exists(), "tvshow.nfo should be removed"
+        assert not (show_dir / "poster.jpg").exists(), "poster.jpg should be removed"
+        assert not (show_dir / "fanart.jpg").exists(), "fanart.jpg should be removed"
+        assert not ep_nfo.exists(), "episode NFO should be removed"
+
+    async def test_cleanup_episode_nfo_kept_when_video_present(self, tmp_path: Path) -> None:
+        """_cleanup_orphaned_nfo does NOT remove sidecars when a video file is also present."""
+        season_dir = tmp_path / "Generic Show (2023)" / "Season 01"
+        season_dir.mkdir(parents=True)
+
+        # Create sidecars including episode NFO
+        ep_nfo = season_dir / "Show.S01E01.nfo"
+        ep_nfo.write_text("<episodedetails/>")
+
+        # A video file counts as a non-sidecar file — cleanup must abort
+        (season_dir / "Show.S01E01.mkv").write_bytes(b"video data")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._cleanup_orphaned_nfo(str(season_dir))
+
+        # Episode NFO must remain since there is also a video file
+        assert ep_nfo.exists(), "episode NFO must be kept when video file is present"
+
+    async def test_cleanup_disabled_when_generate_nfo_false(self, tmp_path: Path) -> None:
+        """_cleanup_orphaned_nfo is a no-op when generate_nfo=False."""
+        show_dir = tmp_path / "Generic Show (2023)"
+        show_dir.mkdir()
+        nfo = show_dir / "tvshow.nfo"
+        nfo.write_text("<tvshow/>")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=False)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._cleanup_orphaned_nfo(str(show_dir))
+
+        # NFO must remain — cleanup is disabled
+        assert nfo.exists(), "NFO must not be removed when generate_nfo=False"

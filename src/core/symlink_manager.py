@@ -37,13 +37,14 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 import httpx
 
 from src.config import settings
 from src.models.media_item import MediaItem, MediaType
 from src.models.symlink import Symlink
-from src.services.tmdb import TmdbClient, TmdbMovieDetail, TmdbShowDetail
+from src.services.tmdb import TmdbClient, TmdbEpisodeInfo, TmdbMovieDetail, TmdbSeasonDetail, TmdbShowDetail
 from src.services.torrent_parser import parse_episode_from_filename as _parse_episode_from_filename_impl
 
 logger = logging.getLogger(__name__)
@@ -787,6 +788,90 @@ class SymlinkManager:
         )
         return list(result.scalars().all())
 
+    async def retry_missing_sidecars(
+        self, session: AsyncSession, max_retries: int = 10
+    ) -> int:
+        """Retry NFO/image generation for symlinks with missing sidecar files.
+
+        Processes up to *max_retries* items per call to avoid TMDB rate limits.
+        Called periodically by the scheduler.
+
+        Args:
+            session: Caller-managed async database session.
+            max_retries: Maximum number of items to process per invocation.
+
+        Returns:
+            The number of items for which sidecar generation was attempted.
+        """
+        if not settings.symlink_naming.generate_nfo:
+            return 0
+
+        # Fetch all valid symlinks with their media_items eagerly loaded
+        # to avoid N+1 queries.
+        result = await session.execute(
+            select(Symlink)
+            .options(selectinload(Symlink.media_item))
+            .where(Symlink.valid.is_(True))
+        )
+        symlinks = list(result.scalars().all())
+
+        retried = 0
+        for symlink in symlinks:
+            if retried >= max_retries:
+                break
+
+            media_item = symlink.media_item
+            if media_item is None or not media_item.tmdb_id:
+                continue
+
+            target_path = symlink.target_path
+            target_dir = os.path.dirname(target_path)
+
+            def _check_missing(
+                mt: str,
+                td: str,
+                tp: str,
+                season: int | None,
+                episode: int | None,
+            ) -> bool:
+                """Return True when any sidecar file for this symlink is absent."""
+                if mt == MediaType.MOVIE:
+                    nfo_dir = td
+                    nfo_path = os.path.join(nfo_dir, "movie.nfo")
+                else:
+                    nfo_dir = os.path.dirname(td)
+                    nfo_path = os.path.join(nfo_dir, "tvshow.nfo")
+                poster = os.path.join(nfo_dir, "poster.jpg")
+                fanart = os.path.join(nfo_dir, "fanart.jpg")
+                paths = [nfo_path, poster, fanart]
+                if mt == MediaType.SHOW and season is not None and episode is not None:
+                    ep_nfo = os.path.splitext(tp)[0] + ".nfo"
+                    paths.append(ep_nfo)
+                return not all(os.path.exists(p) for p in paths)
+
+            needs_retry = await asyncio.to_thread(
+                _check_missing,
+                media_item.media_type,
+                target_dir,
+                target_path,
+                media_item.season,
+                media_item.episode,
+            )
+            if not needs_retry:
+                continue
+
+            logger.debug(
+                "retry_missing_sidecars: retrying NFO for symlink id=%s target_path=%r",
+                symlink.id,
+                target_path,
+            )
+            await self._write_nfo_sidecar(media_item, target_path)
+            retried += 1
+
+        if retried:
+            logger.info("retry_missing_sidecars: retried %d items", retried)
+        return retried
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -976,6 +1061,61 @@ class SymlinkManager:
             + "\n"
         )
 
+    def _build_episode_nfo_xml(
+        self,
+        show_title: str,
+        season: int,
+        episode: int,
+        episode_info: TmdbEpisodeInfo | None,
+    ) -> str:
+        """Build a Kodi-compatible episode NFO XML string.
+
+        Args:
+            show_title: The TV show title.
+            season: Season number.
+            episode: Episode number.
+            episode_info: Full episode metadata from TMDB, or None when
+                unavailable (cache miss / season fetch failed).  When None,
+                a minimal NFO with only show/season/episode identifiers is
+                written.
+
+        Returns:
+            UTF-8 XML string with ``<episodedetails>`` root element.
+        """
+        root = ET.Element("episodedetails")
+
+        def _sub(tag: str, text: str | int | None) -> None:
+            """Append a child element only when text is non-empty."""
+            if text is None:
+                return
+            s = str(text).strip()
+            if s:
+                ET.SubElement(root, tag).text = s
+
+        if episode_info is not None:
+            _sub("title", episode_info.name or f"Episode {episode}")
+        else:
+            _sub("title", f"Episode {episode}")
+
+        _sub("showtitle", show_title)
+        _sub("season", season)
+        _sub("episode", episode)
+
+        if episode_info is not None:
+            _sub("plot", episode_info.overview)
+            _sub("aired", episode_info.air_date)
+            if episode_info.still_path:
+                ET.SubElement(root, "thumb").text = (
+                    f"{_TMDB_IMAGE_BASE}/w500{episode_info.still_path}"
+                )
+
+        ET.indent(root, space="  ")
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            + ET.tostring(root, encoding="unicode")
+            + "\n"
+        )
+
     async def _download_tmdb_image(
         self,
         image_path: str,
@@ -1047,11 +1187,13 @@ class SymlinkManager:
         For movies, writes ``movie.nfo``, ``poster.jpg``, and ``fanart.jpg``
         in the movie directory.  For shows, writes ``tvshow.nfo``,
         ``poster.jpg``, and ``fanart.jpg`` in the show root directory
-        (parent of the Season XX folder).
+        (parent of the Season XX folder), and also writes a per-episode NFO
+        (same name as the video file but ``.nfo`` extension) in the season
+        directory.
 
-        All three sidecar files are checked independently: if all exist the
-        method returns early with no network I/O.  Writing uses atomic
-        temp-file + rename so a crash mid-write never leaves corrupt files.
+        All sidecar files are checked independently: if all exist the method
+        returns early with no network I/O.  Writing uses atomic temp-file +
+        rename so a crash mid-write never leaves corrupt files.
 
         All failures are caught and logged — this method must never block
         symlink creation.
@@ -1089,13 +1231,20 @@ class SymlinkManager:
             poster_path = os.path.join(nfo_dir, "poster.jpg")
             fanart_path = os.path.join(nfo_dir, "fanart.jpg")
 
-            # Skip only when ALL three sidecar files are already present.
-            # Checking all three means a previous partial write (e.g. images
-            # downloaded but NFO missing, or vice versa) is retried correctly.
+            # Skip only when ALL sidecar files are already present.
+            # For shows with season+episode, also check the episode NFO.
+            # Checking all means a previous partial write is retried correctly.
             def _all_exist(*paths: str) -> bool:
                 return all(os.path.exists(p) for p in paths)
 
-            if await asyncio.to_thread(_all_exist, nfo_path, poster_path, fanart_path):
+            if media_item.media_type == MediaType.SHOW and media_item.season is not None and media_item.episode is not None:
+                episode_nfo_path = os.path.splitext(target_path)[0] + ".nfo"
+                paths_to_check = [nfo_path, poster_path, fanart_path, episode_nfo_path]
+            else:
+                episode_nfo_path = None
+                paths_to_check = [nfo_path, poster_path, fanart_path]
+
+            if await asyncio.to_thread(_all_exist, *paths_to_check):
                 return
 
             # Fetch full TMDB details
@@ -1135,6 +1284,36 @@ class SymlinkManager:
                 await asyncio.to_thread(_write_text, nfo_path, nfo_content)
                 logger.info("_write_nfo_sidecar: wrote %s", nfo_path)
 
+            # Write per-episode NFO for shows with a known season+episode.
+            if (
+                episode_nfo_path is not None
+                and media_item.media_type == MediaType.SHOW
+                and media_item.season is not None
+                and media_item.episode is not None
+            ):
+                episode_nfo_exists = await asyncio.to_thread(os.path.exists, episode_nfo_path)
+                if not episode_nfo_exists:
+                    # Fetch season detail — benefits from the TMDB cache so all
+                    # episodes of the same season share a single API call.
+                    season_detail: TmdbSeasonDetail | None = (
+                        await _tmdb_client.get_season_details(tmdb_id, media_item.season)
+                    )
+                    # Find the matching episode from the season response.
+                    ep_info: TmdbEpisodeInfo | None = None
+                    if season_detail is not None:
+                        for ep in season_detail.episodes:
+                            if ep.episode_number == media_item.episode:
+                                ep_info = ep
+                                break
+                    episode_nfo_content = self._build_episode_nfo_xml(
+                        show_title=media_item.title,
+                        season=media_item.season,
+                        episode=media_item.episode,
+                        episode_info=ep_info,
+                    )
+                    await asyncio.to_thread(_write_text, episode_nfo_path, episode_nfo_content)
+                    logger.info("_write_nfo_sidecar: wrote episode NFO %s", episode_nfo_path)
+
             # Download poster and fanart using a single shared HTTP client to
             # avoid two separate TCP handshakes per item.
             if detail.poster_path or detail.backdrop_path:
@@ -1171,11 +1350,15 @@ class SymlinkManager:
         """Remove sidecar files from dir_path when no non-sidecar files remain.
 
         Sidecar files are: ``movie.nfo``, ``tvshow.nfo``, ``poster.jpg``,
-        ``fanart.jpg``.  They are only deleted when no other (non-sidecar)
-        files exist in the directory.
+        ``fanart.jpg``, and any ``.nfo`` file (episode NFOs).  They are only
+        deleted when no other (non-sidecar) files exist in the directory.
         """
         if not settings.symlink_naming.generate_nfo:
             return
+
+        def _is_sidecar(entry: str) -> bool:
+            """Return True when *entry* is a known sidecar file."""
+            return entry in _SIDECAR_FILES or entry.endswith(".nfo")
 
         try:
             def _scan(d: str) -> tuple[list[str], bool]:
@@ -1185,7 +1368,7 @@ class SymlinkManager:
                 try:
                     for entry in os.listdir(d):
                         full = os.path.join(d, entry)
-                        if entry in _SIDECAR_FILES:
+                        if _is_sidecar(entry):
                             if os.path.isfile(full):
                                 present.append(full)
                         else:

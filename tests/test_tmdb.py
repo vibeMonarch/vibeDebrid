@@ -1571,6 +1571,354 @@ def test_tmdb_search_result_defaults() -> None:
 
 
 # ---------------------------------------------------------------------------
+# TestTmdbCache
+# ---------------------------------------------------------------------------
+
+
+class TestTmdbCache:
+    """Tests for the in-memory TTL cache (_detail_cache, _cache_get, _cache_set)."""
+
+    def setup_method(self) -> None:
+        """Clear the shared cache before every test to avoid cross-test pollution."""
+        from src.services.tmdb import _detail_cache
+        _detail_cache.clear()
+
+    def teardown_method(self) -> None:
+        """Clear the shared cache after every test."""
+        from src.services.tmdb import _detail_cache
+        _detail_cache.clear()
+
+    # ------------------------------------------------------------------
+    # a) Basic get/set round-trip
+    # ------------------------------------------------------------------
+
+    def test_cache_get_set_basic(self) -> None:
+        """set then get returns the same value."""
+        from src.services.tmdb import _cache_get, _cache_set
+
+        key = ("movie_detail", 999)
+        value = {"title": "Test Movie", "year": 2024}
+        _cache_set(key, value)
+        result = _cache_get(key)
+        assert result == value
+
+    def test_cache_get_missing_key_returns_none(self) -> None:
+        """get for a key that was never set returns None."""
+        from src.services.tmdb import _cache_get
+
+        result = _cache_get(("movie_detail", 1111111))
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # b) Expired entry returns None
+    # ------------------------------------------------------------------
+
+    def test_cache_get_expired(self) -> None:
+        """An entry past its TTL is evicted and get returns None."""
+        from unittest.mock import patch
+
+        from src.services.tmdb import _cache_get, _cache_set
+
+        key = ("season_detail", 42, 1)
+        value = {"season": 1, "episodes": []}
+
+        # Set at t=0
+        with patch("src.services.tmdb.time.monotonic", return_value=0.0):
+            _cache_set(key, value)
+
+        # Read at t = TTL + 1 (expired)
+        from src.services.tmdb import _CACHE_TTL
+        with patch("src.services.tmdb.time.monotonic", return_value=float(_CACHE_TTL + 1)):
+            result = _cache_get(key)
+
+        assert result is None
+
+    def test_cache_not_expired_returns_value(self) -> None:
+        """An entry still within TTL is returned correctly."""
+        from unittest.mock import patch
+
+        from src.services.tmdb import _CACHE_TTL, _cache_get, _cache_set
+
+        key = ("season_detail", 43, 2)
+        value = {"season": 2}
+
+        with patch("src.services.tmdb.time.monotonic", return_value=0.0):
+            _cache_set(key, value)
+
+        # Read at t = TTL - 1 (still alive)
+        with patch("src.services.tmdb.time.monotonic", return_value=float(_CACHE_TTL - 1)):
+            result = _cache_get(key)
+
+        assert result == value
+
+    # ------------------------------------------------------------------
+    # c) Eviction when at capacity
+    # ------------------------------------------------------------------
+
+    def test_cache_eviction_on_overflow(self) -> None:
+        """Adding beyond _CACHE_MAX_SIZE evicts the entry with the smallest expire_time."""
+        from unittest.mock import patch
+
+        from src.services.tmdb import _CACHE_MAX_SIZE, _CACHE_TTL, _cache_get, _cache_set, _detail_cache
+
+        # Fill cache to exactly max size, each entry at a different monotonic time
+        # so the oldest (t=0) has the smallest expire_time.
+        for i in range(_CACHE_MAX_SIZE):
+            with patch("src.services.tmdb.time.monotonic", return_value=float(i)):
+                _cache_set(("show_detail", i), f"value_{i}")
+
+        assert len(_detail_cache) == _CACHE_MAX_SIZE
+
+        # The oldest key is ("show_detail", 0) — it was set at t=0, so its
+        # expire_time is _CACHE_TTL + 0, which is the smallest.
+        oldest_key = ("show_detail", 0)
+        assert oldest_key in _detail_cache
+
+        # Add one more entry to trigger eviction.
+        with patch("src.services.tmdb.time.monotonic", return_value=float(_CACHE_MAX_SIZE)):
+            _cache_set(("show_detail", _CACHE_MAX_SIZE), "new_value")
+
+        # Cache should still be at max size
+        assert len(_detail_cache) <= _CACHE_MAX_SIZE
+        # The new entry must be present — read at t=_CACHE_MAX_SIZE (well within TTL)
+        with patch("src.services.tmdb.time.monotonic", return_value=float(_CACHE_MAX_SIZE)):
+            new_val = _cache_get(("show_detail", _CACHE_MAX_SIZE))
+        assert new_val == "new_value"
+        # The oldest entry must have been evicted
+        assert oldest_key not in _detail_cache
+
+    # ------------------------------------------------------------------
+    # d) get_movie_details_full: second call served from cache
+    # ------------------------------------------------------------------
+
+    async def test_movie_detail_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_movie_details_full: second call with same id does not hit the API."""
+        cfg = _make_mock_cfg()
+        mock_settings = MagicMock()
+        mock_settings.tmdb = cfg
+        monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+        monkeypatch.setattr(
+            "src.services.tmdb.get_circuit_breaker",
+            lambda *args, **kwargs: _make_noop_breaker(),
+        )
+
+        movie_data = {
+            "id": 101,
+            "title": "Cache Test Movie",
+            "release_date": "2024-01-01",
+            "overview": "A movie about caching.",
+            "tagline": "",
+            "poster_path": "/poster101.jpg",
+            "backdrop_path": None,
+            "vote_average": 7.0,
+            "runtime": 90,
+            "genres": [],
+            "external_ids": {"imdb_id": "tt0000101"},
+            "original_language": "en",
+            "original_title": "Cache Test Movie",
+        }
+
+        client = TmdbClient()
+        transport = _patch_client(client, default_response=_make_response(200, movie_data))
+
+        first = await client.get_movie_details_full(101)
+        second = await client.get_movie_details_full(101)
+
+        assert first is not None
+        assert second is not None
+        # Only one HTTP request was made; the second call was a cache hit
+        assert len(transport.requests_made) == 1
+        # Both calls return the same object (identity)
+        assert first is second
+
+    # ------------------------------------------------------------------
+    # e) get_show_details: second call served from cache
+    # ------------------------------------------------------------------
+
+    async def test_show_detail_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_show_details: second call with same id does not hit the API."""
+        cfg = _make_mock_cfg()
+        mock_settings = MagicMock()
+        mock_settings.tmdb = cfg
+        monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+        monkeypatch.setattr(
+            "src.services.tmdb.get_circuit_breaker",
+            lambda *args, **kwargs: _make_noop_breaker(),
+        )
+
+        show_data = {
+            "id": 202,
+            "name": "Cache Test Show",
+            "first_air_date": "2023-05-01",
+            "overview": "A show about caching.",
+            "tagline": "",
+            "poster_path": "/showposter202.jpg",
+            "backdrop_path": None,
+            "vote_average": 8.0,
+            "status": "Ended",
+            "number_of_seasons": 1,
+            "seasons": [],
+            "genres": [],
+            "external_ids": {"imdb_id": "tt0000202"},
+            "original_language": "en",
+            "original_name": None,
+            "next_episode_to_air": None,
+            "last_episode_to_air": None,
+            "credits": {},
+        }
+
+        client = TmdbClient()
+        transport = _patch_client(client, default_response=_make_response(200, show_data))
+
+        first = await client.get_show_details(202)
+        second = await client.get_show_details(202)
+
+        assert first is not None
+        assert second is not None
+        assert len(transport.requests_made) == 1
+        assert first is second
+
+    # ------------------------------------------------------------------
+    # f) get_season_details: second call served from cache
+    # ------------------------------------------------------------------
+
+    async def test_season_detail_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_season_details: second call with same (tmdb_id, season) does not hit the API."""
+        cfg = _make_mock_cfg()
+        mock_settings = MagicMock()
+        mock_settings.tmdb = cfg
+        monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+        monkeypatch.setattr(
+            "src.services.tmdb.get_circuit_breaker",
+            lambda *args, **kwargs: _make_noop_breaker(),
+        )
+
+        season_data = {
+            "season_number": 1,
+            "name": "Season 1",
+            "episodes": [
+                {
+                    "episode_number": 1,
+                    "name": "Pilot",
+                    "air_date": "2023-01-01",
+                    "overview": "The first episode.",
+                    "still_path": None,
+                },
+            ],
+        }
+
+        client = TmdbClient()
+        transport = _patch_client(client, default_response=_make_response(200, season_data))
+
+        first = await client.get_season_details(303, 1)
+        second = await client.get_season_details(303, 1)
+
+        assert first is not None
+        assert second is not None
+        assert len(transport.requests_made) == 1
+        assert first is second
+
+    # ------------------------------------------------------------------
+    # g) None result is not cached
+    # ------------------------------------------------------------------
+
+    async def test_cache_miss_on_none_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the API returns None (error), the result is NOT cached; next call retries the API."""
+        cfg = _make_mock_cfg()
+        mock_settings = MagicMock()
+        mock_settings.tmdb = cfg
+        monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+        monkeypatch.setattr(
+            "src.services.tmdb.get_circuit_breaker",
+            lambda *args, **kwargs: _make_noop_breaker(),
+        )
+
+        # First call: server error → get_movie_details_full returns None
+        error_resp = _make_response(500, {"status_message": "Internal Server Error"})
+        client = TmdbClient()
+        transport = _patch_client(client, [error_resp])
+
+        first = await client.get_movie_details_full(404)
+        assert first is None
+
+        # Second call should hit the API again (not return a cached None)
+        movie_data = {
+            "id": 404,
+            "title": "Recovered Movie",
+            "release_date": "2024-06-01",
+            "overview": "",
+            "tagline": "",
+            "poster_path": None,
+            "backdrop_path": None,
+            "vote_average": 6.0,
+            "runtime": 100,
+            "genres": [],
+            "external_ids": {},
+            "original_language": "en",
+            "original_title": "Recovered Movie",
+        }
+        # Re-configure the transport with a success response
+        success_resp = _make_response(200, movie_data)
+        _patch_client(client, [success_resp])
+
+        second = await client.get_movie_details_full(404)
+        assert second is not None
+        assert second.title == "Recovered Movie"
+
+    # ------------------------------------------------------------------
+    # Different tmdb_ids do NOT share cache entries
+    # ------------------------------------------------------------------
+
+    async def test_different_ids_have_separate_cache_entries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two different tmdb_ids get separate cache entries (no collision)."""
+        cfg = _make_mock_cfg()
+        mock_settings = MagicMock()
+        mock_settings.tmdb = cfg
+        monkeypatch.setattr("src.services.tmdb.settings", mock_settings)
+        monkeypatch.setattr(
+            "src.services.tmdb.get_circuit_breaker",
+            lambda *args, **kwargs: _make_noop_breaker(),
+        )
+
+        def _make_movie_resp(tmdb_id: int, title: str) -> httpx.Response:
+            return _make_response(200, {
+                "id": tmdb_id,
+                "title": title,
+                "release_date": "2024-01-01",
+                "overview": "",
+                "tagline": "",
+                "poster_path": None,
+                "backdrop_path": None,
+                "vote_average": 7.0,
+                "runtime": 90,
+                "genres": [],
+                "external_ids": {},
+                "original_language": "en",
+                "original_title": title,
+            })
+
+        client = TmdbClient()
+        _patch_client(
+            client,
+            responses_by_url={
+                "/movie/501": _make_movie_resp(501, "Movie Alpha"),
+                "/movie/502": _make_movie_resp(502, "Movie Beta"),
+            },
+        )
+
+        result_501 = await client.get_movie_details_full(501)
+        result_502 = await client.get_movie_details_full(502)
+
+        assert result_501 is not None
+        assert result_502 is not None
+        assert result_501.title == "Movie Alpha"
+        assert result_502.title == "Movie Beta"
+        assert result_501 is not result_502
+
+
+# ---------------------------------------------------------------------------
 # get_top_rated
 # ---------------------------------------------------------------------------
 

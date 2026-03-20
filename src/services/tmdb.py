@@ -16,6 +16,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -25,6 +26,37 @@ from src.config import settings
 from src.services.http_client import CircuitOpenError, get_circuit_breaker, get_client
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# In-memory TTL cache for TMDB detail responses.
+# Keys are (method_name, tmdb_id[, season_number]), values are (expire_time, result).
+# ---------------------------------------------------------------------------
+
+_detail_cache: dict[tuple, tuple[float, Any]] = {}
+_CACHE_TTL = 7200  # 2 hours
+_CACHE_MAX_SIZE = 500
+
+
+def _cache_get(key: tuple) -> Any | None:
+    """Return cached value if present and not expired, else None."""
+    entry = _detail_cache.get(key)
+    if entry is None:
+        return None
+    expire_time, value = entry
+    if time.monotonic() > expire_time:
+        _detail_cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: tuple, value: Any) -> None:
+    """Store a value in the cache with TTL. Evict oldest entry if at capacity."""
+    if len(_detail_cache) >= _CACHE_MAX_SIZE:
+        # Evict the entry closest to expiry (smallest expire_time)
+        oldest_key = min(_detail_cache, key=lambda k: _detail_cache[k][0])
+        _detail_cache.pop(oldest_key, None)
+    _detail_cache[key] = (time.monotonic() + _CACHE_TTL, value)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +190,7 @@ class TmdbEpisodeInfo(BaseModel):
     name: str = ""
     air_date: str | None = None
     overview: str = ""
+    still_path: str | None = None  # TMDB episode still image path
 
 
 class TmdbSeasonDetail(BaseModel):
@@ -927,6 +960,11 @@ class TmdbClient:
         if not self._check_configured("get_show_details"):
             return None
 
+        cache_key = ("show_detail", tmdb_id)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         breaker = get_circuit_breaker("tmdb")
         try:
             await breaker.before_request()
@@ -1066,6 +1104,7 @@ class TmdbClient:
             "tmdb.get_show_details: tmdb_id=%d title=%r seasons=%d imdb_id=%s",
             tmdb_id, title, len(seasons), imdb_id,
         )
+        _cache_set(cache_key, result)
         return result
 
     async def find_by_imdb_id(self, imdb_id: str) -> dict[str, Any] | None:
@@ -1339,6 +1378,11 @@ class TmdbClient:
         if not self._check_configured("get_season_details"):
             return None
 
+        cache_key = ("season_detail", tmdb_id, season_number)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         breaker = get_circuit_breaker("tmdb")
         try:
             await breaker.before_request()
@@ -1397,6 +1441,7 @@ class TmdbClient:
                 name=ep.get("name", ""),
                 air_date=ep.get("air_date") or None,
                 overview=ep.get("overview", ""),
+                still_path=ep.get("still_path") or None,
             ))
 
         result = TmdbSeasonDetail(
@@ -1409,6 +1454,7 @@ class TmdbClient:
             "tmdb.get_season_details: tmdb_id=%d season=%d episodes=%d",
             tmdb_id, season_number, len(episodes),
         )
+        _cache_set(cache_key, result)
         return result
 
 
@@ -1426,6 +1472,11 @@ class TmdbClient:
         """
         if not self._check_configured("get_movie_details_full"):
             return None
+
+        cache_key = ("movie_detail", tmdb_id)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
 
         breaker = get_circuit_breaker("tmdb")
         try:
@@ -1549,6 +1600,7 @@ class TmdbClient:
             "tmdb.get_movie_details_full: tmdb_id=%d title=%r imdb_id=%s runtime=%s",
             tmdb_id, title, imdb_id, runtime,
         )
+        _cache_set(cache_key, result)
         return result
 
 
