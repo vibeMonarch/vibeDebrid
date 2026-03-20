@@ -889,6 +889,18 @@
               </label>
             </div>
           </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-400" for="sn-generate-nfo">Generate NFO Files</label>
+              <p class="text-xs text-vd-muted">Write NFO metadata files alongside symlinks for Jellyfin, Kodi, and Emby</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer ml-4">
+              <input type="checkbox" id="sn-generate-nfo" class="toggle-input sr-only">
+              <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+              </div>
+            </label>
+          </div>
           <div id="naming-preview" class="bg-vd-bg border border-vd-border rounded-lg p-3 font-mono text-xs text-gray-300 space-y-1"></div>
           <div class="pt-2">
             <button type="button" onclick="saveSection('symlink_naming')"

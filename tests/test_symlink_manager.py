@@ -1793,3 +1793,147 @@ class TestParseEpisodeFromFilenameBarTrailing:
     def test_bare_trailing_dot_separator(self) -> None:
         """'Show.Name.07.mkv' — dot separator before the episode number works."""
         assert _parse_episode_from_filename("Show.Name.07.mkv") == 7
+
+
+# ---------------------------------------------------------------------------
+# Group 15: TestNfoGeneration
+# ---------------------------------------------------------------------------
+
+
+class TestNfoGeneration:
+    """Tests for NFO sidecar XML generation and write logic."""
+
+    def _make_movie_item(self, **kwargs: object) -> MediaItem:
+        """Create an unsaved movie MediaItem with sensible defaults."""
+        defaults: dict[str, object] = {
+            "imdb_id": "tt1234567",
+            "title": "Test Movie",
+            "year": 2024,
+            "media_type": MediaType.MOVIE,
+            "state": QueueState.COMPLETE,
+            "retry_count": 0,
+            "tmdb_id": "12345",
+        }
+        defaults.update(kwargs)
+        return MediaItem(**defaults)  # type: ignore[arg-type]
+
+    def _make_show_item(self, **kwargs: object) -> MediaItem:
+        """Create an unsaved show MediaItem with sensible defaults."""
+        defaults: dict[str, object] = {
+            "imdb_id": "tt7654321",
+            "title": "Test Show",
+            "year": 2023,
+            "media_type": MediaType.SHOW,
+            "season": 1,
+            "episode": 3,
+            "state": QueueState.COMPLETE,
+            "retry_count": 0,
+            "tmdb_id": "67890",
+        }
+        defaults.update(kwargs)
+        return MediaItem(**defaults)  # type: ignore[arg-type]
+
+    # ------------------------------------------------------------------
+    # XML builder: movies
+    # ------------------------------------------------------------------
+
+    def test_movie_nfo_xml_content(self) -> None:
+        """_build_movie_nfo_xml produces a <movie> root with title, year, uniqueid elements."""
+        import xml.etree.ElementTree as ET
+
+        item = self._make_movie_item()
+        manager = SymlinkManager()
+        xml_str = manager._build_movie_nfo_xml(item)
+
+        assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
+        root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
+        assert root.tag == "movie"
+        assert root.findtext("title") == "Test Movie"
+        assert root.findtext("year") == "2024"
+
+        uid_elements = root.findall("uniqueid")
+        uid_by_type = {el.get("type"): el.text for el in uid_elements}
+        assert uid_by_type.get("tmdb") == "12345"
+        assert uid_by_type.get("imdb") == "tt1234567"
+        # TMDB uniqueid must have default="true" for Jellyfin/Kodi identification
+        tmdb_el = [el for el in uid_elements if el.get("type") == "tmdb"][0]
+        assert tmdb_el.get("default") == "true"
+
+    # ------------------------------------------------------------------
+    # XML builder: shows
+    # ------------------------------------------------------------------
+
+    def test_tvshow_nfo_xml_content(self) -> None:
+        """_build_tvshow_nfo_xml produces a <tvshow> root with title, year, uniqueid elements."""
+        import xml.etree.ElementTree as ET
+
+        item = self._make_show_item()
+        manager = SymlinkManager()
+        xml_str = manager._build_tvshow_nfo_xml(item)
+
+        assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
+        root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
+        assert root.tag == "tvshow"
+        assert root.findtext("title") == "Test Show"
+        assert root.findtext("year") == "2023"
+
+        uid_elements = root.findall("uniqueid")
+        uid_by_type = {el.get("type"): el.text for el in uid_elements}
+        assert uid_by_type.get("tmdb") == "67890"
+        assert uid_by_type.get("imdb") == "tt7654321"
+        tmdb_el = [el for el in uid_elements if el.get("type") == "tmdb"][0]
+        assert tmdb_el.get("default") == "true"
+
+    # ------------------------------------------------------------------
+    # Missing IDs: no <uniqueid> elements produced
+    # ------------------------------------------------------------------
+
+    def test_nfo_skips_missing_ids(self) -> None:
+        """When tmdb_id and imdb_id are both absent, no <uniqueid> elements are emitted."""
+        import xml.etree.ElementTree as ET
+
+        item = self._make_movie_item(tmdb_id=None, imdb_id=None)
+        manager = SymlinkManager()
+        xml_str = manager._build_movie_nfo_xml(item)
+
+        root = ET.fromstring(xml_str.split("\n", 1)[1].strip())
+        assert root.findall("uniqueid") == []
+
+    # ------------------------------------------------------------------
+    # generate_nfo disabled: _write_nfo_sidecar does nothing
+    # ------------------------------------------------------------------
+
+    async def test_nfo_not_created_when_disabled(self, tmp_path: Path) -> None:
+        """When generate_nfo=False (the default), _write_nfo_sidecar writes no file."""
+        item = self._make_movie_item()
+        target_path = str(tmp_path / "Test Movie (2024)" / "movie.mkv")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=False)
+        with patch("src.core.symlink_manager.settings") as mock_settings:
+            mock_settings.symlink_naming = naming_cfg
+            await manager._write_nfo_sidecar(item, target_path)
+
+        # No NFO file should have been written
+        nfo_path = tmp_path / "Test Movie (2024)" / "movie.nfo"
+        assert not nfo_path.exists()
+
+    # ------------------------------------------------------------------
+    # OSError during write: must not propagate
+    # ------------------------------------------------------------------
+
+    async def test_nfo_write_failure_non_fatal(self, tmp_path: Path) -> None:
+        """An OSError during NFO write is caught and does not propagate."""
+        item = self._make_movie_item()
+        movie_dir = tmp_path / "Test Movie (2024)"
+        movie_dir.mkdir()
+        target_path = str(movie_dir / "movie.mkv")
+
+        manager = SymlinkManager()
+        naming_cfg = SymlinkNamingConfig(generate_nfo=True)
+
+        with patch("src.core.symlink_manager.settings") as mock_settings, \
+             patch("asyncio.to_thread", side_effect=OSError("disk full")):
+            mock_settings.symlink_naming = naming_cfg
+            # Must not raise — OSError is swallowed with a warning
+            await manager._write_nfo_sidecar(item, target_path)

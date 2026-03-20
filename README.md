@@ -58,6 +58,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 **Symlink Library**
 - Standard mode: configurable naming with optional date prefix, year, resolution
 - Plex mode: `Title (Year) {tmdb-XXXXX}/Season XX/Title - S01E01.ext`
+- Optional NFO sidecar generation: writes `movie.nfo` / `tvshow.nfo` with TMDB/IMDB IDs alongside symlinks for instant metadata identification in Jellyfin, Kodi, and Emby
 - Periodic symlink health verification
 - All paths are absolute host filesystem paths (safe for multi-container setups)
 
@@ -72,6 +73,12 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - OAuth authentication
 - Automatic library scan after symlink creation
 - Configurable movie/show section IDs
+
+**Jellyfin Integration**
+- API key authentication (no OAuth needed)
+- Automatic library scan after symlink creation
+- Configurable movie/show library IDs
+- Coexists with Plex — both can be enabled simultaneously
 
 **Security**
 - CSRF protection via double-submit cookie pattern on all mutation endpoints
@@ -118,6 +125,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Optional: [OMDb](https://www.omdbapi.com/apikey.aspx) API key (free) for IMDb/Rotten Tomatoes/Metascore ratings on detail pages
 - Optional: [AniDB](https://anidb.net/) for anime title enrichment (romaji/synonym titles for Zilean) and accurate episode counts. Title data is public (no registration). Episode count API requires [client registration](https://anidb.net/user/setting).
 - Optional: Plex Media Server
+- Optional: [Jellyfin](https://jellyfin.org/) Media Server
 
 ## Setup
 
@@ -185,7 +193,8 @@ All settings are configurable via `config.json`, the web UI, or environment vari
 | `retry` | `schedule_minutes`, `max_active_retries`, `dormant_recheck_days` | 7 retries, then weekly |
 | `mount_scanner` | `scan_interval_minutes`, `scan_on_startup` | 15min, scan on start |
 | `plex` | `enabled`, `url`, `token`, `section_ids`, `scan_after_symlink` | disabled |
-| `symlink_naming` | `date_prefix`, `release_year`, `resolution`, `plex_naming` | date prefix on |
+| `jellyfin` | `enabled`, `url`, `api_key`, `movie_library_ids`, `show_library_ids`, `scan_after_symlink` | disabled |
+| `symlink_naming` | `date_prefix`, `release_year`, `resolution`, `plex_naming`, `generate_nfo` | date prefix on, NFO off |
 | `xem` | `enabled`, `cache_hours` | enabled, 24h cache |
 | `omdb` | `enabled`, `api_key`, `cache_hours` | disabled, 7-day cache |
 | `anidb` | `enabled`, `api_enabled`, `client_name`, `refresh_hours`, `title_languages` | disabled, weekly refresh |

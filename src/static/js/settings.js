@@ -130,10 +130,11 @@
 
     // Symlink Naming
     const sn = s.symlink_naming || {};
-    setToggle('sn-plex-naming',  sn.plex_naming === true);
-    setToggle('sn-date-prefix',  sn.date_prefix !== false);
-    setToggle('sn-release-year', sn.release_year !== false);
-    setToggle('sn-resolution',   sn.resolution === true);
+    setToggle('sn-plex-naming',    sn.plex_naming === true);
+    setToggle('sn-date-prefix',    sn.date_prefix !== false);
+    setToggle('sn-release-year',   sn.release_year !== false);
+    setToggle('sn-resolution',     sn.resolution === true);
+    setToggle('sn-generate-nfo',   sn.generate_nfo === true);
     window.updateNamingPreview();
 
     // Server
@@ -328,6 +329,7 @@
             date_prefix:  getToggle('sn-date-prefix'),
             release_year: getToggle('sn-release-year'),
             resolution:   getToggle('sn-resolution'),
+            generate_nfo: getToggle('sn-generate-nfo'),
           }
         };
       }

@@ -180,6 +180,7 @@ class SymlinkNamingConfig(BaseModel):
     release_year: bool = True
     resolution: bool = False
     plex_naming: bool = False  # When True, generate Plex-formatted filenames, overriding above settings
+    generate_nfo: bool = False
 
 
 class SearchConfig(BaseModel):

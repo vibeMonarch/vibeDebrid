@@ -31,6 +31,7 @@ import asyncio
 import logging
 import os
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from pydantic import BaseModel
@@ -482,9 +483,11 @@ class SymlinkManager:
                     target_path,
                     source_path,
                 )
-                return await self._find_or_create_db_record(
+                symlink = await self._find_or_create_db_record(
                     session, media_item, source_path, target_path
                 )
+                await self._write_nfo_sidecar(media_item, target_path)
+                return symlink
             else:
                 # Stale symlink pointing elsewhere — remove it.
                 logger.info(
@@ -506,9 +509,11 @@ class SymlinkManager:
                 "create_symlink: race condition — target already exists target_path=%r",
                 target_path,
             )
-            return await self._find_or_create_db_record(
+            symlink = await self._find_or_create_db_record(
                 session, media_item, source_path, target_path
             )
+            await self._write_nfo_sidecar(media_item, target_path)
+            return symlink
         except OSError as exc:
             raise SymlinkCreationError(target_path, source_path, str(exc)) from exc
 
@@ -528,6 +533,7 @@ class SymlinkManager:
             source_path,
             media_item.id,
         )
+        await self._write_nfo_sidecar(media_item, target_path)
         return symlink
 
     async def verify_symlinks(self, session: AsyncSession) -> VerifyResult:
@@ -724,6 +730,8 @@ class SymlinkManager:
             parent = os.path.dirname(target_path)
             grandparent = os.path.dirname(parent)
 
+            await self._cleanup_orphaned_nfo(parent)
+            await self._cleanup_orphaned_nfo(grandparent)
             await self._try_remove_empty_dir(parent)
             await self._try_remove_empty_dir(grandparent)
 
@@ -812,6 +820,106 @@ class SymlinkManager:
         session.add(symlink)
         await session.flush()
         return symlink
+
+    def _build_movie_nfo_xml(self, media_item: MediaItem) -> str:
+        """Build movie.nfo XML content."""
+        root = ET.Element("movie")
+        ET.SubElement(root, "title").text = media_item.title
+        if media_item.year is not None:
+            ET.SubElement(root, "year").text = str(media_item.year)
+        if media_item.tmdb_id:
+            uid = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
+            uid.text = str(media_item.tmdb_id)
+        if media_item.imdb_id:
+            uid = ET.SubElement(root, "uniqueid", type="imdb")
+            uid.text = media_item.imdb_id
+        ET.indent(root, space="  ")
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(
+            root, encoding="unicode"
+        ) + "\n"
+
+    def _build_tvshow_nfo_xml(self, media_item: MediaItem) -> str:
+        """Build tvshow.nfo XML content."""
+        root = ET.Element("tvshow")
+        ET.SubElement(root, "title").text = media_item.title
+        if media_item.year is not None:
+            ET.SubElement(root, "year").text = str(media_item.year)
+        if media_item.tmdb_id:
+            uid = ET.SubElement(root, "uniqueid", type="tmdb", default="true")
+            uid.text = str(media_item.tmdb_id)
+        if media_item.imdb_id:
+            uid = ET.SubElement(root, "uniqueid", type="imdb")
+            uid.text = media_item.imdb_id
+        ET.indent(root, space="  ")
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(
+            root, encoding="unicode"
+        ) + "\n"
+
+    async def _write_nfo_sidecar(self, media_item: MediaItem, target_path: str) -> None:
+        """Write an NFO sidecar file alongside the symlink if enabled.
+
+        For movies, writes movie.nfo in the movie directory.
+        For shows, writes tvshow.nfo in the show root directory
+        (parent of the Season XX folder).
+        """
+        if not settings.symlink_naming.generate_nfo:
+            return
+
+        try:
+            target_dir = os.path.dirname(target_path)
+
+            if media_item.media_type == MediaType.MOVIE:
+                nfo_path = os.path.join(target_dir, "movie.nfo")
+                nfo_content = self._build_movie_nfo_xml(media_item)
+            else:
+                # target_dir is .../Show Name (2024)/Season 01
+                # show root is .../Show Name (2024)
+                show_root = os.path.dirname(target_dir)
+                nfo_path = os.path.join(show_root, "tvshow.nfo")
+                nfo_content = self._build_tvshow_nfo_xml(media_item)
+
+            exists = await asyncio.to_thread(os.path.exists, nfo_path)
+            if exists:
+                return
+
+            def _write(path: str, content: str) -> None:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+            await asyncio.to_thread(_write, nfo_path, nfo_content)
+            logger.info("_write_nfo_sidecar: wrote %s", nfo_path)
+
+        except OSError as exc:
+            logger.warning(
+                "_write_nfo_sidecar: failed to write NFO for item id=%s — %s",
+                media_item.id,
+                exc,
+            )
+
+    async def _cleanup_orphaned_nfo(self, dir_path: str) -> None:
+        """Remove NFO files from dir if no other files remain."""
+        if not settings.symlink_naming.generate_nfo:
+            return
+        for nfo_name in ("movie.nfo", "tvshow.nfo"):
+            nfo_path = os.path.join(dir_path, nfo_name)
+            try:
+                exists = await asyncio.to_thread(os.path.exists, nfo_path)
+                if not exists:
+                    continue
+
+                def _has_other_files(d: str) -> bool:
+                    nfo_names = {"movie.nfo", "tvshow.nfo"}
+                    for entry in os.listdir(d):
+                        if entry not in nfo_names:
+                            return True
+                    return False
+
+                has_others = await asyncio.to_thread(_has_other_files, dir_path)
+                if not has_others:
+                    await asyncio.to_thread(os.unlink, nfo_path)
+                    logger.info("_cleanup_orphaned_nfo: removed %s", nfo_path)
+            except OSError as exc:
+                logger.debug("_cleanup_orphaned_nfo: error cleaning %s — %s", nfo_path, exc)
 
     async def _try_remove_empty_dir(self, dir_path: str) -> None:
         """Remove *dir_path* if it is empty and safe to remove.
