@@ -43,8 +43,9 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
 
 **Three-Tier Filtering**
-- Tier 1 — hard reject: size limits, blocked keywords/groups, resolution floor, language filter, episode mismatch
-- Tier 2 — quality scoring: resolution, codec, audio, source, seeders, cache status, language preference, original language bonus
+- Tier 1 — hard reject: size limits, blocked keywords/groups, resolution floor, language filter, episode mismatch, title similarity floor
+- Tier 2 — quality scoring: resolution, codec, audio, source, seeders, cache status, language preference, original language bonus, title similarity bonus
+- Title similarity scoring: Jaccard token-overlap comparison against all known title variants (TMDB primary, original, alternative titles + AniDB romaji/kanji/synonyms). Catches wrong-IMDB mappings from scrapers and promotes correct-title results. Configurable hard-reject threshold and scoring bonus.
 - Two quality profiles (high / standard) with full customization
 - PTN list normalization for multi-episode (S01E01E02) and multi-season (S01-S04) titles
 
@@ -105,7 +106,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
-**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
+**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. Title similarity scoring further protects against wrong-IMDB mappings by comparing scraper results against all known title variants and deprioritizing or rejecting mismatches. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
 ## Prerequisites
 
@@ -180,7 +181,7 @@ All settings are configurable via `config.json`, the web UI, or environment vari
 | `scrapers.zilean` | `enabled`, `base_url`, `timeout_seconds` | enabled, 10s timeout |
 | `paths` | `zurg_mount`, `library_movies`, `library_shows` | must configure |
 | `quality` | `default_profile`, profiles with resolution/codec/audio/source prefs | "high" profile |
-| `filters` | `blocked_keywords`, `preferred_languages`, `allow_multi_audio` | cam/ts/telesync blocked |
+| `filters` | `blocked_keywords`, `preferred_languages`, `allow_multi_audio`, `title_similarity_threshold`, `title_similarity_bonus` | cam/ts/telesync blocked, similarity threshold 0.0 (off), bonus 15 pts |
 | `retry` | `schedule_minutes`, `max_active_retries`, `dormant_recheck_days` | 7 retries, then weekly |
 | `mount_scanner` | `scan_interval_minutes`, `scan_on_startup` | 15min, scan on start |
 | `plex` | `enabled`, `url`, `token`, `section_ids`, `scan_after_symlink` | disabled |
