@@ -41,13 +41,13 @@ async def check_for_updates() -> dict | None:
             data = resp.json()
             tag = data.get("tag_name", "")
             version = tag.lstrip("v")
-            if version and version != __version__:
+            if version and _is_newer(version, __version__):
                 _latest_release = {
                     "version": version,
                     "current": __version__,
                     "url": data.get("html_url", ""),
                     "published_at": data.get("published_at", ""),
-                    "update_available": _is_newer(version, __version__),
+                    "update_available": True,
                 }
                 logger.info(
                     "update_checker: new release available %s (current=%s)",

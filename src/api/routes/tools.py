@@ -922,37 +922,47 @@ async def get_logs(lines: int = 500, level: str = "") -> dict[str, Any]:
     file does not yet exist an empty result is returned without an error.
 
     Args:
-        lines: Maximum number of lines to return (default 500).
+        lines: Maximum number of lines to return (default 500, capped at 10000).
         level: Optional level filter string (e.g. "WARNING", "ERROR").
 
     Returns:
         JSON with ``lines`` (list of strings), ``total`` (int), and
         ``file`` (filename string).
     """
+    lines = min(max(lines, 1), 10000)
     _data_dir = os.environ.get("VIBE_DATA_DIR", ".")
     log_path = os.path.join(_data_dir, "logs", "vibedebrid.log")
 
-    def _read_log() -> list[str]:
-        """Read and filter the log file, returning the last N lines."""
+    def _read_log(path: str, max_lines: int) -> list[str]:
+        """Read the last max_lines from the log file efficiently."""
         try:
-            with open(log_path, encoding="utf-8", errors="replace") as fh:
-                all_lines = fh.readlines()
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                # Read entire file for small files, or seek-based tail for large ones
+                fh.seek(0, 2)  # seek to end
+                file_size = fh.tell()
+                if file_size == 0:
+                    return []
+                # Estimate: ~200 bytes per log line, read 2x what we need
+                chunk_size = min(file_size, max_lines * 400)
+                fh.seek(max(0, file_size - chunk_size))
+                if fh.tell() > 0:
+                    fh.readline()  # skip partial first line
+                raw_lines = fh.readlines()
+                return [ln.rstrip("\n") for ln in raw_lines[-max_lines:]]
         except FileNotFoundError:
             return []
-        except OSError as exc:
-            logger.warning("get_logs: could not read log file: %s", exc)
+        except OSError:
             return []
 
-        # Strip trailing newlines for cleaner JSON output
-        all_lines = [ln.rstrip("\n") for ln in all_lines]
-
+    def _read_and_filter() -> list[str]:
+        """Read the log file and apply optional level filter."""
+        raw = _read_log(log_path, lines if not level else lines * 10)
         if level:
             level_upper = level.upper()
-            all_lines = [ln for ln in all_lines if f"| {level_upper}" in ln]
+            raw = [ln for ln in raw if f"| {level_upper}" in ln]
+        return raw[-lines:]
 
-        return all_lines[-lines:]
-
-    result_lines = await asyncio.to_thread(_read_log)
+    result_lines = await asyncio.to_thread(_read_and_filter)
     return {
         "lines": result_lines,
         "total": len(result_lines),

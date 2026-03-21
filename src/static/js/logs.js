@@ -122,7 +122,7 @@
         var now = new Date().toLocaleTimeString();
         _setStatus(
           'Showing ' + (data.total || 0) + ' lines from ' +
-          VD.escapeHtml(data.file || 'vibedebrid.log') +
+          (data.file || 'vibedebrid.log') +
           ' — refreshed at ' + now
         );
       })
@@ -181,7 +181,7 @@
 
   /**
    * Download all available log lines as a plain-text file.
-   * Fetches up to 100,000 lines from the API (no level filter) and creates
+   * Fetches up to 10,000 lines from the API (no level filter) and creates
    * a Blob download so no server-side file serving is required.
    */
   function downloadLogs() {

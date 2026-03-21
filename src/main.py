@@ -46,6 +46,9 @@ _bg_backfill_task: asyncio.Task[None] | None = None
 # Module-level reference to the background AniDB refresh task.
 _bg_anidb_task: asyncio.Task[None] | None = None
 
+# Module-level reference to the startup update check task.
+_bg_update_task: asyncio.Task[None] | None = None
+
 
 def setup_logging() -> None:
     """Configure structured logging for the application.
@@ -1392,11 +1395,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Scheduler started")
 
     # Run update check at startup (non-blocking, best-effort)
-    try:
-        from src.core.update_checker import check_for_updates as _startup_update_check  # noqa: PLC0415
-        asyncio.create_task(_startup_update_check())
-    except Exception:
-        pass  # Update check is non-critical
+    global _bg_update_task
+    from src.core.update_checker import check_for_updates as _check_for_updates  # noqa: PLC0415
+    _bg_update_task = asyncio.create_task(_check_for_updates())
 
     # Background task: backfill tmdb_ids for items that have imdb_id but no tmdb_id.
     # Non-blocking — the app starts immediately and the backfill runs in the background.
