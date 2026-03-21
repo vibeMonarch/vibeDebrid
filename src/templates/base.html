@@ -141,6 +141,7 @@
           Loading...
         </div>
       </div>
+      <div class="text-xs text-vd-muted mt-2 px-1">v{{ app_version }}</div>
     </div>
   </nav>
 
@@ -154,6 +155,25 @@
 
   <!-- Main content -->
   <main class="flex-1 lg:ml-64">
+    <!-- Update notification banner (hidden until JS reveals it) -->
+    <div id="update-banner" class="hidden bg-blue-600/90 border-b border-blue-500 px-4 py-2 flex items-center justify-between gap-4 text-sm text-white">
+      <div class="flex items-center gap-2">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+        </svg>
+        <span id="update-banner-text">A new version is available.</span>
+        <a id="update-banner-link" href="#" target="_blank" rel="noopener"
+           class="underline hover:text-blue-100 transition-colors">Release notes</a>
+      </div>
+      <button type="button"
+              onclick="dismissUpdateBanner()"
+              class="flex-shrink-0 text-blue-200 hover:text-white transition-colors"
+              aria-label="Dismiss">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
     <div class="p-6 lg:p-8 max-w-7xl mx-auto">
       {% block content %}{% endblock %}
     </div>
@@ -210,6 +230,32 @@
     window.addEventListener('pageshow', function() {
       if (window.innerWidth < 1024) closeSidebar();
     });
+
+    // Update notification banner
+    function dismissUpdateBanner() {
+      var banner = document.getElementById('update-banner');
+      if (!banner) return;
+      var version = banner.getAttribute('data-version');
+      if (version) sessionStorage.setItem('update_dismissed_' + version, '1');
+      banner.classList.add('hidden');
+    }
+
+    fetch('/api/update-check')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.update_available) return;
+        var dismissed = sessionStorage.getItem('update_dismissed_' + data.version);
+        if (dismissed) return;
+        var banner = document.getElementById('update-banner');
+        var text = document.getElementById('update-banner-text');
+        var link = document.getElementById('update-banner-link');
+        if (!banner) return;
+        banner.setAttribute('data-version', data.version || '');
+        if (text) text.textContent = 'vibeDebrid v' + (data.version || '') + ' is available.';
+        if (link && data.url) link.href = data.url;
+        banner.classList.remove('hidden');
+      })
+      .catch(function() {});
 
     // SSE connection manager (shared across pages)
     const VD_SSE = (function() {

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Application Logs - vibeDebrid{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="flex items-center gap-3">
+    <a href="/tools"
+       class="text-vd-muted hover:text-white transition-colors flex items-center gap-1 text-sm">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+      Tools
+    </a>
+    <span class="text-vd-border">/</span>
+    <h2 class="text-2xl font-bold text-white">Application Logs</h2>
+  </div>
+  <p class="text-vd-muted text-sm mt-1">Real-time view of the vibeDebrid application log file.</p>
+</div>
+
+<!-- Controls bar -->
+<div class="bg-vd-card border border-vd-border rounded-lg px-4 py-3 mb-4 flex flex-wrap items-center gap-3">
+
+  <!-- Level filter -->
+  <div class="flex items-center gap-2">
+    <label for="log-level" class="text-xs text-vd-muted whitespace-nowrap">Level</label>
+    <select id="log-level"
+            onchange="fetchLogs()"
+            class="px-3 py-1.5 bg-vd-bg border border-vd-border rounded text-sm text-gray-200 focus:outline-none focus:border-vd-accent">
+      <option value="">All</option>
+      <option value="DEBUG">DEBUG</option>
+      <option value="INFO">INFO</option>
+      <option value="WARNING">WARNING</option>
+      <option value="ERROR">ERROR</option>
+    </select>
+  </div>
+
+  <!-- Lines count -->
+  <div class="flex items-center gap-2">
+    <label for="log-lines" class="text-xs text-vd-muted whitespace-nowrap">Lines</label>
+    <input id="log-lines"
+           type="number"
+           min="10"
+           max="10000"
+           value="500"
+           class="w-24 px-3 py-1.5 bg-vd-bg border border-vd-border rounded text-sm text-gray-200 focus:outline-none focus:border-vd-accent">
+  </div>
+
+  <!-- Action buttons -->
+  <div class="flex items-center gap-2 ml-auto">
+    <button id="refresh-btn"
+            type="button"
+            onclick="fetchLogs()"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-vd-bg border border-vd-border hover:bg-white/5 text-sm text-gray-300 rounded transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      Refresh
+    </button>
+
+    <button id="auto-refresh-btn"
+            type="button"
+            onclick="toggleAutoRefresh()"
+            class="px-3 py-1.5 bg-vd-bg border border-vd-border hover:bg-white/5 text-sm text-gray-300 rounded transition-colors">
+      Auto-refresh: OFF
+    </button>
+
+    <button type="button"
+            onclick="downloadLogs()"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-vd-bg border border-vd-border hover:bg-white/5 text-sm text-gray-300 rounded transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+      </svg>
+      Download
+    </button>
+  </div>
+
+</div>
+
+<!-- Status bar -->
+<p id="log-status" class="text-xs text-vd-muted mb-2 px-1">Loading...</p>
+
+<!-- Log output -->
+<div class="bg-vd-bg border border-vd-border rounded-lg overflow-hidden">
+  <div id="log-output"
+       class="font-mono text-xs overflow-y-auto p-4 space-y-px"
+       style="max-height: calc(100dvh - 17rem); min-height: 300px;">
+    <div class="text-vd-muted italic">Loading logs...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var PAGE_DATA = { defaultLines: 500 };
+</script>
+<script src="/static/js/logs.js?v={{ js_version }}"></script>
+{% endblock %}

@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.__version__ import __version__
 from src.api.deps import get_db
 from src.core.mount_scanner import mount_scanner
 
@@ -29,6 +30,7 @@ class HealthResponse(BaseModel):
     """Health check response schema."""
 
     status: str
+    version: str
     checks: HealthChecks
 
 
@@ -91,7 +93,7 @@ async def health(db: AsyncSession = Depends(get_db)) -> JSONResponse:
         mount_ok,
     )
 
-    response_body = HealthResponse(status=status, checks=checks)
+    response_body = HealthResponse(status=status, version=__version__, checks=checks)
     http_status = 200 if db_ok else 503
 
     return JSONResponse(

@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.__version__ import __version__
 from src.config import settings
 from src.database import engine, init_db, async_session
 from src.core.queue_manager import queue_manager
@@ -35,6 +36,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["js_version"] = str(int(time.time()))
+templates.env.globals["app_version"] = __version__
 scheduler = AsyncIOScheduler()
 
 # Module-level reference to the background backfill task.  Storing it prevents
@@ -46,13 +48,41 @@ _bg_anidb_task: asyncio.Task[None] | None = None
 
 
 def setup_logging() -> None:
-    """Configure structured logging for the application."""
+    """Configure structured logging for the application.
+
+    Writes to stdout and to a rotating log file at
+    ``{VIBE_DATA_DIR}/logs/vibedebrid.log`` (5 MB per file, 5 backups).
+    The log directory is created if it does not already exist.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    _log_format = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    _date_format = "%Y-%m-%d %H:%M:%S"
+
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        format=_log_format,
+        datefmt=_date_format,
         stream=sys.stdout,
     )
+
+    # File handler — persistent rotating log
+    _data_dir = Path(os.environ.get("VIBE_DATA_DIR", "."))
+    _log_dir = _data_dir / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _log_file = _log_dir / "vibedebrid.log"
+
+    _file_handler = RotatingFileHandler(
+        _log_file,
+        maxBytes=5 * 1024 * 1024,  # 5 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(
+        logging.Formatter(fmt=_log_format, datefmt=_date_format)
+    )
+    logging.getLogger().addHandler(_file_handler)
+
     # Quiet noisy libraries
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
@@ -1302,6 +1332,18 @@ def _register_scheduled_jobs() -> None:
             settings.anidb.refresh_hours,
         )
 
+    from src.core.update_checker import check_for_updates as _check_for_updates  # noqa: PLC0415
+
+    scheduler.add_job(
+        _check_for_updates,
+        "interval",
+        hours=6,
+        id="update_check",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("Registered job: update_check (every 6 hours)")
+
 
 def _validate_configured_paths() -> None:
     """Log warnings for any paths that are empty or do not exist on disk.
@@ -1348,6 +1390,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _register_scheduled_jobs()
     scheduler.start()
     logger.info("Scheduler started")
+
+    # Run update check at startup (non-blocking, best-effort)
+    try:
+        from src.core.update_checker import check_for_updates as _startup_update_check  # noqa: PLC0415
+        asyncio.create_task(_startup_update_check())
+    except Exception:
+        pass  # Update check is non-critical
 
     # Background task: backfill tmdb_ids for items that have imdb_id but no tmdb_id.
     # Non-blocking — the app starts immediately and the backfill runs in the background.
@@ -1437,7 +1486,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="vibeDebrid",
-    version="0.1.0",
+    version=__version__,
     description="Real-Debrid media automation system",
     lifespan=lifespan,
 )

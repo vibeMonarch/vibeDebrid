@@ -133,8 +133,32 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    labels:
+      com.centurylinklabs.watchtower.scope: vibedebrid
     networks:
       - vibedebrid
+
+  # =========================================================================
+  # Watchtower (optional) — automatic container updates
+  # Uncomment to enable. Monitors vibeDebrid for new Docker Hub images
+  # and automatically pulls + restarts when updates are available.
+  # =========================================================================
+
+  # watchtower:
+  #   image: containrrr/watchtower:latest
+  #   container_name: watchtower
+  #   restart: unless-stopped
+  #   environment:
+  #     WATCHTOWER_CLEANUP: "true"
+  #     WATCHTOWER_INCLUDE_STOPPED: "false"
+  #     WATCHTOWER_POLL_INTERVAL: "21600"  # 6 hours
+  #     WATCHTOWER_SCOPE: vibedebrid
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   labels:
+  #     com.centurylinklabs.watchtower.scope: vibedebrid
+  #   networks:
+  #     - vibedebrid
 
 networks:
   vibedebrid:

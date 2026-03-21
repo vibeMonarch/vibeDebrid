@@ -187,9 +187,10 @@ async def test_health_response_schema(http: AsyncClient) -> None:
         response = await http.get("/health")
 
     body = response.json()
-    assert set(body.keys()) == {"status", "checks"}
+    assert set(body.keys()) == {"status", "version", "checks"}
     assert set(body["checks"].keys()) == {"database", "zurg_mount"}
     assert isinstance(body["status"], str)
+    assert isinstance(body["version"], str)
     assert isinstance(body["checks"]["database"], bool)
     assert isinstance(body["checks"]["zurg_mount"], bool)
 

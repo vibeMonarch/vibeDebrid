@@ -113,6 +113,8 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
+**Docker images are amd64 only**: ARM64 images (Raspberry Pi, Apple Silicon NAS) are not yet available. Contributions welcome.
+
 **Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. Title similarity scoring further protects against wrong-IMDB mappings by comparing scraper results against all known title variants and deprioritizing or rejecting mismatches. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
 ## How It All Fits Together

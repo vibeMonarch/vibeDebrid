@@ -6,6 +6,8 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
+from src.__version__ import __version__
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -160,6 +162,20 @@ async def tools_page(request: Request) -> HTMLResponse:
             "active_page": "tools",
             "current_movies_path": settings.paths.library_movies,
             "current_shows_path": settings.paths.library_shows,
+        },
+    )
+
+
+@router.get("/logs", response_class=HTMLResponse, tags=["pages"])
+async def logs_page(request: Request) -> HTMLResponse:
+    """Render the Application Logs viewer page."""
+    from src.main import templates
+
+    return templates.TemplateResponse(
+        "logs.html",
+        {
+            "request": request,
+            "active_page": "tools",
         },
     )
 
@@ -889,6 +905,87 @@ async def symlink_health_execute_endpoint(
         len(result.errors),
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Application logs endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/logs", tags=["tools"])
+async def get_logs(lines: int = 500, level: str = "") -> dict[str, Any]:
+    """Return the last N lines from the application log file.
+
+    Reads ``{VIBE_DATA_DIR}/logs/vibedebrid.log`` using a thread so the async
+    event loop is never blocked.  If ``level`` is provided (e.g. "WARNING",
+    "ERROR") only lines containing that level string are returned.  If the log
+    file does not yet exist an empty result is returned without an error.
+
+    Args:
+        lines: Maximum number of lines to return (default 500).
+        level: Optional level filter string (e.g. "WARNING", "ERROR").
+
+    Returns:
+        JSON with ``lines`` (list of strings), ``total`` (int), and
+        ``file`` (filename string).
+    """
+    _data_dir = os.environ.get("VIBE_DATA_DIR", ".")
+    log_path = os.path.join(_data_dir, "logs", "vibedebrid.log")
+
+    def _read_log() -> list[str]:
+        """Read and filter the log file, returning the last N lines."""
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
+                all_lines = fh.readlines()
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.warning("get_logs: could not read log file: %s", exc)
+            return []
+
+        # Strip trailing newlines for cleaner JSON output
+        all_lines = [ln.rstrip("\n") for ln in all_lines]
+
+        if level:
+            level_upper = level.upper()
+            all_lines = [ln for ln in all_lines if f"| {level_upper}" in ln]
+
+        return all_lines[-lines:]
+
+    result_lines = await asyncio.to_thread(_read_log)
+    return {
+        "lines": result_lines,
+        "total": len(result_lines),
+        "file": "vibedebrid.log",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Update check endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/update-check", tags=["tools"])
+async def update_check() -> dict[str, Any]:
+    """Return the latest available release info from GitHub.
+
+    Uses the module-level cache populated by the scheduled ``update_check``
+    job.  If the cache is empty (first request before the job runs) it
+    triggers an on-demand check.  The response always includes at minimum
+    ``update_available`` and ``current`` so callers can safely read both
+    fields regardless of whether a newer release exists.
+
+    Returns:
+        JSON with ``update_available`` (bool), ``current`` (str), and
+        optionally ``version``, ``url``, and ``published_at`` when an update
+        is available.
+    """
+    from src.core.update_checker import check_for_updates, get_latest_release  # noqa: PLC0415
+
+    release = get_latest_release()
+    if release is None:
+        release = await check_for_updates()
+    return release or {"update_available": False, "current": __version__}
 
 
 # ---------------------------------------------------------------------------
