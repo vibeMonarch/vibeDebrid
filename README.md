@@ -113,8 +113,6 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
-**Docker images are amd64 only**: ARM64 images (Raspberry Pi, Apple Silicon NAS) are not yet available. Contributions welcome.
-
 **Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. Title similarity scoring further protects against wrong-IMDB mappings by comparing scraper results against all known title variants and deprioritizing or rejecting mismatches. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
 ## How It All Fits Together
@@ -183,24 +181,73 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 The Docker Compose stack includes vibeDebrid, Zurg, rclone, Zilean, and PostgreSQL.
 
-**Full stack** — everything included:
+#### Full stack setup
 
 ```bash
-# Download the compose file and env template
+# 1. Download compose file and env template
 wget https://raw.githubusercontent.com/vibeMonarch/vibeDebrid/main/docker-compose.yml
 wget https://raw.githubusercontent.com/vibeMonarch/vibeDebrid/main/.env.example
 cp .env.example .env
 
-# Edit .env with your API keys and paths
+# 2. Edit .env with your API keys and host paths
 nano .env
+```
 
-# Create Zurg and rclone configs
+Required `.env` settings:
+
+```env
+RD_API_KEY=your_real_debrid_api_key        # https://real-debrid.com/apitoken
+TMDB_API_KEY=your_tmdb_api_key             # https://www.themoviedb.org/settings/api
+ZURG_MOUNT_HOST_PATH=/path/to/zurg/mount   # where rclone FUSE mount appears on host
+LIBRARY_MOVIES=/path/to/library/movies     # movie symlink directory
+LIBRARY_SHOWS=/path/to/library/shows       # TV show symlink directory
+TZ=Europe/Berlin                           # your timezone
+```
+
+```bash
+# 3. Create Zurg config
 mkdir -p data/zurg data/rclone
 
-# Create data/zurg/config.yml with your RD token
-# (see the repo's data/zurg/config.yml for a template)
+cat > data/zurg/config.yml << 'ZURGEOF'
+zurg: v1
+token: YOUR_RD_API_TOKEN
+port: 9090
+check_for_changes_every_secs: 15
+enable_repair: true
+repair_every_mins: 60
+auto_delete_rar_torrents: true
+rate_limit_sleep_secs: 6
+serve_from_rclone: true
+on_library_update: curl -s http://vibedebrid:5100/api/webhook/zurg -X POST > /dev/null
 
-# Create rclone config
+directories:
+  anime:
+    group_order: 10
+    group: media
+    filters:
+      - regex: /\b[a-fA-F0-9]{8}\b/
+      - any_file_inside_regex: /\b[a-fA-F0-9]{8}\b/
+  shows:
+    group_order: 20
+    group: media
+    filters:
+      - has_episodes: true
+  movies:
+    group_order: 30
+    group: media
+    only_show_the_biggest_file: true
+    filters:
+      - regex: /.*/
+ZURGEOF
+
+# Edit the token line with your actual RD API token
+nano data/zurg/config.yml
+```
+
+> **Important:** The Docker image uses `zurg: v1` (not bare `v1`) as the version marker. If you copy a config from DMB or another setup, change the first line accordingly.
+
+```bash
+# 4. Create rclone config
 cat > data/rclone/rclone.conf << 'EOF'
 [rclone_RD]
 type = webdav
@@ -208,22 +255,51 @@ url = http://zurg:9090/dav/
 vendor = other
 EOF
 
-# Start everything
+# 5. Start everything
 docker compose up -d
 ```
 
-**vibeDebrid only** — you already have Zurg, rclone, and Zilean running:
+Startup order: Zurg starts first (fetches torrent info from RD — may take 1-2 minutes for large accounts), then rclone mounts the FUSE filesystem, then vibeDebrid starts. Zilean + PostgreSQL start independently in parallel.
+
+#### vibeDebrid only (existing infrastructure)
+
+If you already have Zurg, rclone, and Zilean running:
 
 ```bash
-# Same .env setup as above, then start only vibeDebrid
 docker compose up vibedebrid -d
 ```
 
-Set `ZILEAN_URL` in `.env` to point to your existing Zilean instance (e.g., `http://localhost:8182`). vibeDebrid connects to your existing Zurg mount via the `ZURG_MOUNT_HOST_PATH` volume.
+Set `ZILEAN_URL` in `.env` to point to your existing Zilean instance (e.g., `http://host.docker.internal:8182` or `http://192.168.1.x:8182`). vibeDebrid connects to your existing Zurg mount via the `ZURG_MOUNT_HOST_PATH` volume mount.
 
-The web UI is available at `http://localhost:5100`. All settings can be configured from the Settings page after first start.
+#### After startup
 
-**Important: host path consistency.** vibeDebrid creates symlinks using absolute host filesystem paths. If Plex or Jellyfin runs directly on the host (not containerized), the symlink paths work as-is. If Plex/Jellyfin runs in Docker, the library volume mounts inside those containers must use the **same absolute paths** as on the host. For example, if `LIBRARY_MOVIES=/opt/homeserver/mnt/Movies`, the Plex container must mount that path identically: `-v /opt/homeserver/mnt/Movies:/opt/homeserver/mnt/Movies`. Mismatched paths cause symlinks to appear broken inside the media server container.
+The web UI is available at `http://localhost:5100`. All settings (quality profiles, filters, Plex/Jellyfin integration, etc.) can be configured from the Settings page — no need to edit config files manually.
+
+Application logs are available at Tools → Application Logs in the web UI, and also at `data/logs/vibedebrid.log` on the host.
+
+#### Automatic updates
+
+Uncomment the Watchtower service in `docker-compose.yml` to enable automatic Docker image updates. Watchtower polls Docker Hub every 6 hours and restarts vibeDebrid when a new version is available. Alternatively, update manually:
+
+```bash
+docker compose pull vibedebrid && docker compose up -d vibedebrid
+```
+
+#### Important notes
+
+**Host path consistency.** vibeDebrid creates symlinks using absolute host filesystem paths. If Plex or Jellyfin runs directly on the host (not containerized), the symlink paths work as-is. If Plex/Jellyfin runs in Docker, the library volume mounts inside those containers must use the **same absolute paths** as on the host. For example, if `LIBRARY_MOVIES=/opt/homeserver/mnt/Movies`, the Plex container must mount that path identically: `-v /opt/homeserver/mnt/Movies:/opt/homeserver/mnt/Movies`. Mismatched paths cause symlinks to appear broken inside the media server container.
+
+**Zurg rclone settings.** The default rclone configuration uses `--vfs-cache-mode=writes` which streams files on-demand without downloading them to local disk. This dramatically reduces bandwidth compared to `--vfs-cache-mode=full`. If you experience playback issues, the `--vfs-read-ahead=128M` flag pre-fetches data for smooth streaming.
+
+**Zurg repair cascade prevention.** The Zurg config includes `repair_every_mins: 60` and `rate_limit_sleep_secs: 6` to prevent repair cascades. Without these, Zurg's auto-repair can trigger a chain reaction when CDN links expire (especially if a media server scans all files), potentially consuming your entire Real-Debrid daily traffic allowance. If you experience excessive traffic, also disable trickplay/chapter image extraction and extensive media analysis in your Jellyfin/Plex settings.
+
+**Docker images are amd64 only.** ARM64 images (Raspberry Pi, Apple Silicon NAS) are not yet available. Contributions welcome.
+
+**Development builds.** To build from source instead of pulling from Docker Hub:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
 
 ### Bare metal
 
