@@ -1,0 +1,10 @@
+# Development override — build from source instead of pulling from Docker Hub.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#    or: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile stack up -d
+
+services:
+  vibedebrid:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vibedebrid:local

@@ -1,4 +1,8 @@
 services:
+  # =========================================================================
+  # Infrastructure services (Zurg, rclone, Zilean, PostgreSQL)
+  # =========================================================================
+
   zurg:
     image: ghcr.io/debridmediamanager/zurg-testing:latest
     container_name: zurg
@@ -31,16 +35,16 @@ services:
       mount rclone_RD: /data/mnt
       --config /config/rclone.conf
       --allow-other
+      --allow-non-empty
       --poll-interval=0
       --dir-cache-time=10s
-      --allow-non-empty
-      --vfs-cache-mode=full
+      --attr-timeout=1s
+      --vfs-cache-mode=writes
+      --vfs-read-ahead=128M
       --vfs-read-chunk-size=1M
       --vfs-read-chunk-size-limit=32M
-      --buffer-size=512M
-      --vfs-cache-max-age=6h
-      --vfs-cache-max-size=100G
-      --attr-timeout=1s
+      --buffer-size=64M
+      --cache-info-age=48h
       --tpslimit=10
       --tpslimit-burst=10
       --uid=${PUID:-1000}
@@ -97,22 +101,24 @@ services:
     networks:
       - vibedebrid
 
+  # =========================================================================
+  # vibeDebrid
+  # =========================================================================
+
   vibedebrid:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${VIBE_IMAGE:-vibemonarch/vibedebrid:latest}
     container_name: vibedebrid
     restart: unless-stopped
-    depends_on:
-      rclone:
-        condition: service_healthy
-      zilean:
-        condition: service_healthy
     ports:
       - "${VIBE_PORT:-5100}:5100"
     environment:
       VIBE_DATA_DIR: /data
-      VIBE_SCRAPERS__ZILEAN__BASE_URL: http://zilean:8182
+      VIBE_REAL_DEBRID__API_KEY: ${RD_API_KEY:-}
+      VIBE_TMDB__API_KEY: ${TMDB_API_KEY:-}
+      VIBE_SCRAPERS__ZILEAN__BASE_URL: ${ZILEAN_URL:-http://zilean:8182}
+      VIBE_PATHS__ZURG_MOUNT: ${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}/__all__
+      VIBE_PATHS__LIBRARY_MOVIES: ${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}
+      VIBE_PATHS__LIBRARY_SHOWS: ${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}
       TZ: ${TZ:-UTC}
     volumes:
       - ./data:/data

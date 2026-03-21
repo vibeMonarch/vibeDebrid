@@ -115,9 +115,57 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. Title similarity scoring further protects against wrong-IMDB mappings by comparing scraper results against all known title variants and deprioritizing or rejecting mismatches. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
+## How It All Fits Together
+
+```
+                                    ┌─────────────────────────────────────┐
+                                    │          Scraping Sources           │
+                                    │  ┌───────────┐  ┌───────────────┐  │
+                                    │  │ Torrentio │  │    Zilean     │  │
+                                    │  │  (Stremio │  │ (DMM hashlist │  │
+                                    │  │   addon)  │  │   database)  │  │
+                                    │  └─────┬─────┘  └──────┬───────┘  │
+                                    └────────┼───────────────┼──────────┘
+                                             │               │
+                                             ▼               ▼
+┌──────────┐    ┌──────────────────────────────────────────────────────┐
+│          │    │                   vibeDebrid                         │
+│   TMDB   │◄──►│  Queue ─► Scrape ─► Filter ─► Add to RD ─► Symlink │
+│          │    │                                                      │
+└──────────┘    └──────────────┬───────────────────────┬───────────────┘
+                               │ adds torrent          │ creates symlinks
+                               ▼                       ▼
+                     ┌───────────────┐      ┌─────────────────────┐
+                     │  Real-Debrid  │      │   Symlink Library   │
+                     │    (cloud)    │      │                     │
+                     └───────┬───────┘      │  movies/            │
+                             │              │    Movie (2024)/    │
+                             │ serves       │      movie.nfo     │
+                             │ files        │      poster.jpg    │
+                             ▼              │      movie.mkv ──► │
+                     ┌───────────────┐      │  shows/            │
+                     │     Zurg      │      │    Show (2024)/    │
+                     │   (WebDAV     │      │      tvshow.nfo   │
+                     │    bridge)    │      │      Season 01/   │
+                     └───────┬───────┘      │        S01E01 ──► │
+                             │              └──────────┬────────┘
+                             ▼                         │
+                     ┌───────────────┐                 │ reads
+                     │    rclone     │                 │ symlinks
+                     │  (FUSE mount) │                 ▼
+                     │ /mnt/__all__/ │      ┌─────────────────────┐
+                     └───────────────┘      │   Media Servers     │
+                             ▲              │  ┌──────┐ ┌───────┐ │
+                             │              │  │ Plex │ │Jellyf.│ │
+                             └──────────────│  └──────┘ └───────┘ │
+                        symlinks resolve    │  ┌────────────────┐ │
+                        to mount files      │  │ Infuse (Samba) │ │
+                                            │  └────────────────┘ │
+                                            └─────────────────────┘
+```
+
 ## Prerequisites
 
-- Python 3.12+
 - [Zurg](https://github.com/debridmediamanager/zurg) + rclone (FUSE mount for Real-Debrid)
 - A [Real-Debrid](https://real-debrid.com/) account with API key
 - A [TMDB](https://www.themoviedb.org/settings/api) API key
@@ -129,58 +177,80 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 ## Setup
 
+### Docker (recommended)
+
+The Docker Compose stack includes vibeDebrid, Zurg, rclone, Zilean, and PostgreSQL.
+
+**Full stack** — everything included:
+
 ```bash
-git clone https://github.com/YOUR_USERNAME/vibeDebrid.git
+# Download the compose file and env template
+wget https://raw.githubusercontent.com/vibeMonarch/vibeDebrid/main/docker-compose.yml
+wget https://raw.githubusercontent.com/vibeMonarch/vibeDebrid/main/.env.example
+cp .env.example .env
+
+# Edit .env with your API keys and paths
+nano .env
+
+# Create Zurg and rclone configs
+mkdir -p data/zurg data/rclone
+
+# Create data/zurg/config.yml with your RD token
+# (see the repo's data/zurg/config.yml for a template)
+
+# Create rclone config
+cat > data/rclone/rclone.conf << 'EOF'
+[rclone_RD]
+type = webdav
+url = http://zurg:9090/dav/
+vendor = other
+EOF
+
+# Start everything
+docker compose up -d
+```
+
+**vibeDebrid only** — you already have Zurg, rclone, and Zilean running:
+
+```bash
+# Same .env setup as above, then start only vibeDebrid
+docker compose up vibedebrid -d
+```
+
+Set `ZILEAN_URL` in `.env` to point to your existing Zilean instance (e.g., `http://localhost:8182`). vibeDebrid connects to your existing Zurg mount via the `ZURG_MOUNT_HOST_PATH` volume.
+
+The web UI is available at `http://localhost:5100`. All settings can be configured from the Settings page after first start.
+
+**Important: host path consistency.** vibeDebrid creates symlinks using absolute host filesystem paths. If Plex or Jellyfin runs directly on the host (not containerized), the symlink paths work as-is. If Plex/Jellyfin runs in Docker, the library volume mounts inside those containers must use the **same absolute paths** as on the host. For example, if `LIBRARY_MOVIES=/opt/homeserver/mnt/Movies`, the Plex container must mount that path identically: `-v /opt/homeserver/mnt/Movies:/opt/homeserver/mnt/Movies`. Mismatched paths cause symlinks to appear broken inside the media server container.
+
+### Bare metal
+
+```bash
+git clone https://github.com/vibeMonarch/vibeDebrid.git
 cd vibeDebrid
 python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-### Configuration
-
 Copy the example config and fill in your details:
 
 ```bash
 cp config.example.json config.json
-```
-
-**Minimum required settings** in `config.json`:
-
-```json
-{
-    "real_debrid": {
-        "api_key": "YOUR_RD_API_KEY"
-    },
-    "tmdb": {
-        "api_key": "YOUR_TMDB_API_KEY"
-    },
-    "paths": {
-        "zurg_mount": "/path/to/zurg/mount",
-        "library_movies": "/path/to/library/movies",
-        "library_shows": "/path/to/library/shows"
-    }
-}
-```
-
-Everything else has sensible defaults. All settings can also be configured via the web UI at Settings, or via environment variables with the `VIBE_` prefix:
-
-```bash
-export VIBE_REAL_DEBRID__API_KEY=your_key
-export VIBE_TMDB__API_KEY=your_key
-export VIBE_PATHS__ZURG_MOUNT=/mnt/zurg
-```
-
-### Run
-
-```bash
+# Edit config.json with your API keys and paths
 .venv/bin/python src/main.py
 ```
 
 The web UI is available at `http://localhost:5100`.
 
-## Configuration Reference
+### Configuration
 
-All settings are configurable via `config.json`, the web UI, or environment variables.
+All settings can be configured via the web UI, `config.json`, or environment variables with the `VIBE_` prefix:
+
+```bash
+export VIBE_REAL_DEBRID__API_KEY=your_key
+export VIBE_TMDB__API_KEY=your_key
+export VIBE_PATHS__ZURG_MOUNT=/mnt/zurg/__all__
+```
 
 | Section | Key Settings | Default |
 |---------|-------------|---------|
@@ -231,25 +301,6 @@ src/
 - **SQLite with WAL**: single-file database, concurrent reads, no external DB dependency
 - **Connection pooling + circuit breaker**: shared httpx clients with per-service circuit breakers (5 failure threshold, 60s recovery). 429 rate limits are excluded from circuit breaking.
 - **APScheduler**: periodic mount scanning, queue processing, symlink verification, show monitoring
-
-## Infrastructure Context
-
-vibeDebrid sits alongside your existing Zurg + rclone + Plex stack:
-
-```
-Real-Debrid (cloud)
-    ↓
-Zurg (WebDAV bridge)
-    ↓
-rclone (FUSE mount)  ←── vibeDebrid reads mount, creates symlinks
-    ↓
-Plex/Jellyfin        ←── reads symlinks
-```
-
-<!-- ## Docker
-
-Docker deployment instructions coming soon. -->
-
 
 ## Development
 
