@@ -201,10 +201,7 @@ class JellyfinClient:
                 headers=self._headers(),
                 timeout=30.0,
             )
-            resp = await client.post(
-                f"/Items/{library_id}/Refresh",
-                params={"metadataRefreshMode": "FullRefresh"},
-            )
+            resp = await client.post(f"/Items/{library_id}/Refresh")
         except httpx.ConnectError as exc:
             await cb.record_failure()
             logger.warning(
