@@ -1366,13 +1366,27 @@ def _validate_configured_paths() -> None:
                 "Update config.json to enable full functionality.",
                 label,
             )
-        elif not Path(path).exists():
-            logger.warning(
-                "Configuration warning: %s = %r does not exist on disk. "
-                "Ensure the path is mounted and accessible.",
-                label,
-                path,
-            )
+        else:
+            try:
+                exists = Path(path).exists()
+            except OSError as exc:
+                # Stale FUSE mount points raise OSError (e.g. "Transport
+                # endpoint is not connected") instead of returning False.
+                logger.warning(
+                    "Configuration warning: %s = %r is not accessible (%s). "
+                    "The mount may be stale or disconnected.",
+                    label,
+                    path,
+                    exc,
+                )
+                continue
+            if not exists:
+                logger.warning(
+                    "Configuration warning: %s = %r does not exist on disk. "
+                    "Ensure the path is mounted and accessible.",
+                    label,
+                    path,
+                )
 
 
 @asynccontextmanager
