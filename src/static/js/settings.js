@@ -156,7 +156,7 @@
     // Plex
     if (s.plex) {
       document.getElementById('plex-enabled').checked = s.plex.enabled || false;
-      document.getElementById('plex-url').value = s.plex.url || 'http://localhost:32400';
+      document.getElementById('plex-url').value = s.plex.url || 'http://host.docker.internal:32400';
       document.getElementById('plex-token-display').value = s.plex.token || '';
       document.getElementById('plex-scan-after-symlink').checked = s.plex.scan_after_symlink !== false;
       document.getElementById('plex-movie-section-ids').value = (s.plex.movie_section_ids || []).join(',');
@@ -187,7 +187,7 @@
     // Jellyfin
     if (s.jellyfin) {
       setToggle('jf-enabled', s.jellyfin.enabled);
-      setField('jf-url', s.jellyfin.url || 'http://localhost:8096');
+      setField('jf-url', s.jellyfin.url || 'http://host.docker.internal:8096');
       setToggle('jf-scan-after-symlink', s.jellyfin.scan_after_symlink !== false);
       document.getElementById('jf-movie-library-ids').value = (s.jellyfin.movie_library_ids || []).join(',');
       document.getElementById('jf-show-library-ids').value = (s.jellyfin.show_library_ids || []).join(',');

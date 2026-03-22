@@ -1,3 +1,14 @@
+# =============================================================================
+# vibeDebrid — Docker Compose stack
+#
+# Prerequisites:
+#   - Real-Debrid API key (https://real-debrid.com/apitoken)
+#   - TMDB API key (https://www.themoviedb.org/settings/api)
+#
+# Configuration: copy .env.example to .env and fill in your values.
+# All UPPER_CASE variables below can be set in .env to override defaults.
+# =============================================================================
+
 services:
   # =========================================================================
   # Infrastructure services (Zurg, rclone, Zilean, PostgreSQL)
@@ -119,13 +130,18 @@ services:
       VIBE_PATHS__ZURG_MOUNT: ${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}/__all__
       VIBE_PATHS__LIBRARY_MOVIES: ${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}
       VIBE_PATHS__LIBRARY_SHOWS: ${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}
+      # Media server URLs — use host.docker.internal for services running on the host
+      VIBE_PLEX__URL: ${PLEX_URL:-http://host.docker.internal:32400}
+      VIBE_JELLYFIN__URL: ${JELLYFIN_URL:-http://host.docker.internal:8096}
       TZ: ${TZ:-UTC}
     volumes:
       - ./data:/data
+      # rshared propagation lets vibeDebrid see the FUSE mount from rclone
       - ${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}:${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}:rshared,ro
       - ${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}:${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}:rw
       - ${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}:${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}:rw
     extra_hosts:
+      # Allows reaching services on the host machine (Plex, Jellyfin) via host.docker.internal
       - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5100/health"]

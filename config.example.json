@@ -146,7 +146,7 @@
     },
     "plex": {
         "enabled": false,
-        "url": "http://localhost:32400",
+        "url": "http://host.docker.internal:32400",
         "token": "YOUR_PLEX_TOKEN",
         "movie_section_ids": [],
         "show_section_ids": [],
@@ -156,7 +156,7 @@
     },
     "jellyfin": {
         "enabled": false,
-        "url": "http://localhost:8096",
+        "url": "http://host.docker.internal:8096",
         "api_key": "",
         "movie_library_ids": [],
         "show_library_ids": [],
