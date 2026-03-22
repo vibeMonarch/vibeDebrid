@@ -76,6 +76,8 @@ services:
     image: postgres:16-alpine
     container_name: zilean-postgres
     restart: unless-stopped
+    # Zilean's VACUUM ANALYZE after ingestion needs more than Docker's 64MB default
+    shm_size: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-zilean}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zilean}
