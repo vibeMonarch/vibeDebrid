@@ -26,6 +26,7 @@ from src.core.scrape_pipeline import scrape_pipeline
 from src.core.mount_scanner import mount_scanner
 from src.core.symlink_manager import SourceNotFoundError, symlink_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
+from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.real_debrid import rd_client, RealDebridError
 
@@ -421,10 +422,10 @@ async def _job_queue_processor() -> None:
         checking_items = result.scalars().all()
         logger.info("CHECKING items to verify: %d", len(checking_items))
 
-        # Collect media scan directories — triggered AFTER all symlinks are
-        # created so that a single scan per directory picks up every file.
-        # Used by both Plex and Jellyfin scan integrations.
-        media_scan_queue: list[tuple[str, str]] = []  # (media_type, scan_dir)
+        # Collect newly created symlink target paths — triggered AFTER all
+        # symlinks are created.  Plex derives the scan directory from each
+        # path; Jellyfin maps media_type to library IDs for a safe scan.
+        media_scan_queue: list[tuple[str, str]] = []  # (media_type, target_path)
 
         for item in checking_items:
             try:
@@ -965,12 +966,13 @@ async def _job_queue_processor() -> None:
                                 best_per_episode.append(best)
 
                             created = 0
-                            symlink = None
+                            created_symlinks: list[Symlink] = []
                             stale_paths_auto: list[str] = []
                             for match in best_per_episode:
                                 try:
                                     symlink = await symlink_manager.create_symlink(session, item, match.filepath)
                                     created += 1
+                                    created_symlinks.append(symlink)
                                 except SourceNotFoundError:
                                     stale_paths_auto.append(match.filepath)
                                 except Exception:
@@ -1007,9 +1009,8 @@ async def _job_queue_processor() -> None:
                                     item.season = file_seasons.pop()
 
                             await queue_manager.transition(session, item.id, QueueState.COMPLETE)
-                            if symlink is not None:
-                                scan_dir = os.path.dirname(symlink.target_path)
-                                media_scan_queue.append((item.media_type, scan_dir))
+                            for sl in created_symlinks:
+                                media_scan_queue.append((item.media_type, sl.target_path))
                             continue
 
                     # Filesize verification: prefer matches whose size is close
@@ -1062,10 +1063,9 @@ async def _job_queue_processor() -> None:
 
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
 
-                # Queue media scan directory (triggered after all items are processed)
+                # Queue media file path (triggered after all items are processed)
                 if symlink is not None:
-                    scan_dir = os.path.dirname(symlink.target_path)
-                    media_scan_queue.append((item.media_type, scan_dir))
+                    media_scan_queue.append((item.media_type, symlink.target_path))
 
             except Exception:
                 logger.exception(
@@ -1081,7 +1081,8 @@ async def _job_queue_processor() -> None:
 
                     # Deduplicate: one scan per unique (section_id, scan_dir)
                     seen_scans: set[tuple[int, str]] = set()
-                    for media_type, scan_dir in media_scan_queue:
+                    for media_type, target_path in media_scan_queue:
+                        scan_dir = os.path.dirname(target_path)
                         section_ids = (
                             settings.plex.movie_section_ids
                             if media_type == MediaType.MOVIE
@@ -1107,36 +1108,31 @@ async def _job_queue_processor() -> None:
             except Exception:
                 logger.exception("Plex batch scan trigger failed (non-fatal)")
 
-        # --- Jellyfin scans (batched, deduplicated) ---
-        if media_scan_queue:
-            try:
-                if (
-                    settings.jellyfin.enabled
-                    and settings.jellyfin.scan_after_symlink
-                    and settings.jellyfin.api_key
-                ):
-                    from src.services.jellyfin import jellyfin_client
+        # --- Jellyfin scans (deduplicated per library ID) ---
+        if media_scan_queue and settings.jellyfin.enabled and settings.jellyfin.scan_after_symlink and settings.jellyfin.api_key:
+            from src.services.jellyfin import jellyfin_client
 
-                    seen_jf_scans: set[str] = set()
-                    for media_type, scan_dir in media_scan_queue:
-                        library_ids = (
-                            settings.jellyfin.movie_library_ids
-                            if media_type == MediaType.MOVIE
-                            else settings.jellyfin.show_library_ids
-                        )
-                        for lib_id in library_ids:
-                            if lib_id in seen_jf_scans:
-                                continue
-                            seen_jf_scans.add(lib_id)
-                            try:
-                                await jellyfin_client.scan_library(lib_id)
-                            except Exception:
-                                logger.exception(
-                                    "Jellyfin scan failed for library %s (non-fatal)",
-                                    lib_id,
-                                )
+            try:
+                seen_jf_libs: set[str] = set()
+                for media_type, _target_path in media_scan_queue:
+                    lib_ids = (
+                        settings.jellyfin.movie_library_ids
+                        if media_type == MediaType.MOVIE
+                        else settings.jellyfin.show_library_ids
+                    )
+                    for lib_id in lib_ids:
+                        if lib_id in seen_jf_libs:
+                            continue
+                        seen_jf_libs.add(lib_id)
+                        try:
+                            await jellyfin_client.scan_library(lib_id)
+                        except Exception:
+                            logger.exception(
+                                "Jellyfin scan_library failed for %s (non-fatal)",
+                                lib_id,
+                            )
             except Exception:
-                logger.exception("Jellyfin batch scan trigger failed (non-fatal)")
+                logger.exception("Jellyfin scan trigger failed (non-fatal)")
 
         # --- Stage 4: COMPLETE (older than 1 hour) → DONE ---
         one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)

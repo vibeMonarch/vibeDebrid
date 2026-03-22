@@ -173,7 +173,15 @@ class JellyfinClient:
     async def scan_library(self, library_id: str) -> bool:
         """Trigger a library scan in Jellyfin.
 
-        Calls ``POST /Items/{library_id}/Refresh``.
+        Replicates the "Scan for new and updated files" option from the
+        Jellyfin UI by calling ``POST /Items/{library_id}/Refresh`` with
+        ``metadataRefreshMode=Default`` and ``imageRefreshMode=Default``.
+
+        This mode is safe for FUSE mounts: Jellyfin only calls ``stat()`` on
+        existing files (no content reads) and performs full metadata fetches
+        only for newly discovered files.  It does **not** remove items with
+        temporarily unavailable paths, unlike ``/Library/Media/Updated`` which
+        triggers full library validation.
 
         Args:
             library_id: The GUID of the library to refresh.
@@ -201,7 +209,15 @@ class JellyfinClient:
                 headers=self._headers(),
                 timeout=30.0,
             )
-            resp = await client.post(f"/Items/{library_id}/Refresh")
+            resp = await client.post(
+                f"/Items/{library_id}/Refresh",
+                params={
+                    "metadataRefreshMode": "Default",
+                    "imageRefreshMode": "Default",
+                    "replaceAllMetadata": "false",
+                    "replaceAllImages": "false",
+                },
+            )
         except httpx.ConnectError as exc:
             await cb.record_failure()
             logger.warning(

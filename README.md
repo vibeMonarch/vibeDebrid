@@ -76,7 +76,8 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Jellyfin Integration**
 - API key authentication (no OAuth needed)
-- Automatic library scan after symlink creation
+- Safe automatic library scan after symlink creation (only stats existing files, no content reads — safe for FUSE/Zurg mounts)
+- Real-time monitoring detects symlink removals automatically
 - Configurable movie/show library IDs
 - Coexists with Plex — both can be enabled simultaneously
 
@@ -288,6 +289,8 @@ docker compose pull vibedebrid && docker compose up -d vibedebrid
 #### Important notes
 
 **Host path consistency.** vibeDebrid creates symlinks using absolute host filesystem paths. If Plex or Jellyfin runs directly on the host (not containerized), the symlink paths work as-is. If Plex/Jellyfin runs in Docker, the library volume mounts inside those containers must use the **same absolute paths** as on the host. For example, if `LIBRARY_MOVIES=/opt/homeserver/mnt/Movies`, the Plex container must mount that path identically: `-v /opt/homeserver/mnt/Movies:/opt/homeserver/mnt/Movies`. Mismatched paths cause symlinks to appear broken inside the media server container.
+
+**Media server connectivity.** If Plex or Jellyfin runs on the host (not in Docker), vibeDebrid reaches them via `host.docker.internal` (configured automatically in `docker-compose.yml`). The default URLs are `http://host.docker.internal:32400` (Plex) and `http://host.docker.internal:8096` (Jellyfin). Override via `PLEX_URL` / `JELLYFIN_URL` in `.env` if your setup differs.
 
 **Zurg rclone settings.** The default rclone configuration uses `--vfs-cache-mode=writes` which streams files on-demand without downloading them to local disk. This dramatically reduces bandwidth compared to `--vfs-cache-mode=full`. If you experience playback issues, the `--vfs-read-ahead=128M` flag pre-fetches data for smooth streaming.
 

@@ -372,3 +372,34 @@ async def test_scan_library_failure_500(
     result = await client.scan_library("aa-111")
 
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_scan_library_params(
+    client: JellyfinClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scan_library sends the safe Jellyfin scan query parameters.
+
+    Verifies that the POST request includes metadataRefreshMode=Default and
+    imageRefreshMode=Default (the "Scan for new and updated files" mode), and
+    that replaceAllMetadata and replaceAllImages are both false.  This prevents
+    Jellyfin from triggering full library validation which would remove items
+    with temporarily unavailable FUSE mount paths.
+    """
+    transport = _patch_get_client(monkeypatch, [_make_response(204)])
+
+    result = await client.scan_library("aa-111")
+
+    assert result is True
+    assert len(transport.requests_made) == 1
+
+    req = transport.requests_made[0]
+    assert req.method == "POST"
+    assert "/Items/aa-111/Refresh" in str(req.url)
+
+    # Verify all four safe-scan query parameters are present
+    url_str = str(req.url)
+    assert "metadataRefreshMode=Default" in url_str
+    assert "imageRefreshMode=Default" in url_str
+    assert "replaceAllMetadata=false" in url_str
+    assert "replaceAllImages=false" in url_str
