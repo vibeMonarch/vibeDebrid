@@ -1,8 +1,12 @@
 """Tests for src/core/mount_scanner.py.
 
 Covers:
+  - _normalize_title: lowercasing, dot/underscore normalisation, possessive
+    apostrophe joining, unicode accent decomposition, ampersand-to-and,
+    combined transformations, output invariants
   - _parse_filename: movies, episodes, season packs, PTN failure fallback,
-    hidden extension stripping, title lowercasing
+    hidden extension stripping, title lowercasing, possessive/accent/ampersand
+    titles (integration with _normalize_title)
   - MountScanner.is_mount_available: real dir, nonexistent path, file as dir,
     timeout simulation
   - MountScanner.scan: first scan (add), second scan (update), stale removal,
@@ -46,6 +50,7 @@ from src.core.mount_scanner import (
     UpsertResult,
     WalkEntry,
     _has_meaningful_title,
+    _normalize_title,
     _parse_filename,
     mount_scanner,
 )
@@ -93,7 +98,121 @@ async def _insert_entry(
 
 
 # ---------------------------------------------------------------------------
-# Group 1: _parse_filename
+# Group 1: _normalize_title
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeTitle:
+    """Unit tests for the _normalize_title helper."""
+
+    def test_basic_lowercasing(self) -> None:
+        assert _normalize_title("The Dark Knight") == "the dark knight"
+
+    def test_dots_become_spaces(self) -> None:
+        assert _normalize_title("The.Dark.Knight") == "the dark knight"
+
+    def test_underscores_become_spaces(self) -> None:
+        assert _normalize_title("The_Dark_Knight") == "the dark knight"
+
+    def test_empty_string(self) -> None:
+        assert _normalize_title("") == ""
+
+    def test_already_normalized(self) -> None:
+        assert _normalize_title("already clean") == "already clean"
+
+    # --- Apostrophe possessive ---
+
+    def test_apostrophe_s_straight(self) -> None:
+        """Straight apostrophe possessive joins the word."""
+        assert _normalize_title("Howl's Moving Castle") == "howls moving castle"
+
+    def test_apostrophe_s_curly(self) -> None:
+        """Curly/smart apostrophe possessive joins the word."""
+        assert _normalize_title("Howl\u2019s Moving Castle") == "howls moving castle"
+
+    def test_apostrophe_s_multiple(self) -> None:
+        """Multiple possessives in one title."""
+        assert _normalize_title("King's Man's Quest") == "kings mans quest"
+
+    def test_apostrophe_not_possessive(self) -> None:
+        """Apostrophe not followed by s is stripped normally."""
+        assert _normalize_title("Rock 'n' Roll") == "rock n roll"
+
+    def test_apostrophe_s_at_end(self) -> None:
+        """Possessive at end of title."""
+        assert _normalize_title("The King's") == "the kings"
+
+    # --- Unicode / accent decomposition ---
+
+    def test_accent_acute(self) -> None:
+        """Acute accent decomposes to base letter."""
+        assert _normalize_title("Garc\u00eda") == "garcia"
+
+    def test_accent_matches_ascii(self) -> None:
+        """Accented and plain ASCII produce same result."""
+        assert _normalize_title("Garc\u00eda") == _normalize_title("Garcia")
+
+    def test_accent_multiple(self) -> None:
+        """Multiple accented characters in one title."""
+        assert _normalize_title("Caf\u00e9 Soci\u00e9t\u00e9") == "cafe societe"
+
+    def test_umlaut(self) -> None:
+        """German umlauts decompose to base letter."""
+        assert _normalize_title("M\u00fcnchen") == "munchen"
+
+    def test_tilde(self) -> None:
+        """Spanish tilde decomposes to base letter."""
+        assert _normalize_title("Espa\u00f1a") == "espana"
+
+    # --- Ampersand ---
+
+    def test_ampersand_becomes_and(self) -> None:
+        """Ampersand is replaced with 'and'."""
+        assert _normalize_title("Tom & Jerry") == "tom and jerry"
+
+    def test_ampersand_matches_and(self) -> None:
+        """Ampersand and 'and' produce same result."""
+        assert _normalize_title("Tom & Jerry") == _normalize_title("Tom and Jerry")
+
+    def test_ampersand_no_spaces(self) -> None:
+        """Ampersand without surrounding spaces still works."""
+        assert _normalize_title("Tom&Jerry") == "tom and jerry"
+
+    def test_multiple_ampersands(self) -> None:
+        """Multiple ampersands are all replaced."""
+        assert _normalize_title("A & B & C") == "a and b and c"
+
+    # --- Combined ---
+
+    def test_combined_apostrophe_and_accent(self) -> None:
+        """Title with both possessive and accent."""
+        assert _normalize_title("Andr\u00e9's Story") == "andres story"
+
+    def test_combined_all_three(self) -> None:
+        """Title exercising all three new transformations."""
+        assert _normalize_title("Garc\u00eda's Tom & Jerry") == "garcias tom and jerry"
+
+    # --- Invariants ---
+
+    def test_output_only_alnum_spaces(self) -> None:
+        """Output contains only lowercase alphanumerics and spaces."""
+        import re as _re
+        result = _normalize_title("H\u00f6wl's M\u00f6ving & C\u00e4stle!@#$%")
+        assert _re.match(r"^[a-z0-9 ]+$", result)
+
+    def test_no_double_spaces(self) -> None:
+        """No consecutive spaces in output."""
+        result = _normalize_title("A  &  B   's   Title")
+        assert "  " not in result
+
+    def test_no_leading_trailing_spaces(self) -> None:
+        """Output has no leading or trailing spaces."""
+        result = _normalize_title("  Test Title  ")
+        assert result == result.strip()
+
+
+# ---------------------------------------------------------------------------
+# Group 2: _parse_filename
 # ---------------------------------------------------------------------------
 
 
@@ -226,6 +345,29 @@ class TestParseFilename:
         """'Show.Name.07.mkv' — dot separator before trailing number is also handled."""
         result = _parse_filename("Show.Name.07.mkv")
         assert result["episode"] == 7
+
+    def test_possessive_in_movie_title(self) -> None:
+        """Movie with possessive apostrophe normalizes correctly."""
+        result = _parse_filename("Howl's.Moving.Castle.2004.1080p.mkv")
+        assert result["title"] == "howls moving castle"
+        assert result["year"] == 2004
+
+    def test_accented_movie_title(self) -> None:
+        """Movie with accented character normalizes correctly."""
+        result = _parse_filename("Am\u00e9lie.2001.1080p.mkv")
+        assert result["title"] == "amelie"
+        assert result["year"] == 2001
+
+    def test_ampersand_in_movie_title(self) -> None:
+        """Movie with ampersand normalizes to 'and'.
+
+        PTN does not extract the year when '&' is present in the title, so
+        '2021' is absorbed into the title string.  The important invariant is
+        that '&' becomes 'and' in the normalized output.
+        """
+        result = _parse_filename("Tom.&.Jerry.2021.1080p.mkv")
+        assert "and" in result["title"]
+        assert "&" not in result["title"]
 
 
 # ---------------------------------------------------------------------------

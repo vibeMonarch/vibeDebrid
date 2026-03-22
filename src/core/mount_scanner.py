@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]+")
 _MULTI_SPACE_RE = re.compile(r" {2,}")
+_APOSTROPHE_S_RE = re.compile(r"['\u2019]s\b")
 
 # Anime TV-N naming convention: "TV-2 - 01" means season 2, episode 1.
 # Common in Russian fansub releases. PTN doesn't recognise this pattern
@@ -102,8 +104,9 @@ class UpsertResult(NamedTuple):
 def _normalize_title(title: str) -> str:
     """Normalize a title for consistent matching.
 
-    Lowercases, strips non-alphanumeric characters (except spaces),
-    and collapses multiple spaces.
+    Pre-processes possessives, accented characters, and ampersands before
+    stripping non-alphanumeric characters so that common title variations
+    produce identical output.
 
     Args:
         title: Raw title string (e.g. from TMDB or a torrent filename).
@@ -113,7 +116,17 @@ def _normalize_title(title: str) -> str:
         single spaces.
     """
     result = title.lower().strip()
+    # 1. Possessive: 's / \u2019s -> s (join to preceding word)
+    result = _APOSTROPHE_S_RE.sub("s", result)
+    # 2. Unicode decompose: é -> e + combining mark; then drop the marks
+    #    so they don't get replaced with spaces by the non-alnum regex below.
+    result = unicodedata.normalize("NFKD", result)
+    result = "".join(c for c in result if not unicodedata.category(c).startswith("M"))
+    # 3. & -> "and" (before stripping, so the word survives)
+    result = result.replace("&", " and ")
+    # 4. Strip non-alphanumeric
     result = _NON_ALNUM_RE.sub(" ", result)
+    # 5. Collapse multiple spaces
     result = _MULTI_SPACE_RE.sub(" ", result)
     return result.strip()
 

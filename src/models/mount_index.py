@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, func
+from sqlalchemy import BigInteger, DateTime, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database import Base
@@ -21,6 +21,7 @@ class MountIndex(Base):
     parsed_resolution: Mapped[str | None] = mapped_column(String, nullable=True)
     parsed_codec: Mapped[str | None] = mapped_column(String, nullable=True)
     filesize: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    norm_version: Mapped[int] = mapped_column(default=2, server_default=text("2"))
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

@@ -109,6 +109,18 @@ async def _migrate_add_columns() -> None:
             except Exception as exc:
                 logger.warning("Migration index: %s — %s", stmt.split("ON")[0].strip(), exc)
 
+        # mount_index title re-normalization (v2): apostrophe, unicode, ampersand
+        # Clear index so startup re-scan rebuilds with improved normalization.
+        try:
+            await conn.execute(text(
+                "ALTER TABLE mount_index ADD COLUMN norm_version INTEGER NOT NULL DEFAULT 2"
+            ))
+            await conn.execute(text("DELETE FROM mount_index"))
+            logger.info("Migration: cleared mount_index for title re-normalization (v2)")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.warning("Migration norm_version: %s", exc)
+
 
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""
