@@ -1210,6 +1210,9 @@
     if (status === 'requeued') {
       return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-900/50 text-blue-300 border border-blue-700">Re-queued</span>';
     }
+    if (status === 'recreated') {
+      return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-cyan-900/50 text-cyan-300 border border-cyan-700">Recreated</span>';
+    }
     if (status === 'cleaned') {
       return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800/50 text-gray-400 border border-gray-600">Cleaned</span>';
     }
@@ -1335,7 +1338,7 @@
 
     var rows = visible.map(function(item, idx) {
       var checked = _selectedIds.has(item.symlink_id);
-      var processed = item.status === 'requeued' || item.status === 'cleaned';
+      var processed = item.status === 'requeued' || item.status === 'cleaned' || item.status === 'recreated';
       var rowTint = processed ? ' opacity-50' : (idx % 2 === 1 ? ' bg-vd-bg/30' : '');
 
       var cbCell = processed
@@ -1560,9 +1563,13 @@
 
       // Update in-memory scan data: mark processed items
       if (_shScanData && _shScanData.items) {
-        var requeuedSet = new Set(payload.requeue_ids || []);
+        var recreatedSet = new Set(data.recreated_ids || []);
+        var requeuedSet = new Set((payload.requeue_ids || []).filter(function(id) { return !recreatedSet.has(id); }));
         var cleanedSet = new Set(payload.cleanup_ids || []);
         _shScanData.items = _shScanData.items.map(function(item) {
+          if (recreatedSet.has(item.item_id)) {
+            return Object.assign({}, item, { status: 'recreated' });
+          }
           if (requeuedSet.has(item.item_id)) {
             return Object.assign({}, item, { status: 'requeued', state: 'wanted' });
           }
@@ -1585,6 +1592,7 @@
       updateShSelectionCounter();
 
       var parts = [];
+      if (data.recreated > 0) parts.push(data.recreated + ' item' + (data.recreated === 1 ? '' : 's') + ' recreated');
       if (data.requeued > 0) parts.push(data.requeued + ' item' + (data.requeued === 1 ? '' : 's') + ' re-queued');
       if (data.cleaned > 0) parts.push(data.cleaned + ' item' + (data.cleaned === 1 ? '' : 's') + ' cleaned up');
       if (parts.length > 0) {
@@ -1628,6 +1636,7 @@
   function renderShExecuteResult(data) {
     var statsEl = document.getElementById('sh-execute-stats');
     statsEl.innerHTML =
+      statCardSh('Recreated', data.recreated || 0, (data.recreated || 0) > 0 ? 'text-cyan-400' : 'text-vd-muted') +
       statCardSh('Re-queued', data.requeued || 0, (data.requeued || 0) > 0 ? 'text-green-400' : 'text-vd-muted') +
       statCardSh('Cleaned Up', data.cleaned || 0, (data.cleaned || 0) > 0 ? 'text-red-400' : 'text-vd-muted') +
       statCardSh('Symlinks Removed', data.symlinks_removed_from_disk || 0, 'text-vd-muted') +

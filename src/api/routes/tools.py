@@ -46,6 +46,7 @@ from src.core.rd_cleanup import (
     scan_rd_account,
 )
 from src.core.symlink_health import (
+    MediaScanTarget,
     SymlinkHealthExecuteRequest,
     SymlinkHealthResult,
     SymlinkHealthScan,
@@ -897,13 +898,20 @@ async def symlink_health_execute_endpoint(
         ) from exc
 
     logger.info(
-        "symlink_health_execute_endpoint: requeued=%d cleaned=%d "
+        "symlink_health_execute_endpoint: recreated=%d requeued=%d cleaned=%d "
         "symlinks_removed_from_disk=%d errors=%d",
+        result.recreated,
         result.requeued,
         result.cleaned,
         result.symlinks_removed_from_disk,
         len(result.errors),
     )
+
+    # Trigger Plex/Jellyfin library scans for any directly recreated symlinks.
+    # Fire-and-forget so the HTTP response is not blocked by slow media servers.
+    if result.media_scan_targets:
+        asyncio.create_task(_trigger_media_scans(result.media_scan_targets))
+
     return result
 
 
@@ -1015,3 +1023,89 @@ async def _path_is_dir(path: str) -> bool:
     import asyncio
 
     return await asyncio.to_thread(os.path.isdir, path)
+
+
+async def _trigger_media_scans(targets: list[MediaScanTarget]) -> None:
+    """Trigger batched Plex/Jellyfin library scans after symlink recreation.
+
+    Deduplicates scan requests so each (section_id, directory) pair is only
+    scanned once for Plex, and each library ID is only scanned once for
+    Jellyfin.  All failures are logged and swallowed — media server scan
+    errors must never propagate back to the caller.
+
+    Args:
+        targets: List of MediaScanTarget describing recreated symlinks.
+    """
+    from src.config import settings  # noqa: PLC0415
+
+    # ------------------------------------------------------------------
+    # Plex scans — one scan per unique (section_id, scan_dir)
+    # ------------------------------------------------------------------
+    try:
+        if settings.plex.enabled and settings.plex.scan_after_symlink and settings.plex.token:
+            from src.services.plex import plex_client  # noqa: PLC0415
+
+            seen_scans: set[tuple[int, str]] = set()
+            for target in targets:
+                scan_dir = os.path.dirname(target.target_path)
+                section_ids = (
+                    settings.plex.movie_section_ids
+                    if target.media_type == "movie"
+                    else settings.plex.show_section_ids
+                )
+                if not section_ids:
+                    continue
+                for sid in section_ids:
+                    if (sid, scan_dir) in seen_scans:
+                        continue
+                    seen_scans.add((sid, scan_dir))
+                    try:
+                        await plex_client.scan_section(sid, path=scan_dir)
+                        logger.info(
+                            "_trigger_media_scans: Plex scan section=%d path=%s",
+                            sid,
+                            scan_dir,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "_trigger_media_scans: Plex scan failed for section %d (non-fatal)",
+                            sid,
+                        )
+    except Exception:
+        logger.exception("_trigger_media_scans: Plex batch scan trigger failed (non-fatal)")
+
+    # ------------------------------------------------------------------
+    # Jellyfin scans — one scan per unique library ID
+    # ------------------------------------------------------------------
+    try:
+        if (
+            settings.jellyfin.enabled
+            and settings.jellyfin.scan_after_symlink
+            and settings.jellyfin.api_key
+        ):
+            from src.services.jellyfin import jellyfin_client  # noqa: PLC0415
+
+            seen_jf_libs: set[str] = set()
+            for target in targets:
+                lib_ids = (
+                    settings.jellyfin.movie_library_ids
+                    if target.media_type == "movie"
+                    else settings.jellyfin.show_library_ids
+                )
+                for lib_id in lib_ids:
+                    if lib_id in seen_jf_libs:
+                        continue
+                    seen_jf_libs.add(lib_id)
+                    try:
+                        await jellyfin_client.scan_library(lib_id)
+                        logger.info(
+                            "_trigger_media_scans: Jellyfin scan lib_id=%s",
+                            lib_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "_trigger_media_scans: Jellyfin scan failed for %s (non-fatal)",
+                            lib_id,
+                        )
+    except Exception:
+        logger.exception("_trigger_media_scans: Jellyfin scan trigger failed (non-fatal)")

@@ -288,7 +288,12 @@ class TestScanSymlinkHealth:
         assert result.items[0].status == SymlinkStatus.DEAD
 
     async def test_scan_broken_target_dangling(self, session: AsyncSession):
-        """Target is a dangling symlink (source_exists=True but target_valid=False)."""
+        """Target is a dangling symlink (source_exists=True but target_valid=False).
+
+        When the source file still exists on disk, the item is classified as
+        RECOVERABLE immediately — the symlink just needs to be recreated.
+        _find_mount_match is NOT called in this path.
+        """
         item = _make_item(session)
         await session.flush()
         _make_symlink(
@@ -302,16 +307,21 @@ class TestScanSymlinkHealth:
         with (
             patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(True, False)])),
-            patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)),
+            patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)) as mock_match,
         ):
             result = await scan_symlink_health(session)
 
         assert result.broken == 1
+        assert result.recoverable == 1
         assert len(result.items) == 1
         item_result = result.items[0]
         assert item_result.source_exists is True
         assert item_result.target_valid is False
-        assert item_result.status == SymlinkStatus.DEAD
+        # Source still exists → RECOVERABLE; mount_match_path is set to source_path
+        assert item_result.status == SymlinkStatus.RECOVERABLE
+        assert item_result.mount_match_path == "/mnt/zurg/Movie.mkv"
+        # _find_mount_match must not be called when source_exists is True
+        mock_match.assert_not_called()
 
     async def test_scan_recoverable_mount_match(self, session: AsyncSession):
         """Broken symlink but mount index has matching content → RECOVERABLE."""
@@ -1334,3 +1344,353 @@ class TestSymlinkHealthExecuteEndpoint:
             json={"requeue_ids": "not-a-list", "cleanup_ids": []},
         )
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Direct-recreate feature tests (scan + execute)
+# ---------------------------------------------------------------------------
+
+
+class TestScanSourceExistsFastPath:
+    """Tests for the source_exists fast path added to scan_symlink_health."""
+
+    async def test_scan_source_exists_skips_mount_match(self, session: AsyncSession):
+        """Broken symlink where source file still exists → RECOVERABLE without mount lookup.
+
+        When source_exists=True the scan must:
+        - Set mount_match_path to source_path (not None)
+        - NOT call _find_mount_match (no unnecessary DB lookup)
+        - Classify the item as RECOVERABLE
+        """
+        source = "/mnt/zurg/__all__/Movie.2024/Movie.2024.mkv"
+        target = "/media/library/movies/Movie (2024)/Movie (2024).mkv"
+
+        item = _make_item(session, title="Present Source Movie")
+        await session.flush()
+        _make_symlink(session, media_item_id=item.id, source_path=source, target_path=target)
+        await session.flush()
+
+        # source_exists=True, target_valid=False (dangling symlink)
+        with (
+            patch(
+                "src.core.symlink_health.asyncio.wait_for",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "src.core.symlink_health.asyncio.gather",
+                new=AsyncMock(return_value=[(True, False)]),
+            ),
+            patch(
+                "src.core.symlink_health._find_mount_match",
+                new=AsyncMock(return_value=None),
+            ) as mock_find,
+        ):
+            result = await scan_symlink_health(session)
+
+        assert result.broken == 1
+        assert result.recoverable == 1
+        assert result.dead == 0
+        assert len(result.items) == 1
+
+        broken = result.items[0]
+        assert broken.source_exists is True
+        assert broken.target_valid is False
+        assert broken.status == SymlinkStatus.RECOVERABLE
+        # mount_match_path must be the existing source_path — not None
+        assert broken.mount_match_path == source
+        # _find_mount_match must never be called when source is present
+        mock_find.assert_not_called()
+
+    async def test_scan_source_gone_uses_mount_match(self, session: AsyncSession):
+        """Broken symlink where source is gone → _find_mount_match IS called.
+
+        When source_exists=False the scan falls through to _find_mount_match.
+        The result classification depends entirely on what _find_mount_match returns.
+        """
+        source = "/mnt/zurg/__all__/Gone.Movie.mkv"
+        target = "/media/library/movies/Gone Movie (2020)/Gone Movie (2020).mkv"
+        match = "/mnt/zurg/__all__/New.Path/Gone.Movie.mkv"
+
+        item = _make_item(session, title="Gone Source Movie", year=2020)
+        await session.flush()
+        _make_symlink(session, media_item_id=item.id, source_path=source, target_path=target)
+        await session.flush()
+
+        # source_exists=False, target_valid=False
+        with (
+            patch(
+                "src.core.symlink_health.asyncio.wait_for",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "src.core.symlink_health.asyncio.gather",
+                new=AsyncMock(return_value=[(False, False)]),
+            ),
+            patch(
+                "src.core.symlink_health._find_mount_match",
+                new=AsyncMock(return_value=match),
+            ) as mock_find,
+        ):
+            result = await scan_symlink_health(session)
+
+        assert result.broken == 1
+        assert result.recoverable == 1
+        assert result.dead == 0
+
+        broken = result.items[0]
+        assert broken.source_exists is False
+        assert broken.status == SymlinkStatus.RECOVERABLE
+        # mount_match_path comes from _find_mount_match, not source_path
+        assert broken.mount_match_path == match
+        # _find_mount_match MUST be called when source is gone
+        mock_find.assert_called_once()
+
+    async def test_scan_source_gone_no_match_is_dead(self, session: AsyncSession):
+        """Broken symlink where source is gone and no mount match → DEAD."""
+        item = _make_item(session, title="Truly Lost Movie")
+        await session.flush()
+        _make_symlink(
+            session,
+            media_item_id=item.id,
+            source_path="/mnt/zurg/__all__/Lost.mkv",
+            target_path="/media/library/movies/Truly Lost Movie/Truly Lost Movie.mkv",
+        )
+        await session.flush()
+
+        with (
+            patch(
+                "src.core.symlink_health.asyncio.wait_for",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "src.core.symlink_health.asyncio.gather",
+                new=AsyncMock(return_value=[(False, False)]),
+            ),
+            patch(
+                "src.core.symlink_health._find_mount_match",
+                new=AsyncMock(return_value=None),
+            ) as mock_find,
+        ):
+            result = await scan_symlink_health(session)
+
+        assert result.dead == 1
+        assert result.recoverable == 0
+        assert result.items[0].status == SymlinkStatus.DEAD
+        assert result.items[0].mount_match_path is None
+        mock_find.assert_called_once()
+
+
+class TestExecuteDirectRecreate:
+    """Tests for the direct-recreate path in execute_symlink_health."""
+
+    async def test_execute_recreates_when_source_exists(self, session: AsyncSession):
+        """Item with a live source_path → symlink is directly recreated, state→COMPLETE.
+
+        Verifies:
+        - create_symlink called with the correct source_path
+        - Item state is COMPLETE (not WANTED)
+        - result.recreated == 1 and item_id in result.recreated_ids
+        - result.media_scan_targets has an entry for the new symlink
+        """
+        from src.core.symlink_manager import SymlinkCreationError, SourceNotFoundError  # noqa
+
+        source = "/mnt/zurg/__all__/Movie.mkv"
+        new_target = "/media/library/movies/Test Movie (2024)/Test Movie (2024).mkv"
+
+        item = _make_item(session, state=QueueState.DONE)
+        await session.flush()
+        _make_symlink(session, media_item_id=item.id, source_path=source)
+        await session.flush()
+
+        # Fake Symlink object returned by create_symlink
+        mock_new_symlink = MagicMock()
+        mock_new_symlink.target_path = new_target
+
+        mock_create_symlink = AsyncMock(return_value=mock_new_symlink)
+
+        async def fake_to_thread(fn, *args):
+            if fn == os.path.exists:
+                # source_path exists on disk
+                return True
+            if fn == os.path.islink:
+                return False
+            if fn == os.rmdir:
+                raise OSError("not empty")
+            return None
+
+        with (
+            patch("src.core.symlink_health.asyncio.to_thread", side_effect=fake_to_thread),
+            patch("src.core.symlink_health.settings") as mock_settings,
+            patch(
+                "src.core.symlink_manager.SymlinkManager.create_symlink",
+                new=mock_create_symlink,
+            ),
+        ):
+            mock_settings.paths.library_movies = LIBRARY_MOVIES
+            mock_settings.paths.library_shows = LIBRARY_SHOWS
+            result = await execute_symlink_health(
+                session,
+                SymlinkHealthExecuteRequest(requeue_ids=[item.id], cleanup_ids=[]),
+            )
+
+        await session.flush()
+
+        assert result.recreated == 1
+        assert item.id in result.recreated_ids
+        assert result.requeued == 0
+        assert result.errors == []
+
+        # Verify media_scan_targets has an entry pointing to the new symlink's target_path
+        assert len(result.media_scan_targets) == 1
+        scan_target = result.media_scan_targets[0]
+        assert scan_target.target_path == new_target
+        assert scan_target.media_type == item.media_type.value
+
+        # Verify state was changed to COMPLETE, not WANTED
+        from sqlalchemy import select as sa_select
+
+        db_item = (
+            await session.execute(sa_select(MediaItem).where(MediaItem.id == item.id))
+        ).scalar_one()
+        assert db_item.state == QueueState.COMPLETE
+
+        # create_symlink must have been called with the correct source_path
+        mock_create_symlink.assert_awaited_once()
+        call_args = mock_create_symlink.call_args
+        assert call_args.args[2] == source
+
+    async def test_execute_requeues_when_source_gone(self, session: AsyncSession):
+        """Item whose source_path is gone falls back to re-queue (WANTED), not recreate.
+
+        Verifies:
+        - create_symlink is NOT called
+        - Item transitions to WANTED
+        - result.requeued == 1
+        - result.recreated == 0
+        """
+        from src.core.symlink_manager import SymlinkCreationError, SourceNotFoundError  # noqa
+
+        source = "/mnt/zurg/__all__/Missing.mkv"
+
+        item = _make_item(session, state=QueueState.DONE)
+        await session.flush()
+        _make_symlink(session, media_item_id=item.id, source_path=source)
+        await session.flush()
+
+        mock_create_symlink = AsyncMock()
+
+        async def fake_to_thread(fn, *args):
+            if fn == os.path.exists:
+                # source_path does NOT exist on disk
+                return False
+            if fn == os.path.islink:
+                return False
+            if fn == os.rmdir:
+                raise OSError("not empty")
+            return None
+
+        with (
+            patch("src.core.symlink_health.asyncio.to_thread", side_effect=fake_to_thread),
+            patch("src.core.symlink_health.settings") as mock_settings,
+            patch(
+                "src.core.symlink_manager.SymlinkManager.create_symlink",
+                new=mock_create_symlink,
+            ),
+        ):
+            mock_settings.paths.library_movies = LIBRARY_MOVIES
+            mock_settings.paths.library_shows = LIBRARY_SHOWS
+            result = await execute_symlink_health(
+                session,
+                SymlinkHealthExecuteRequest(requeue_ids=[item.id], cleanup_ids=[]),
+            )
+
+        await session.flush()
+
+        assert result.requeued == 1
+        assert result.recreated == 0
+        assert result.recreated_ids == []
+        assert result.errors == []
+
+        # create_symlink must not have been called at all
+        mock_create_symlink.assert_not_awaited()
+
+        # Item must be in WANTED state
+        from sqlalchemy import select as sa_select
+
+        db_item = (
+            await session.execute(sa_select(MediaItem).where(MediaItem.id == item.id))
+        ).scalar_one()
+        assert db_item.state == QueueState.WANTED
+
+    async def test_execute_recreate_falls_back_on_error(self, session: AsyncSession):
+        """create_symlink raising SymlinkCreationError → falls back to re-queue, no raise.
+
+        Verifies:
+        - Falls back to force_transition(WANTED)
+        - result.requeued == 1
+        - result.recreated == 0
+        - Error is logged but not propagated (result.errors is empty — the outer
+          try/except only appends for ItemNotFoundError or unexpected Exception,
+          not for the expected SymlinkCreationError fallback path)
+        """
+        from src.core.symlink_manager import SymlinkCreationError, SourceNotFoundError  # noqa
+
+        source = "/mnt/zurg/__all__/Broken.mkv"
+
+        item = _make_item(session, state=QueueState.DONE)
+        await session.flush()
+        _make_symlink(session, media_item_id=item.id, source_path=source)
+        await session.flush()
+
+        mock_create_symlink = AsyncMock(
+            side_effect=SymlinkCreationError(
+                target_path="/media/library/movies/Broken/Broken.mkv",
+                source_path=source,
+                reason="disk full",
+            )
+        )
+
+        async def fake_to_thread(fn, *args):
+            if fn == os.path.exists:
+                # Source exists — will attempt recreate
+                return True
+            if fn == os.path.islink:
+                return False
+            if fn == os.rmdir:
+                raise OSError("not empty")
+            return None
+
+        with (
+            patch("src.core.symlink_health.asyncio.to_thread", side_effect=fake_to_thread),
+            patch("src.core.symlink_health.settings") as mock_settings,
+            patch(
+                "src.core.symlink_manager.SymlinkManager.create_symlink",
+                new=mock_create_symlink,
+            ),
+        ):
+            mock_settings.paths.library_movies = LIBRARY_MOVIES
+            mock_settings.paths.library_shows = LIBRARY_SHOWS
+            result = await execute_symlink_health(
+                session,
+                SymlinkHealthExecuteRequest(requeue_ids=[item.id], cleanup_ids=[]),
+            )
+
+        await session.flush()
+
+        # Must fall back to re-queue, not raise
+        assert result.requeued == 1
+        assert result.recreated == 0
+        assert result.recreated_ids == []
+        # The fallback path is not an unexpected error — errors list stays empty
+        assert result.errors == []
+
+        # create_symlink was attempted (and failed)
+        mock_create_symlink.assert_awaited_once()
+
+        # Item must be in WANTED state after the fallback
+        from sqlalchemy import select as sa_select
+
+        db_item = (
+            await session.execute(sa_select(MediaItem).where(MediaItem.id == item.id))
+        ).scalar_one()
+        assert db_item.state == QueueState.WANTED

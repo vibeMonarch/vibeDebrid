@@ -22,12 +22,12 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, literal, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.models.media_item import QueueState
+from src.models.media_item import MediaItem, QueueState
 from src.models.mount_index import MountIndex
 from src.models.symlink import Symlink
 
@@ -122,19 +122,40 @@ class SymlinkHealthExecuteRequest(BaseModel):
     cleanup_ids: list[int] = []
 
 
+class MediaScanTarget(BaseModel):
+    """A (media_type, target_path) pair for triggering Plex/Jellyfin scans.
+
+    Attributes:
+        media_type: ``"movie"`` or ``"show"`` string.
+        target_path: Absolute path of the newly created symlink in the library.
+    """
+
+    media_type: str
+    target_path: str
+
+
 class SymlinkHealthResult(BaseModel):
     """Result of a symlink health execute operation.
 
     Attributes:
         requeued: Number of items successfully transitioned to WANTED.
+        recreated: Number of items whose symlinks were directly recreated
+            (source file still exists — no re-scrape required).
+        recreated_ids: item_ids that were recreated (not re-queued).
         cleaned: Number of items whose symlink records were cleaned up.
         symlinks_removed_from_disk: Total symlink files deleted from disk.
+        media_scan_targets: (media_type, target_path) pairs collected during
+            symlink recreation, used by the route handler to trigger
+            Plex/Jellyfin library scans.
         errors: Non-fatal error messages accumulated during execution.
     """
 
     requeued: int = 0
+    recreated: int = 0
+    recreated_ids: list[int] = []
     cleaned: int = 0
     symlinks_removed_from_disk: int = 0
+    media_scan_targets: list[MediaScanTarget] = Field(default_factory=list, exclude=True)
     errors: list[str] = []
 
 
@@ -422,28 +443,46 @@ async def scan_symlink_health(session: AsyncSession) -> SymlinkHealthScan:
                 broken_by_item[item_id] = (row, source_exists, target_valid)
 
     # ------------------------------------------------------------------
-    # Step 5: classify each broken item via mount_index lookup
+    # Step 5: classify each broken item.
+    #
+    # Fast path: if the source file recorded in the Symlink row still exists
+    # on disk, we can mark it RECOVERABLE immediately and skip the fuzzy
+    # mount_index title search entirely.  This correctly handles the common
+    # case where the symlink target was deleted (e.g. library rescan wiped
+    # it) but the underlying Zurg-mount file is still present.
+    #
+    # Fallback: when source_exists is False, fall back to _find_mount_match
+    # (the existing title-based search) to detect files that Zurg relocated
+    # to a different path.
     # ------------------------------------------------------------------
     for item_id, (row, source_exists, target_valid) in broken_by_item.items():
-        try:
-            match_path = await _find_mount_match(
-                session,
-                title=str(row.title),
-                media_type=str(row.media_type),
-                season=row.season,
-                episode=row.episode,
-                year=row.year,
-            )
-        except Exception as exc:
-            logger.warning(
-                "scan_symlink_health: mount lookup failed for item_id=%d: %s",
+        if source_exists:
+            # Source file still present — directly recoverable without a DB lookup.
+            match_path: str | None = str(row.source_path)
+            logger.debug(
+                "scan_symlink_health: item_id=%d source still exists, marking RECOVERABLE",
                 item_id,
-                exc,
             )
-            match_path = None
-            scan.errors.append(
-                f"item_id={item_id} ({row.title}): mount lookup error — {exc}"
-            )
+        else:
+            try:
+                match_path = await _find_mount_match(
+                    session,
+                    title=str(row.title),
+                    media_type=str(row.media_type),
+                    season=row.season,
+                    episode=row.episode,
+                    year=row.year,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scan_symlink_health: mount lookup failed for item_id=%d: %s",
+                    item_id,
+                    exc,
+                )
+                match_path = None
+                scan.errors.append(
+                    f"item_id={item_id} ({row.title}): mount lookup error — {exc}"
+                )
 
         status = SymlinkStatus.RECOVERABLE if match_path else SymlinkStatus.DEAD
 
@@ -491,12 +530,21 @@ async def execute_symlink_health(
     session: AsyncSession,
     request: SymlinkHealthExecuteRequest,
 ) -> SymlinkHealthResult:
-    """Re-queue recoverable items and/or clean up dead symlink records.
+    """Re-queue or directly recreate recoverable items; clean up dead records.
 
-    For ``requeue_ids``:
+    For ``requeue_ids`` — two paths depending on whether source files exist:
+
+    **Direct recreate** (preferred, when any source_path still exists on disk):
+      1. Load the MediaItem and all its Symlink rows.
+      2. For each Symlink whose source_path exists, call
+         ``symlink_manager.create_symlink`` to rebuild the library symlink.
+      3. Delete the old Symlink DB records and flush.
+      4. Transition item state to COMPLETE (no re-scrape needed).
+      5. Collect (media_type, target_path) pairs for Plex/Jellyfin scans.
+
+    **Re-queue fallback** (when no source_path exists on disk):
       1. Delete all Symlink rows from DB and remove files from disk.
-      2. Clean up empty parent directories.
-      3. Transition item state to WANTED via ``queue_manager.force_transition``.
+      2. Transition item state to WANTED so the scrape pipeline retries.
 
     For ``cleanup_ids``:
       1. Delete all Symlink rows from DB and remove files from disk.
@@ -514,30 +562,150 @@ async def execute_symlink_health(
         A ``SymlinkHealthResult`` with counts for all outcomes.
     """
     from src.core.queue_manager import QueueManager, ItemNotFoundError  # noqa: PLC0415
+    from src.core.symlink_manager import (  # noqa: PLC0415
+        SymlinkManager,
+        SourceNotFoundError,
+        SymlinkCreationError,
+    )
 
     result = SymlinkHealthResult()
     queue_manager = QueueManager()
+    symlink_manager = SymlinkManager()
 
     # ------------------------------------------------------------------
-    # Process requeue_ids — clean symlinks + transition to WANTED
+    # Process requeue_ids — direct recreate when possible, else re-queue
     # ------------------------------------------------------------------
     for item_id in request.requeue_ids:
         try:
-            async with await session.begin_nested():
-                removed = await _remove_symlinks_for_item(session, item_id)
-                result.symlinks_removed_from_disk += removed
-
-                await queue_manager.force_transition(
-                    session, item_id, QueueState.WANTED
-                )
-
-            result.requeued += 1
-            logger.info(
-                "execute_symlink_health: requeued item_id=%d "
-                "(removed %d symlinks from disk)",
-                item_id,
-                removed,
+            # Load the MediaItem.
+            item_result = await session.execute(
+                select(MediaItem).where(MediaItem.id == item_id)
             )
+            media_item = item_result.scalar_one_or_none()
+            if media_item is None:
+                raise ItemNotFoundError(item_id)
+
+            # Load all Symlink rows for this item.
+            symlinks_result = await session.execute(
+                select(Symlink).where(Symlink.media_item_id == item_id)
+            )
+            symlinks = list(symlinks_result.scalars().all())
+
+            # Check which source_paths still exist on disk.
+            source_checks = await asyncio.gather(
+                *[
+                    asyncio.to_thread(os.path.exists, s.source_path)
+                    for s in symlinks
+                ]
+            )
+            live_symlinks = [
+                s for s, exists in zip(symlinks, source_checks) if exists
+            ]
+
+            if live_symlinks:
+                # ----------------------------------------------------------
+                # Direct recreate: source files are still on disk.
+                # Delete old DB records and rebuild symlinks in place.
+                # ----------------------------------------------------------
+                try:
+                    async with await session.begin_nested():
+                        # Delete all old Symlink DB records for this item.
+                        for symlink in symlinks:
+                            await session.delete(symlink)
+                        await session.flush()
+
+                        # Recreate a symlink for each live source_path.
+                        new_targets: list[MediaScanTarget] = []
+                        for symlink in live_symlinks:
+                            try:
+                                new_symlink = await symlink_manager.create_symlink(
+                                    session, media_item, symlink.source_path
+                                )
+                                new_targets.append(
+                                    MediaScanTarget(
+                                        media_type=media_item.media_type.value,
+                                        target_path=new_symlink.target_path,
+                                    )
+                                )
+                            except (SourceNotFoundError, SymlinkCreationError) as exc:
+                                logger.warning(
+                                    "execute_symlink_health: symlink recreation failed "
+                                    "for item_id=%d source=%r — %s (will re-queue)",
+                                    item_id,
+                                    symlink.source_path,
+                                    exc,
+                                )
+                                # Treat the whole item as a re-queue fallback.
+                                raise
+
+                        await queue_manager.force_transition(
+                            session, item_id, QueueState.COMPLETE
+                        )
+
+                    result.recreated += 1
+                    result.recreated_ids.append(item_id)
+                    result.media_scan_targets.extend(new_targets)
+                    logger.info(
+                        "execute_symlink_health: recreated item_id=%d "
+                        "(%d symlinks rebuilt)",
+                        item_id,
+                        len(new_targets),
+                    )
+
+                except (SourceNotFoundError, SymlinkCreationError):
+                    # Savepoint was rolled back (DB clean) but any symlinks,
+                    # NFOs, or directories created on disk by successful
+                    # create_symlink calls before the failure remain.  Clean
+                    # them up before falling through to re-queue.
+                    for target in new_targets:
+                        try:
+                            tp = target.target_path
+                            if await asyncio.to_thread(os.path.islink, tp):
+                                await asyncio.to_thread(os.unlink, tp)
+                            # Remove companion NFO if present.
+                            nfo = os.path.splitext(tp)[0] + ".nfo"
+                            if await asyncio.to_thread(os.path.exists, nfo):
+                                await asyncio.to_thread(os.unlink, nfo)
+                        except OSError as cleanup_exc:
+                            logger.warning(
+                                "execute_symlink_health: disk cleanup failed "
+                                "for %r — %s",
+                                target.target_path,
+                                cleanup_exc,
+                            )
+                    new_targets.clear()
+
+                    async with await session.begin_nested():
+                        removed = await _remove_symlinks_for_item(session, item_id)
+                        result.symlinks_removed_from_disk += removed
+                        await queue_manager.force_transition(
+                            session, item_id, QueueState.WANTED
+                        )
+                    result.requeued += 1
+                    logger.info(
+                        "execute_symlink_health: fallback requeued item_id=%d "
+                        "(removed %d symlinks from disk)",
+                        item_id,
+                        removed,
+                    )
+
+            else:
+                # ----------------------------------------------------------
+                # No source files found — remove symlinks and re-queue.
+                # ----------------------------------------------------------
+                async with await session.begin_nested():
+                    removed = await _remove_symlinks_for_item(session, item_id)
+                    result.symlinks_removed_from_disk += removed
+                    await queue_manager.force_transition(
+                        session, item_id, QueueState.WANTED
+                    )
+                result.requeued += 1
+                logger.info(
+                    "execute_symlink_health: requeued item_id=%d "
+                    "(removed %d symlinks from disk)",
+                    item_id,
+                    removed,
+                )
 
         except ItemNotFoundError:
             msg = f"item_id={item_id}: MediaItem not found — skipped"
@@ -545,7 +713,7 @@ async def execute_symlink_health(
             result.errors.append(msg)
         except Exception as exc:
             msg = f"item_id={item_id}: requeue failed — {exc}"
-            logger.error("execute_symlink_health: %s", msg)
+            logger.error("execute_symlink_health: %s", msg, exc_info=True)
             result.errors.append(msg)
 
     # ------------------------------------------------------------------
@@ -571,8 +739,9 @@ async def execute_symlink_health(
             result.errors.append(msg)
 
     logger.info(
-        "execute_symlink_health: requeued=%d cleaned=%d "
+        "execute_symlink_health: recreated=%d requeued=%d cleaned=%d "
         "symlinks_removed_from_disk=%d errors=%d",
+        result.recreated,
         result.requeued,
         result.cleaned,
         result.symlinks_removed_from_disk,

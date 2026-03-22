@@ -101,12 +101,12 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${ZILEAN_PORT:-8182}:8182"
+      - "${ZILEAN_PORT:-8182}:8181"
     environment:
       Zilean__Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-zilean};Username=${POSTGRES_USER:-zilean};Password=${POSTGRES_PASSWORD:-zilean}"
       Zilean__Dmm__MinimumScoreMatch: "${ZILEAN_MIN_SCORE:-0.85}"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8182/healthchecks/ping"]
+      test: ["CMD", "curl", "-f", "http://localhost:8181/healthchecks/ping"]
       interval: 15s
       timeout: 5s
       start_period: 60s
@@ -122,13 +122,16 @@ services:
     image: ${VIBE_IMAGE:-vibemonarch/vibedebrid:latest}
     container_name: vibedebrid
     restart: unless-stopped
+    depends_on:
+      rclone:
+        condition: service_healthy
     ports:
       - "${VIBE_PORT:-5100}:5100"
     environment:
       VIBE_DATA_DIR: /data
       VIBE_REAL_DEBRID__API_KEY: ${RD_API_KEY:-}
       VIBE_TMDB__API_KEY: ${TMDB_API_KEY:-}
-      VIBE_SCRAPERS__ZILEAN__BASE_URL: ${ZILEAN_URL:-http://zilean:8182}
+      VIBE_SCRAPERS__ZILEAN__BASE_URL: ${ZILEAN_URL:-http://zilean:8181}
       VIBE_PATHS__ZURG_MOUNT: ${ZURG_MOUNT_HOST_PATH:-/opt/homeserver/Zurg/mnt}/__all__
       VIBE_PATHS__LIBRARY_MOVIES: ${LIBRARY_MOVIES:-/opt/homeserver/mnt/Movies}
       VIBE_PATHS__LIBRARY_SHOWS: ${LIBRARY_SHOWS:-/opt/homeserver/mnt/TV Shows}
