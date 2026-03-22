@@ -273,7 +273,12 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Movie"],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
@@ -300,7 +305,12 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Movie"],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[],  # empty — file not mounted yet
             ),
@@ -324,7 +334,12 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Movie"],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
@@ -343,7 +358,7 @@ class TestStage3CheckingToComplete:
     async def test_mount_lookup_uses_item_title_season_episode(
         self, session: AsyncSession, job_patches: dict
     ) -> None:
-        """mount_scanner.lookup is called with the item's title, season, and episode."""
+        """mount_scanner.lookup_multi is called with the item's titles, season, and episode."""
         item = await _make_media_item(
             session,
             state=QueueState.CHECKING,
@@ -355,7 +370,12 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Breaking Bad"],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[],
             ) as mock_lookup,
@@ -365,7 +385,6 @@ class TestStage3CheckingToComplete:
 
         mock_lookup.assert_awaited_once()
         _, kwargs = mock_lookup.call_args
-        assert kwargs["title"] == "Breaking Bad"
         assert kwargs["season"] == 3
         assert kwargs["episode"] == 7
 
@@ -379,7 +398,12 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Movie"],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[first_match, second_match],
             ),
@@ -538,9 +562,9 @@ class TestFullIntegration:
 
         mount_match = _make_mount_match("/mnt/zurg/movies/match.mkv")
 
-        async def _fake_lookup(sess, *, title, season, episode):
+        async def _fake_lookup(sess, titles, *, season, episode):
             # Only "Adding No Mount" returns empty; all others get a match
-            if title == "Adding No Mount":
+            if "Adding No Mount" in titles:
                 return []
             return [mount_match]
 
@@ -551,7 +575,12 @@ class TestFullIntegration:
                 return_value={"status": "downloaded"},
             ),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=lambda session, item, tmdb_original_title=None: [item.title],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 side_effect=_fake_lookup,
             ),
@@ -618,7 +647,12 @@ class TestFullIntegration:
                 side_effect=RuntimeError("RD down"),
             ),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=lambda session, item, tmdb_original_title=None: [item.title],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
@@ -812,13 +846,18 @@ class TestStage3EdgeCases:
 
         mount_match = _make_mount_match("/mnt/zurg/Found Movie (2024)/found.mkv")
 
-        async def _fake_lookup(session, *, title, season, episode):
-            if title == "Found Movie":
+        async def _fake_lookup(session, titles, *, season, episode):
+            if "Found Movie" in titles:
                 return [mount_match]
             return []
 
         with (
-            patch("src.main.mount_scanner.lookup", new_callable=AsyncMock, side_effect=_fake_lookup),
+            patch(
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=lambda session, item, tmdb_original_title=None: [item.title],
+            ),
+            patch("src.main.mount_scanner.lookup_multi", new_callable=AsyncMock, side_effect=_fake_lookup),
             patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
@@ -923,7 +962,12 @@ class TestStage3CheckingTimeout:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Movie"],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),

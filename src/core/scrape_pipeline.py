@@ -234,7 +234,9 @@ class ScrapePipeline:
         # ------------------------------------------------------------------
         # Step 1 — Mount check
         # ------------------------------------------------------------------
-        mount_result = await self._step_mount_check(session, item)
+        mount_result = await self._step_mount_check(
+            session, item, tmdb_original_title=_tmdb_original_title
+        )
         if mount_result is not None:
             return mount_result
 
@@ -666,17 +668,25 @@ class ScrapePipeline:
     # ------------------------------------------------------------------
 
     async def _step_mount_check(
-        self, session: AsyncSession, item: MediaItem
+        self,
+        session: AsyncSession,
+        item: MediaItem,
+        tmdb_original_title: str | None = None,
     ) -> PipelineResult | None:
         """Check the Zurg mount index for an existing file match.
 
         Args:
             session: Caller-managed async database session.
             item: The MediaItem to check.
+            tmdb_original_title: Optional original title from TMDB (e.g. Japanese
+                title for anime). Used to build the alt-title list passed to
+                ``lookup_multi`` so non-English titles are matched correctly.
 
         Returns:
             A PipelineResult on a mount hit, or None to continue the pipeline.
         """
+        from src.core.mount_scanner import gather_alt_titles
+
         t0 = time.monotonic()
         try:
             mount_available = await mount_scanner.is_mount_available()
@@ -698,8 +708,9 @@ class ScrapePipeline:
             return None
 
         try:
-            matches = await mount_scanner.lookup(
-                session, item.title, item.season, item.episode
+            titles = await gather_alt_titles(session, item, tmdb_original_title)
+            matches = await mount_scanner.lookup_multi(
+                session, titles, item.season, item.episode
             )
         except Exception as exc:
             logger.warning(

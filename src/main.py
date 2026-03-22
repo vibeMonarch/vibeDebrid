@@ -23,7 +23,7 @@ from src.config import settings
 from src.database import engine, init_db, async_session
 from src.core.queue_manager import queue_manager
 from src.core.scrape_pipeline import scrape_pipeline
-from src.core.mount_scanner import mount_scanner
+from src.core.mount_scanner import mount_scanner, gather_alt_titles
 from src.core.symlink_manager import SourceNotFoundError, symlink_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
@@ -436,9 +436,10 @@ async def _job_queue_processor() -> None:
                     _season_pack_episode_offset: int = 0
                     scan_result = None
                     # Season packs: look up ALL episodes (episode=None) and symlink each match
-                    matches = await mount_scanner.lookup(
+                    _sp_alt_titles = await gather_alt_titles(session, item)
+                    matches = await mount_scanner.lookup_multi(
                         session,
-                        title=item.title,
+                        _sp_alt_titles,
                         season=item.season,
                         episode=None,
                     )
@@ -774,9 +775,10 @@ async def _job_queue_processor() -> None:
                 else:
                     # Single episode/movie: use the first (most recent) match
                     torrent = None
-                    matches = await mount_scanner.lookup(
+                    _se_alt_titles = await gather_alt_titles(session, item)
+                    matches = await mount_scanner.lookup_multi(
                         session,
-                        title=item.title,
+                        _se_alt_titles,
                         season=item.season,
                         episode=item.episode,
                     )

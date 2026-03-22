@@ -153,7 +153,8 @@ def mock_rd_torrent() -> RdTorrent:
 
 _PATCH_TARGETS = {
     "mount_scanner_available": "src.core.scrape_pipeline.mount_scanner.is_mount_available",
-    "mount_scanner_lookup": "src.core.scrape_pipeline.mount_scanner.lookup",
+    "mount_scanner_lookup": "src.core.scrape_pipeline.mount_scanner.lookup_multi",
+    "gather_alt_titles": "src.core.mount_scanner.gather_alt_titles",
     "dedup_check": "src.core.scrape_pipeline.dedup_engine.check_content_duplicate",
     "dedup_register": "src.core.scrape_pipeline.dedup_engine.register_torrent",
     "zilean_search": "src.core.scrape_pipeline.zilean_client.search",
@@ -174,6 +175,7 @@ class _Mocks:
 
     mount_scanner_available: AsyncMock
     mount_scanner_lookup: AsyncMock
+    gather_alt_titles: AsyncMock
     dedup_check: AsyncMock
     dedup_register: AsyncMock
     zilean_search: AsyncMock
@@ -220,6 +222,9 @@ async def _all_mocks(
 
     mocks.mount_scanner_lookup = started["mount_scanner_lookup"]
     mocks.mount_scanner_lookup.return_value = []
+
+    mocks.gather_alt_titles = started["gather_alt_titles"]
+    mocks.gather_alt_titles.side_effect = lambda session, item, tmdb_original_title=None: [item.title]
 
     mocks.dedup_check = started["dedup_check"]
     mocks.dedup_check.return_value = None

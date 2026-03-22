@@ -26,7 +26,7 @@ import re
 import time
 import unicodedata
 from datetime import datetime, timezone
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import PTN
 from pydantic import BaseModel
@@ -36,6 +36,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.models.mount_index import MountIndex
+
+if TYPE_CHECKING:
+    from src.models.media_item import MediaItem
 from src.services.torrent_parser import ANIME_BARE_DASH_EP_RE as _ANIME_DASH_EP_RE
 from src.services.torrent_parser import BARE_TRAILING_EP_RE as _BARE_TRAILING_EP_RE
 from src.services.torrent_parser import EPISODE_WORD_RE as _EPISODE_WORD_RE
@@ -423,7 +426,46 @@ class MountScanner:
         Returns:
             List of matching MountIndex rows, ordered by ``last_seen_at`` desc.
         """
-        normalized = _normalize_title(title)
+        return await self.lookup_multi(session, [title], season, episode)
+
+    async def lookup_multi(
+        self,
+        session: AsyncSession,
+        titles: list[str],
+        season: int | None = None,
+        episode: int | None = None,
+    ) -> list[MountIndex]:
+        """Look up mount index entries trying multiple title variants.
+
+        Tries each tier across all titles before moving to the next tier:
+
+        - Tier 1 (exact): batch ``WHERE parsed_title IN (...)`` — single query.
+        - Tier 2 (word-subsequence): iterate titles, short-circuit on first hit.
+          Skipped for titles with fewer than 2 words (would produce over-broad
+          matches) but execution always falls through to Tier 3.
+        - Tier 3 (reverse containment): iterate titles, short-circuit on first
+          hit.  Only DB titles with 3+ words are accepted.
+
+        Args:
+            session: Async database session.
+            titles: List of title variants to try (primary title first).
+            season: Optional season filter.
+            episode: Optional episode filter.
+
+        Returns:
+            List of matching MountIndex entries, or empty list.
+        """
+        # Normalise all titles and deduplicate while preserving order.
+        seen: set[str] = set()
+        normalized_titles: list[str] = []
+        for t in titles:
+            norm = _normalize_title(t)
+            if norm and norm not in seen:
+                seen.add(norm)
+                normalized_titles.append(norm)
+
+        if not normalized_titles:
+            return []
 
         def _apply_filters(stmt):
             if season is not None:
@@ -432,70 +474,87 @@ class MountScanner:
                 stmt = stmt.where(MountIndex.parsed_episode == episode)
             return stmt.order_by(MountIndex.last_seen_at.desc())
 
-        # Try exact match first (fast path, prevents false positives).
-        stmt = select(MountIndex).where(MountIndex.parsed_title == normalized)
+        # ------------------------------------------------------------------
+        # Tier 1: exact match — single IN query across all title variants.
+        # ------------------------------------------------------------------
+        stmt = select(MountIndex).where(
+            MountIndex.parsed_title.in_(normalized_titles)
+        )
         result = await session.execute(_apply_filters(stmt))
         matches = list(result.scalars().all())
         if matches:
             return matches
 
-        # Fallback: word-subsequence via LIKE — all query words must appear in order.
-        # Require at least 2 words to prevent overly broad matches (e.g. "dark" matching
-        # "the dark knight").
-        words = normalized.split()
-        if len(words) < 2:
-            return []
-        like_pattern = "%" + "%".join(words) + "%"
-        stmt = select(MountIndex).where(MountIndex.parsed_title.like(like_pattern))
-        result = await session.execute(_apply_filters(stmt))
-        matches = list(result.scalars().all())
-        if matches:
-            # Filter in Python: LIKE "%word1%word2%" matches substrings within
-            # words (e.g. "%the%" matches inside "theater"), so verify whole-word
-            # subsequence here.
-            verified = []
-            query_words = words
-            for m in matches:
-                target_words = (m.parsed_title or "").split()
-                if _is_word_subsequence(query_words, target_words):
-                    verified.append(m)
-            if verified:
-                logger.info(
-                    "lookup: exact match failed for %r, word-subsequence found %d result(s)",
-                    title, len(verified),
-                )
-            return verified
+        # ------------------------------------------------------------------
+        # Tier 2: word-subsequence via LIKE.
+        # For each title variant (2+ words), build LIKE pattern and verify
+        # whole-word subsequence in Python.  Short-circuit on first hit.
+        # Single-word titles are skipped (too broad) but fall through to
+        # Tier 3 rather than returning early.
+        # ------------------------------------------------------------------
+        for normalized in normalized_titles:
+            words = normalized.split()
+            if len(words) < 2:
+                # Skip Tier 2 for single-word titles; fall through to Tier 3.
+                continue
+            like_pattern = "%" + "%".join(words) + "%"
+            stmt = select(MountIndex).where(
+                MountIndex.parsed_title.like(like_pattern)
+            )
+            result = await session.execute(_apply_filters(stmt))
+            candidates = list(result.scalars().all())
+            if candidates:
+                # Filter in Python: LIKE "%word1%word2%" matches substrings
+                # within words (e.g. "%the%" matches inside "theater"), so
+                # verify whole-word subsequence here.
+                verified = [
+                    m for m in candidates
+                    if _is_word_subsequence(words, (m.parsed_title or "").split())
+                ]
+                if verified:
+                    logger.info(
+                        "lookup_multi: exact match failed, word-subsequence on %r"
+                        " found %d result(s)",
+                        normalized,
+                        len(verified),
+                    )
+                    return verified
 
-        # Tier 3: reverse containment — the DB's parsed_title is a substring of the
-        # search title.  This handles cases where the TMDB title is longer than the
-        # torrent's parsed_title (e.g. TMDB "Kimi no Na wa Your Name" vs parsed
-        # "your name").  Uses SQLite instr() so the match is pure SQL without raw text.
-        # Require 3+ words in the DB parsed_title to avoid broad matches from short
-        # tokens like "it" or "alien".
-        stmt = (
-            select(MountIndex)
-            .where(MountIndex.parsed_title.is_not(None))
-            .where(func.instr(literal(normalized), MountIndex.parsed_title) > 0)
-            .limit(50)
-        )
-        result = await session.execute(_apply_filters(stmt))
-        matches = list(result.scalars().all())
-        if matches:
-            verified = []
-            for m in matches:
-                db_words = (m.parsed_title or "").split()
-                if len(db_words) < 3:
-                    continue
-                # Confirm every DB word appears in the search title in order.
-                if _is_word_subsequence(db_words, words):
-                    verified.append(m)
-            if verified:
-                logger.info(
-                    "lookup: exact+subsequence failed for %r, reverse containment found %d result(s)",
-                    title,
-                    len(verified),
-                )
-            return verified
+        # ------------------------------------------------------------------
+        # Tier 3: reverse containment — the DB's parsed_title is a substring
+        # of the search title.  Handles cases where the TMDB title is longer
+        # than the torrent's parsed_title (e.g. TMDB "Kimi no Na wa Your Name"
+        # vs parsed "your name").  Uses SQLite instr() so the match is pure
+        # SQL without raw text.  Only DB titles with 3+ words are accepted to
+        # avoid broad matches from short tokens like "it" or "alien".
+        # ------------------------------------------------------------------
+        for normalized in normalized_titles:
+            words = normalized.split()
+            stmt = (
+                select(MountIndex)
+                .where(MountIndex.parsed_title.is_not(None))
+                .where(func.instr(literal(normalized), MountIndex.parsed_title) > 0)
+                .limit(50)
+            )
+            result = await session.execute(_apply_filters(stmt))
+            candidates = list(result.scalars().all())
+            if candidates:
+                verified = []
+                for m in candidates:
+                    db_words = (m.parsed_title or "").split()
+                    if len(db_words) < 3:
+                        continue
+                    # Confirm every DB word appears in the search title in order.
+                    if _is_word_subsequence(db_words, words):
+                        verified.append(m)
+                if verified:
+                    logger.info(
+                        "lookup_multi: exact+subsequence failed, reverse containment"
+                        " on %r found %d result(s)",
+                        normalized,
+                        len(verified),
+                    )
+                    return verified
 
         return []
 
@@ -1527,6 +1586,62 @@ def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, A
         "resolution": parsed.get("resolution"),
         "codec": parsed.get("codec"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Module-level utility functions
+# ---------------------------------------------------------------------------
+
+
+async def gather_alt_titles(
+    session: AsyncSession,
+    item: "MediaItem",
+    tmdb_original_title: str | None = None,
+) -> list[str]:
+    """Build deduplicated list of all known title variants for an item.
+
+    Sources (in priority order):
+
+    1. ``item.title`` (always first).
+    2. ``tmdb_original_title`` (if provided and different from item.title).
+    3. AniDB titles from local cache (zero-latency SQLite query).
+
+    Does NOT call TMDB alternative_titles API (too expensive for hot path).
+
+    Args:
+        session: Async database session (used for AniDB cache lookup).
+        item: The MediaItem whose title variants are needed.
+        tmdb_original_title: Optional TMDB original language title.
+
+    Returns:
+        Deduplicated list of title strings, primary title first.
+    """
+    titles: list[str] = [item.title]
+    seen_lower: set[str] = {item.title.lower()}
+
+    if tmdb_original_title and tmdb_original_title.lower() not in seen_lower:
+        titles.append(tmdb_original_title)
+        seen_lower.add(tmdb_original_title.lower())
+
+    if item.tmdb_id:
+        try:
+            from src.services.anidb import anidb_client  # lazy import — avoids circular
+
+            anidb_titles = await anidb_client.get_titles_for_tmdb_id(
+                session, int(item.tmdb_id)
+            )
+            for t in anidb_titles:
+                if t.lower() not in seen_lower:
+                    titles.append(t)
+                    seen_lower.add(t.lower())
+        except Exception:
+            # AniDB service not configured or unavailable — skip silently.
+            logger.debug(
+                "gather_alt_titles: AniDB lookup failed for tmdb_id=%s, skipping",
+                item.tmdb_id,
+            )
+
+    return titles
 
 
 # ---------------------------------------------------------------------------

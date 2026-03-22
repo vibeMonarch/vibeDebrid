@@ -836,7 +836,12 @@ class TestSeasonPackCheckingDedup:
         with (
             patch("src.main.async_session", _make_session_factory(session)),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=lambda session, item, tmdb_original_title=None: [item.title],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=mock_matches,
             ),
@@ -907,7 +912,12 @@ class TestSeasonPackCheckingDedup:
         with (
             patch("src.main.async_session", _make_session_factory(session)),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=lambda session, item, tmdb_original_title=None: [item.title],
+            ),
+            patch(
+                "src.main.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[entry_2160p, entry_1080p],
             ),

@@ -52,8 +52,10 @@ from src.core.mount_scanner import (
     _has_meaningful_title,
     _normalize_title,
     _parse_filename,
+    gather_alt_titles,
     mount_scanner,
 )
+from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
 
 # ---------------------------------------------------------------------------
@@ -2983,3 +2985,280 @@ class TestUpsertRecordsUniqueConstraint:
             await session.execute(sa_select(sa_func.count(MountIndex.id)))
         ).scalar()
         assert count == 600
+
+
+# ---------------------------------------------------------------------------
+# Group N: lookup_multi
+# ---------------------------------------------------------------------------
+
+
+class TestLookupMulti:
+    """Tests for MountScanner.lookup_multi — multi-title variant lookup."""
+
+    async def test_multi_title_exact_match(self, session: AsyncSession) -> None:
+        """Second title in the list matches via Tier 1 exact when first fails."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/hero/S01E01.mkv",
+            parsed_title="my hero academia",
+            parsed_season=1,
+            parsed_episode=1,
+        )
+        results = await mount_scanner.lookup_multi(
+            session, ["boku no hero academia", "my hero academia"], season=1
+        )
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/hero/S01E01.mkv"
+
+    async def test_multi_title_first_match_wins(self, session: AsyncSession) -> None:
+        """When the first title yields an exact match it is returned without trying later titles.
+
+        Only the first title ("alpha show") is present in the DB.  "beta show" is also
+        in the DB but NOT in the query list, so only 1 result can come back.  The second
+        query element ("gamma show") doesn't exist, ensuring the return value is exactly
+        the rows for "alpha show".
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/alpha.mkv",
+            parsed_title="alpha show",
+        )
+        await _insert_entry(
+            session,
+            filepath="/mnt/beta.mkv",
+            parsed_title="beta show",
+        )
+        # Only "alpha show" is in the query; "gamma show" doesn't exist.
+        results = await mount_scanner.lookup_multi(session, ["alpha show", "gamma show"])
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/alpha.mkv"
+
+    async def test_single_title_delegation(self, session: AsyncSession) -> None:
+        """lookup_multi with a single-element list behaves identically to lookup."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/some.title.mkv",
+            parsed_title="some title",
+        )
+        multi_results = await mount_scanner.lookup_multi(session, ["some title"])
+        single_results = await mount_scanner.lookup(session, "some title")
+        assert len(multi_results) == len(single_results) == 1
+        assert multi_results[0].filepath == single_results[0].filepath
+
+    async def test_empty_titles_list_returns_empty(self, session: AsyncSession) -> None:
+        """An empty titles list returns an empty result without error."""
+        await _insert_entry(session, filepath="/mnt/any.mkv", parsed_title="any")
+        results = await mount_scanner.lookup_multi(session, [])
+        assert results == []
+
+    async def test_dedup_normalized_titles(self, session: AsyncSession) -> None:
+        """Titles that normalize to the same string are deduplicated; no duplicate queries."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/dark.knight.mkv",
+            parsed_title="the dark knight",
+        )
+        # Both titles normalize to "the dark knight" — should still return one match.
+        results = await mount_scanner.lookup_multi(
+            session, ["The.Dark.Knight", "the dark knight"]
+        )
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/dark.knight.mkv"
+
+    async def test_multi_title_word_subsequence(self, session: AsyncSession) -> None:
+        """A title that is a word-subsequence of a DB entry matches via Tier 2."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/hero/S01E01.mkv",
+            parsed_title="my hero academia season 1",
+            parsed_season=1,
+        )
+        # "my hero" (2 words) is a word-subsequence of "my hero academia season 1".
+        # "boku no hero" fails both exact and subsequence; "my hero" succeeds via Tier 2.
+        results = await mount_scanner.lookup_multi(
+            session, ["boku no hero", "my hero"], season=1
+        )
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/hero/S01E01.mkv"
+
+    async def test_multi_title_reverse_containment(self, session: AsyncSession) -> None:
+        """A DB title (3+ words) that is a subsequence of a query title matches via Tier 3."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/titan/S01E01.mkv",
+            parsed_title="attack on titan",
+            parsed_season=1,
+        )
+        # "attack on titan the final season" contains "attack on titan" (3 words) in order.
+        results = await mount_scanner.lookup_multi(
+            session,
+            ["attack on titan the final season"],
+            season=1,
+        )
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/titan/S01E01.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Group N+1: gather_alt_titles
+# ---------------------------------------------------------------------------
+
+
+def _make_media_item(
+    title: str,
+    tmdb_id: str | None = None,
+) -> MagicMock:
+    """Create a lightweight MediaItem-like stub for gather_alt_titles tests.
+
+    Uses MagicMock so that SQLAlchemy instrumentation is avoided — the function
+    only reads item.title and item.tmdb_id.
+    """
+    item = MagicMock(spec=["title", "tmdb_id"])
+    item.title = title
+    item.tmdb_id = tmdb_id
+    return item
+
+
+class TestGatherAltTitles:
+    """Tests for the gather_alt_titles module-level utility."""
+
+    async def test_primary_title_always_first(self, session: AsyncSession) -> None:
+        """item.title is always the first element in the returned list."""
+        item = _make_media_item(title="Show A")
+        with patch("src.services.anidb.anidb_client") as mock_anidb:
+            mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=[])
+            # tmdb_id=None so AniDB is not called; no tmdb_original_title either.
+            result = await gather_alt_titles(session, item)
+        assert result[0] == "Show A"
+
+    async def test_tmdb_original_title_added(self, session: AsyncSession) -> None:
+        """tmdb_original_title is appended when different from item.title."""
+        item = _make_media_item(title="Show A")
+        # tmdb_id=None so AniDB is not called.
+        result = await gather_alt_titles(session, item, tmdb_original_title="Show B")
+        assert result == ["Show A", "Show B"]
+
+    async def test_tmdb_original_title_dedup_exact(self, session: AsyncSession) -> None:
+        """tmdb_original_title identical to item.title is not added twice."""
+        item = _make_media_item(title="Show A")
+        result = await gather_alt_titles(session, item, tmdb_original_title="Show A")
+        assert result == ["Show A"]
+
+    async def test_tmdb_original_title_dedup_case_insensitive(
+        self, session: AsyncSession
+    ) -> None:
+        """tmdb_original_title matching item.title in a different case is not added."""
+        item = _make_media_item(title="Show A")
+        result = await gather_alt_titles(session, item, tmdb_original_title="show a")
+        assert result == ["Show A"]
+
+    async def test_anidb_titles_included(self, session: AsyncSession) -> None:
+        """AniDB titles for the item's tmdb_id are appended after the primary title.
+
+        The lazy import in gather_alt_titles resolves anidb_client via
+        ``src.services.anidb``, so we patch at that module path.
+        """
+        item = _make_media_item(title="Show A", tmdb_id="12345")
+        with patch("src.services.anidb.anidb_client") as mock_anidb:
+            mock_anidb.get_titles_for_tmdb_id = AsyncMock(
+                return_value=["Alt Title 1", "Alt Title 2"]
+            )
+            result = await gather_alt_titles(session, item)
+        assert "Alt Title 1" in result
+        assert "Alt Title 2" in result
+        assert result[0] == "Show A"
+
+    async def test_anidb_failure_graceful(self, session: AsyncSession) -> None:
+        """AniDB lookup failure is silently swallowed; returns just [item.title]."""
+        item = _make_media_item(title="Show A", tmdb_id="12345")
+        with patch("src.services.anidb.anidb_client") as mock_anidb:
+            mock_anidb.get_titles_for_tmdb_id = AsyncMock(
+                side_effect=RuntimeError("AniDB unavailable")
+            )
+            result = await gather_alt_titles(session, item)
+        assert result == ["Show A"]
+
+    async def test_no_tmdb_id_skips_anidb(self, session: AsyncSession) -> None:
+        """When item.tmdb_id is None, the AniDB client is never called."""
+        item = _make_media_item(title="Show A", tmdb_id=None)
+        with patch("src.services.anidb.anidb_client") as mock_anidb:
+            mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=["Should Not Appear"])
+            result = await gather_alt_titles(session, item)
+        mock_anidb.get_titles_for_tmdb_id.assert_not_called()
+        assert result == ["Show A"]
+
+
+# ---------------------------------------------------------------------------
+# Group N+2: single-word Tier 2 skip + Tier 3 behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestSingleWordLookup:
+    """Tests for the single-word title edge case in lookup/lookup_multi.
+
+    A single-word query skips Tier 2 (word-subsequence) entirely because a
+    one-word LIKE pattern is too broad.  It falls through to Tier 3, where
+    the DB title must have 3+ words AND the DB words must appear as a
+    subsequence of the (single) search word — which is impossible unless the
+    DB title also consists of that exact single word (handled by Tier 1).
+    In practice, single-word queries that don't exact-match return nothing.
+    """
+
+    async def test_single_word_skips_tier2_reaches_tier3_no_match(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-word query does not match a 2-word DB title (2 < 3-word Tier 3 guard)."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/show.mkv",
+            parsed_title="test show",  # 2 words — below Tier 3 guard
+        )
+        results = await mount_scanner.lookup(session, "Show")
+        assert results == []
+
+    async def test_single_word_no_match_against_long_db_title(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-word query cannot match a 3-word DB title via Tier 3.
+
+        Tier 3 requires all DB words to appear as a subsequence of the search
+        title.  "test" (1 word) cannot contain the subsequence ["test", "show",
+        "title"] (3 words), so no match is returned.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/long.show.mkv",
+            parsed_title="test show title",  # 3 words — meets Tier 3 word count guard
+        )
+        results = await mount_scanner.lookup(session, "test")
+        # Tier 3: DB words ["test","show","title"] must be a subsequence of
+        # search words ["test"] — impossible. No match expected.
+        assert results == []
+
+    async def test_single_word_no_false_positive(self, session: AsyncSession) -> None:
+        """Single short word "It" does not match unrelated DB entries."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/sci.fi.show.mkv",
+            parsed_title="science fiction show",
+        )
+        await _insert_entry(
+            session,
+            filepath="/mnt/another.mkv",
+            parsed_title="another random title",
+        )
+        results = await mount_scanner.lookup(session, "It")
+        assert results == []
+
+    async def test_single_word_exact_match_still_works(
+        self, session: AsyncSession
+    ) -> None:
+        """A single-word query that exactly matches a DB title hits via Tier 1."""
+        await _insert_entry(
+            session,
+            filepath="/mnt/alien.mkv",
+            parsed_title="alien",
+        )
+        results = await mount_scanner.lookup(session, "Alien")
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/alien.mkv"

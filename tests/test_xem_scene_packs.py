@@ -862,19 +862,29 @@ class TestCheckingStageXemScenePack:
             for ep in range(14, 27)
         ]
 
-        # lookup_calls tracks the season values passed to mount_scanner.lookup
+        # lookup_season_calls tracks the season values passed to both
+        # mount_scanner.lookup_multi (initial call) and mount_scanner.lookup (XEM fallback).
         lookup_season_calls: list[int | None] = []
+
+        async def _mock_lookup_multi(db_session, titles, *, season, episode):
+            lookup_season_calls.append(season)
+            # Initial call with scene season=2 → nothing (triggers XEM fallback)
+            return []
 
         async def _mock_lookup(db_session, title, season, episode):
             lookup_season_calls.append(season)
-            # First call with scene season=2 → nothing; second with TMDB season=1 → files
-            if season == 2:
-                return []
+            # XEM fallback call with TMDB season=1 → return files
             if season == 1:
                 return xem_files
             return []
 
         with (
+            patch(
+                "src.main.gather_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=lambda session, item, tmdb_original_title=None: [item.title],
+            ),
+            patch("src.main.mount_scanner.lookup_multi", side_effect=_mock_lookup_multi),
             patch("src.main.mount_scanner.lookup", side_effect=_mock_lookup),
             patch(
                 "src.main.mount_scanner.is_mount_available",
@@ -890,7 +900,7 @@ class TestCheckingStageXemScenePack:
         ):
             await _job_queue_processor()
 
-        # Verify lookup was called with season=2 first, then season=1 (XEM fallback)
+        # Verify lookup was called with season=2 first (via lookup_multi), then season=1 (XEM fallback via lookup)
         assert 2 in lookup_season_calls, "Lookup should have been tried with scene season=2"
         assert 1 in lookup_season_calls, "XEM fallback should have retried with TMDB season=1"
         # Season=1 lookup must come AFTER season=2 failed
