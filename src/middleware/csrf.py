@@ -8,6 +8,7 @@ cookie.  A mismatch returns 403.
 Exempt paths (exact or prefix):
 - /health         — monitoring probe
 - /api/events     — SSE stream (GET only, no mutations)
+- /api/zurg       — Zurg webhook (machine-to-machine, no browser context)
 
 Test bypass:
 Set ``app.state.csrf_bypass = True`` before tests to skip token verification.
@@ -29,7 +30,7 @@ CSRF_HEADER_NAME = "x-csrf-token"
 TOKEN_BYTES = 32
 
 # Paths that are exempt from CSRF enforcement.
-_EXEMPT_EXACT: frozenset[str] = frozenset({"/health", "/api/events"})
+_EXEMPT_EXACT: frozenset[str] = frozenset({"/health", "/api/events", "/api/zurg"})
 
 
 def _is_exempt(path: str) -> bool:
