@@ -27,6 +27,7 @@ from sqlalchemy import func, literal, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.core.mount_scanner import mount_scanner
 from src.models.media_item import MediaItem, QueueState
 from src.models.mount_index import MountIndex
 from src.models.symlink import Symlink
@@ -357,17 +358,10 @@ async def scan_symlink_health(session: AsyncSession) -> SymlinkHealthScan:
     # Step 1: verify mount is available
     # ------------------------------------------------------------------
     mount_root = settings.paths.zurg_mount
-    try:
-        mount_ok = await asyncio.wait_for(
-            asyncio.to_thread(os.path.isdir, mount_root),
-            timeout=5.0,
-        )
-    except TimeoutError:
-        mount_ok = False
-        logger.warning(
-            "scan_symlink_health: mount availability check timed out for %r",
-            mount_root,
-        )
+    # Use mount_scanner.is_mount_available() which does os.listdir() with
+    # a timeout — a bare os.path.isdir() is insufficient because Docker
+    # creates empty bind-mount directories even when rclone/Zurg is down.
+    mount_ok = await mount_scanner.is_mount_available()
 
     if not mount_ok:
         msg = (

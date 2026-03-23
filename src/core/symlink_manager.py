@@ -42,6 +42,7 @@ from sqlalchemy.orm import selectinload
 import httpx
 
 from src.config import settings
+from src.core.mount_scanner import mount_scanner
 from src.models.media_item import MediaItem, MediaType
 from src.models.symlink import Symlink
 from src.services.tmdb import TmdbClient, TmdbEpisodeInfo, TmdbMovieDetail, TmdbSeasonDetail, TmdbShowDetail
@@ -575,9 +576,12 @@ class SymlinkManager:
 
         # Pre-flight: verify the Zurg mount root is accessible.  A transient
         # mount outage makes every symlink destination appear missing; deleting
-        # them all would be catastrophic.
+        # them all would be catastrophic.  Use mount_scanner.is_mount_available()
+        # which does os.listdir() with a timeout — a bare os.path.isdir() is
+        # insufficient because Docker creates empty bind-mount directories even
+        # when rclone/Zurg is down.
         mount_root = settings.paths.zurg_mount
-        mount_ok = await asyncio.to_thread(os.path.isdir, mount_root)
+        mount_ok = await mount_scanner.is_mount_available()
         if not mount_ok:
             logger.warning(
                 "verify_symlinks: mount root %r is not accessible, "
