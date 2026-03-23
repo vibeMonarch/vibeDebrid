@@ -173,6 +173,15 @@ _TRASH_PREFIX: str = ".Trash-"
 # Pattern to detect season numbers in directory names, e.g. "Season 4", "S04", "Staffel 2".
 _DIR_SEASON_RE = re.compile(r"\b(?:season|staffel)\s*(\d{1,2})\b|\b[Ss](\d{1,2})\b", re.IGNORECASE)
 
+# Pattern to detect season RANGES (e.g. S01-S07, Season 1-3).  When a directory
+# name contains a range, no single season can be inferred for all files inside it.
+_DIR_SEASON_RANGE_RE = re.compile(
+    r"\b[Ss]\d{1,2}\s*[-–]\s*[Ss]\d{1,2}\b"
+    r"|\b[Ss]\d{1,2}-\d{1,2}\b"
+    r"|\b(?:seasons?|staffel)\s*\d{1,2}-\d{1,2}\b",
+    re.IGNORECASE,
+)
+
 # Timeout in seconds for the FUSE health-check listdir.
 _HEALTH_CHECK_TIMEOUT: float = 5.0
 
@@ -1214,6 +1223,7 @@ class MountScanner:
                             parsed_resolution=parsed.get("resolution"),
                             parsed_codec=parsed.get("codec"),
                             filesize=entry.filesize,
+                            norm_version=3,
                             last_seen_at=scan_timestamp,
                         )
                         .on_conflict_do_update(
@@ -1421,6 +1431,8 @@ def _extract_season_from_path(current_dir: str, root_dir: str) -> int | None:
         return None
 
     for component in rel.split(os.sep):
+        if _DIR_SEASON_RANGE_RE.search(component):
+            continue  # Multi-season range — can't infer a single season
         match = _DIR_SEASON_RE.search(component)
         if match:
             # Two alternative groups: group(1) for "season/staffel", group(2) for "S##"

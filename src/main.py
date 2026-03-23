@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -49,6 +50,15 @@ _bg_anidb_task: asyncio.Task[None] | None = None
 
 # Module-level reference to the startup update check task.
 _bg_update_task: asyncio.Task[None] | None = None
+
+# Creditless openings/endings and other non-episode special files.
+# These should never be symlinked as regular episodes in season packs.
+_SPECIAL_FILENAME_RE = re.compile(
+    r"\bNC(?:OP|ED)\d*\b"
+    r"|\b(?:Creditless|Preview|Trailer|Promo)\b"
+    r"|\b(?:OP|ED)\s*\d+\b",
+    re.IGNORECASE,
+)
 
 
 def setup_logging() -> None:
@@ -655,12 +665,14 @@ async def _job_queue_processor() -> None:
                         )
                         item.media_type = MediaType.SHOW
 
-                    # Filter out sample files and files with no parsed episode
+                    # Filter out sample files, special files (NCOP/NCED/OP/ED),
+                    # and files with no parsed episode.
                     if matches:
                         filtered = [
                             m for m in matches
                             if m.parsed_episode is not None
                             and not os.path.basename(m.filepath).lower().startswith("sample")
+                            and not _SPECIAL_FILENAME_RE.search(os.path.basename(m.filepath))
                         ]
                         if not filtered and matches:
                             # All files lack parsed_episode — trigger a targeted
@@ -685,6 +697,7 @@ async def _job_queue_processor() -> None:
                                         m for m in matches
                                         if m.parsed_episode is not None
                                         and not os.path.basename(m.filepath).lower().startswith("sample")
+                                        and not _SPECIAL_FILENAME_RE.search(os.path.basename(m.filepath))
                                     ]
                             if not filtered:
                                 logger.warning(

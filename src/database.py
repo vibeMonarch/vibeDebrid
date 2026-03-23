@@ -121,6 +121,21 @@ async def _migrate_add_columns() -> None:
             if "duplicate column" not in str(exc).lower():
                 logger.warning("Migration norm_version: %s", exc)
 
+        # Season range fix (v3): directories with season ranges (S01-S07)
+        # previously assigned parsed_season=1 to all files.  Clear index
+        # so startup re-scan rebuilds with range-aware logic.
+        try:
+            result = await conn.execute(text(
+                "SELECT COUNT(*) FROM mount_index WHERE norm_version = 2"
+            ))
+            count = result.scalar() or 0
+            if count > 0:
+                await conn.execute(text("DELETE FROM mount_index"))
+                logger.info("Migration: cleared mount_index for season range fix (v3)")
+        except Exception as exc:
+            if "no such column" not in str(exc).lower():
+                logger.warning("Migration season_range_fix: %s", exc)
+
 
 async def init_db() -> None:
     """Create all tables and verify WAL mode is active."""

@@ -49,6 +49,7 @@ from src.core.mount_scanner import (
     ScanResult,
     UpsertResult,
     WalkEntry,
+    _extract_season_from_path,
     _has_meaningful_title,
     _normalize_title,
     _parse_filename,
@@ -3262,3 +3263,137 @@ class TestSingleWordLookup:
         results = await mount_scanner.lookup(session, "Alien")
         assert len(results) == 1
         assert results[0].filepath == "/mnt/alien.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Group N: _extract_season_from_path — season range detection
+# ---------------------------------------------------------------------------
+
+
+class TestSeasonRangeDetection:
+    """Tests for season range detection in _extract_season_from_path."""
+
+    def test_s01_s07_returns_none(self) -> None:
+        """S01-S07 range detected, no season inferred."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show (S01-S07)/", "/mnt/zurg/__all__"
+        )
+        assert result is None
+
+    def test_s01_space_s07_returns_none(self) -> None:
+        """S01 - S07 with spaces is also a range."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show S01 - S07 Complete/", "/mnt/zurg/__all__"
+        )
+        assert result is None
+
+    def test_s01_07_no_second_s_returns_none(self) -> None:
+        """S01-07 without second S prefix is still a range."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show S01-07 Complete/", "/mnt/zurg/__all__"
+        )
+        assert result is None
+
+    def test_season_1_7_returns_none(self) -> None:
+        """Season 1-7 keyword range detected."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show Season 1-7/", "/mnt/zurg/__all__"
+        )
+        assert result is None
+
+    def test_seasons_1_3_returns_none(self) -> None:
+        """Seasons 1-3 (plural) range detected."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show (Seasons 1-3 + OVA)/", "/mnt/zurg/__all__"
+        )
+        assert result is None
+
+    def test_single_s02_preserved(self) -> None:
+        """Single season S02 still returns 2."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show.S02.1080p/", "/mnt/zurg/__all__"
+        )
+        assert result == 2
+
+    def test_single_season_4_preserved(self) -> None:
+        """Single 'Season 4' still returns 4."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show Season 4/", "/mnt/zurg/__all__"
+        )
+        assert result == 4
+
+    def test_nested_range_parent_single_child(self) -> None:
+        """Inner Season 2 wins over outer S01-S07 range."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show (S01-S07)/Season 2/", "/mnt/zurg/__all__"
+        )
+        assert result == 2
+
+    def test_s2_space_dash_01_is_not_range(self) -> None:
+        """S2 - 01 is season+episode, NOT a range. Season 2 extracted."""
+        result = _extract_season_from_path(
+            "/mnt/zurg/__all__/Show S2 - 01/", "/mnt/zurg/__all__"
+        )
+        assert result == 2
+
+
+# ---------------------------------------------------------------------------
+# Group N+1: _SPECIAL_FILENAME_RE — special file filtering
+# ---------------------------------------------------------------------------
+
+
+class TestSpecialFilenameFilter:
+    """Tests for _SPECIAL_FILENAME_RE filtering of non-episode files."""
+
+    def _matches(self, filename: str) -> bool:
+        from src.main import _SPECIAL_FILENAME_RE
+
+        return bool(_SPECIAL_FILENAME_RE.search(filename))
+
+    def test_ncop_filtered(self) -> None:
+        """NCOP with number is filtered."""
+        assert self._matches("Show S2 [SP01] NCOP - 01.mkv")
+
+    def test_nced_filtered(self) -> None:
+        """NCED with number is filtered."""
+        assert self._matches("Show S2 [SP02] NCED - 01.mkv")
+
+    def test_ncop_no_number(self) -> None:
+        """NCOP without trailing number is filtered."""
+        assert self._matches("Show S6 NCOP.mkv")
+
+    def test_nced_no_number(self) -> None:
+        """NCED without trailing number is filtered."""
+        assert self._matches("Show S6 NCED.mkv")
+
+    def test_bare_op_filtered(self) -> None:
+        """Bare OP followed by number is filtered."""
+        assert self._matches("OP 01.mkv")
+
+    def test_bare_ed_filtered(self) -> None:
+        """Bare ED followed by number is filtered."""
+        assert self._matches("ED 02.mkv")
+
+    def test_creditless_filtered(self) -> None:
+        """Creditless keyword is filtered."""
+        assert self._matches("Show Creditless Opening.mkv")
+
+    def test_trailer_filtered(self) -> None:
+        """Trailer keyword is filtered."""
+        assert self._matches("Show Trailer.mkv")
+
+    def test_normal_episode_not_filtered(self) -> None:
+        """A regular episode file is not filtered."""
+        assert not self._matches("[Anime Time] Show Title - 01.mkv")
+
+    def test_episode_with_title_not_filtered(self) -> None:
+        """Season+episode coded file is not filtered."""
+        assert not self._matches("S02E01 - Beast Titan.mkv")
+
+    def test_movie_not_filtered(self) -> None:
+        """Movie filename containing a number is not filtered."""
+        assert not self._matches("[Anime Time] Show Title Movie 01 - Two Heroes.mkv")
+
+    def test_ova_not_filtered(self) -> None:
+        """OVA files should NOT be filtered (user may want them)."""
+        assert not self._matches("[Anime Time] Show Title OVA - Training.mkv")
