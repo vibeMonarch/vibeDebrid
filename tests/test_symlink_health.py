@@ -226,7 +226,7 @@ class TestScanSymlinkHealth:
 
     async def test_scan_empty_no_symlinks(self, session: AsyncSession):
         """No symlinks in DB → scan returns all zeros and empty items list."""
-        with patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)):
+        with patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)):
             result = await scan_symlink_health(session)
 
         assert result.total_symlinks == 0
@@ -250,7 +250,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(True, True)])),
         ):
             result = await scan_symlink_health(session)
@@ -274,7 +274,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(False, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)),
         ):
@@ -305,7 +305,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(True, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)) as mock_match,
         ):
@@ -344,7 +344,7 @@ class TestScanSymlinkHealth:
 
         match_path = "/mnt/zurg/__all__/Great.Film.2024.mkv"
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(False, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=match_path)),
         ):
@@ -369,7 +369,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(False, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)),
         ):
@@ -396,7 +396,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch(
                 "src.core.symlink_health.asyncio.gather",
                 new=AsyncMock(return_value=[(False, False), (False, False), (False, False)]),
@@ -462,7 +462,7 @@ class TestScanSymlinkHealth:
 
         match_path = "/mnt/zurg/__all__/Great.Show/S02E05.mkv"
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(False, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=match_path)),
         ):
@@ -489,7 +489,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(False, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)),
         ):
@@ -511,7 +511,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch("src.core.symlink_health.asyncio.gather", new=AsyncMock(return_value=[(False, False)])),
             patch("src.core.symlink_health._find_mount_match", new=AsyncMock(return_value=None)),
         ):
@@ -539,7 +539,7 @@ class TestScanSymlinkHealth:
         await session.flush()
 
         with (
-            patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=True)),
+            patch("src.core.symlink_health.mount_scanner.is_mount_available", new=AsyncMock(return_value=True)),
             patch(
                 "src.core.symlink_health.asyncio.gather",
                 new=AsyncMock(return_value=[(True, True), (False, False)]),
@@ -1372,7 +1372,7 @@ class TestScanSourceExistsFastPath:
         # source_exists=True, target_valid=False (dangling symlink)
         with (
             patch(
-                "src.core.symlink_health.asyncio.wait_for",
+                "src.core.symlink_health.mount_scanner.is_mount_available",
                 new=AsyncMock(return_value=True),
             ),
             patch(
@@ -1418,7 +1418,7 @@ class TestScanSourceExistsFastPath:
         # source_exists=False, target_valid=False
         with (
             patch(
-                "src.core.symlink_health.asyncio.wait_for",
+                "src.core.symlink_health.mount_scanner.is_mount_available",
                 new=AsyncMock(return_value=True),
             ),
             patch(
@@ -1458,7 +1458,7 @@ class TestScanSourceExistsFastPath:
 
         with (
             patch(
-                "src.core.symlink_health.asyncio.wait_for",
+                "src.core.symlink_health.mount_scanner.is_mount_available",
                 new=AsyncMock(return_value=True),
             ),
             patch(
