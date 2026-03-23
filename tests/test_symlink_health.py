@@ -413,13 +413,14 @@ class TestScanSymlinkHealth:
         assert result.items[0].item_id == item.id
 
     async def test_scan_mount_unavailable(self, session: AsyncSession):
-        """Mount directory doesn't exist → returns error message, no items scanned."""
+        """Mount unavailable → returns error message, no items scanned."""
         item = _make_item(session)
         await session.flush()
         _make_symlink(session, media_item_id=item.id)
         await session.flush()
 
-        with patch("src.core.symlink_health.asyncio.wait_for", new=AsyncMock(return_value=False)):
+        with patch("src.core.symlink_health.mount_scanner.is_mount_available",
+                   new=AsyncMock(return_value=False)):
             result = await scan_symlink_health(session)
 
         assert result.total_symlinks == 0
@@ -428,16 +429,14 @@ class TestScanSymlinkHealth:
         assert "not accessible" in result.errors[0]
 
     async def test_scan_mount_check_timeout(self, session: AsyncSession):
-        """Mount availability check times out → treated as unavailable."""
+        """Mount availability check fails → treated as unavailable."""
         item = _make_item(session)
         await session.flush()
         _make_symlink(session, media_item_id=item.id)
         await session.flush()
 
-        with patch(
-            "src.core.symlink_health.asyncio.wait_for",
-            new=AsyncMock(side_effect=TimeoutError()),
-        ):
+        with patch("src.core.symlink_health.mount_scanner.is_mount_available",
+                   new=AsyncMock(return_value=False)):
             result = await scan_symlink_health(session)
 
         assert result.total_symlinks == 0

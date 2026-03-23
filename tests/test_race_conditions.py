@@ -596,9 +596,12 @@ class TestMountScannerRowcount:
                 assert first.files_added == 2
                 await session.flush()
 
-                # Remove both files — they are now stale.
+                # Remove both video files — they are now stale.
+                # Keep a non-video file so the directory is non-empty
+                # (empty dir = is_mount_available returns False).
                 _os.remove(f1)
                 _os.remove(f2)
+                open(_os.path.join(tmpdir, "placeholder.txt"), "w").close()
 
                 second = await scanner.scan(session)
 

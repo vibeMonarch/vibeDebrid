@@ -382,13 +382,24 @@ class TestIsMountAvailable:
     """Tests for the FUSE mount health check."""
 
     async def test_real_directory_returns_true(self) -> None:
-        """An existing, listable directory returns True."""
+        """An existing, non-empty, listable directory returns True."""
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Directory must be non-empty (empty = rclone down)
+            open(os.path.join(tmpdir, "dummy"), "w").close()
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                result = await scanner.is_mount_available()
+        assert result is True
+
+    async def test_empty_directory_returns_false(self) -> None:
+        """An empty directory returns False (rclone may be down)."""
         scanner = MountScanner()
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("src.core.mount_scanner.settings") as mock_settings:
                 mock_settings.paths.zurg_mount = tmpdir
                 result = await scanner.is_mount_available()
-        assert result is True
+        assert result is False
 
     async def test_nonexistent_path_returns_false(self) -> None:
         """A path that does not exist returns False (no exception raised)."""

@@ -723,6 +723,15 @@ class TestVerifySymlinks:
         assert result.broken_count == 0
         assert result.already_invalid == 0
 
+    async def test_skips_when_mount_unavailable(self, session: AsyncSession) -> None:
+        """Mount unavailable → returns zero counts, no symlinks touched."""
+        with patch("src.core.symlink_manager.mount_scanner.is_mount_available",
+                   new=AsyncMock(return_value=False)):
+            manager = SymlinkManager()
+            result = await manager.verify_symlinks(session)
+        assert result.total_checked == 0
+        assert result.broken_count == 0
+
     async def test_already_invalid_not_rechecked(
         self, session: AsyncSession, tmp_path: Path
     ) -> None:

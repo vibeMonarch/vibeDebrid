@@ -284,10 +284,13 @@ class MountScanner:
                 logger.warning("Mount not available: %s is not a directory", mount_path)
                 return False
 
-            await asyncio.wait_for(
+            entries = await asyncio.wait_for(
                 asyncio.to_thread(os.listdir, mount_path),
                 timeout=_HEALTH_CHECK_TIMEOUT,
             )
+            if not entries:
+                logger.warning("Mount not available: %s is empty (rclone may be down)", mount_path)
+                return False
             return True
 
         except TimeoutError:

@@ -195,8 +195,9 @@ class TestMountScannerEmptyPath:
     async def test_is_mount_available_still_checks_real_path(
         self, scanner: MountScanner, monkeypatch, tmp_path: Path
     ) -> None:
-        """When path is set and the directory exists, returns True."""
+        """When path is set and the directory exists and is non-empty, returns True."""
         from src import config as cfg_module
+        (tmp_path / "dummy").touch()  # Must be non-empty (empty = rclone down)
         monkeypatch.setattr(cfg_module.settings.paths, "zurg_mount", str(tmp_path))
         result = await scanner.is_mount_available()
         assert result is True
