@@ -105,6 +105,7 @@ services:
     environment:
       Zilean__Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-zilean};Username=${POSTGRES_USER:-zilean};Password=${POSTGRES_PASSWORD:-zilean}"
       Zilean__Dmm__MinimumScoreMatch: "${ZILEAN_MIN_SCORE:-0.85}"
+      Zilean__Dmm__ScrapeSchedule: "17 * * * *"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8181/healthchecks/ping"]
       interval: 15s
