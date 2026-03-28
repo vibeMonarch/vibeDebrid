@@ -683,8 +683,13 @@ def test_zilean_result_file_idx_always_none() -> None:
     assert result.file_idx is None
 
 
-def test_zilean_result_source_tracker_always_none() -> None:
-    """ZileanResult.source_tracker defaults to None (Zilean does not provide tracker info)."""
+def test_zilean_result_source_tracker_model_default_none() -> None:
+    """ZileanResult.source_tracker model default is None when constructed directly.
+
+    Note: _parse_entry always sets source_tracker='Zilean' on parsed results.
+    This test only covers bare Pydantic model construction without going through
+    the parsing path.
+    """
     result = ZileanResult(
         info_hash="a" * 40,
         title="Movie.2024.1080p.WEB-DL.x264-GROUP",

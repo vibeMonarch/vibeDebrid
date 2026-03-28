@@ -34,6 +34,7 @@ from src.config import (
     config_lock,
     settings,
 )
+from src.services.nyaa import nyaa_client
 from src.services.plex import plex_client
 from src.services.real_debrid import RealDebridAuthError, RealDebridError, rd_client
 from src.services.torrentio import torrentio_client
@@ -213,6 +214,29 @@ async def test_zilean() -> TestResult:
         return TestResult(
             status="ok",
             message=f"Zilean reachable, returned {len(results)} results for test query",
+        )
+    except Exception as exc:
+        return TestResult(status="error", message=f"Connection failed: {exc}")
+
+
+@router.post("/test/nyaa")
+async def test_nyaa() -> TestResult:
+    """Test Nyaa.si connection by running a simple RSS search."""
+    cfg = settings.scrapers.nyaa
+    if not cfg.enabled:
+        return TestResult(status="error", message="Nyaa scraper is disabled — enable it in settings first")
+    try:
+        results = await nyaa_client.search("1080p")
+        if results:
+            return TestResult(
+                status="ok",
+                message=f"Nyaa reachable, returned {len(results)} result(s) for test query",
+            )
+        # An empty result list is still a successful connection — the RSS feed
+        # parsed without error (0 hits for "1080p" is unusual but valid).
+        return TestResult(
+            status="ok",
+            message="Nyaa reachable, RSS feed parsed (0 results for test query)",
         )
     except Exception as exc:
         return TestResult(status="error", message=f"Connection failed: {exc}")

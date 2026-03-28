@@ -69,7 +69,7 @@ class ZileanResult(BaseModel):
     release_group: str | None = None
     size_bytes: int | None = None
     seeders: int | None = None  # Always None — DMM hashlists have no seeder data
-    source_tracker: str | None = None  # Always None — not applicable for Zilean
+    source_tracker: str | None = None  # Set to "Zilean" during result construction
     season: int | None = None
     episode: int | None = None
     is_season_pack: bool = False
@@ -418,7 +418,7 @@ class ZileanClient:
             release_group=release_group,
             size_bytes=size_bytes,
             seeders=None,
-            source_tracker=None,
+            source_tracker="Zilean",
             season=season,
             episode=episode,
             is_season_pack=is_season_pack,

@@ -21,6 +21,14 @@
             "enabled": true,
             "base_url": "http://localhost:8182",
             "timeout_seconds": 10
+        },
+        "nyaa": {
+            "enabled": false,
+            "base_url": "https://nyaa.si",
+            "category": "1_2",
+            "filter": 1,
+            "timeout_seconds": 15,
+            "max_results": 75
         }
     },
     "paths": {

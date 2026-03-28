@@ -63,6 +63,15 @@
     setField('zilean-url',     zilean.base_url        || '');
     setField('zilean-timeout', zilean.timeout_seconds != null ? zilean.timeout_seconds : '');
 
+    // Scrapers — Nyaa
+    const nyaa = (s.scrapers || {}).nyaa || {};
+    setToggle('nyaa-enabled', nyaa.enabled);
+    setField('nyaa-url',         nyaa.base_url        || '');
+    setField('nyaa-category',    nyaa.category        || '1_2');
+    setField('nyaa-filter',      nyaa.filter != null  ? nyaa.filter : 1);
+    setField('nyaa-timeout',     nyaa.timeout_seconds != null ? nyaa.timeout_seconds : '');
+    setField('nyaa-max-results', nyaa.max_results     != null ? nyaa.max_results     : '');
+
     // Paths
     const paths = s.paths || {};
     setField('path-zurg-mount',     paths.zurg_mount     || '');
@@ -260,6 +269,14 @@
               enabled:         getToggle('zilean-enabled'),
               base_url:        document.getElementById('zilean-url').value.trim(),
               timeout_seconds: parseInt(document.getElementById('zilean-timeout').value) || 10,
+            },
+            nyaa: {
+              enabled:         getToggle('nyaa-enabled'),
+              base_url:        document.getElementById('nyaa-url').value.trim(),
+              category:        document.getElementById('nyaa-category').value,
+              filter:          parseInt(document.getElementById('nyaa-filter').value),
+              timeout_seconds: parseInt(document.getElementById('nyaa-timeout').value) || 15,
+              max_results:     parseInt(document.getElementById('nyaa-max-results').value) || 75,
             }
           }
         };

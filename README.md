@@ -30,7 +30,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Airing season support with automatic UNRELEASED → WANTED promotion on air date
 
 **Scraping**
-- Multi-source scraping: Torrentio (Stremio addon) + Zilean (DMM hashlists)
+- Multi-source scraping: Torrentio (Stremio addon) + Zilean (DMM hashlists) + Nyaa (opt-in, anime RSS)
 - Episode fallback chain: episode query → season query → show query
 - XEM scene numbering for anime (TMDB → broadcast season mapping)
 - XEM scene season packs: auto-maps scene seasons to TMDB coordinates (e.g., scene S02 = TMDB S01E14-E26)
@@ -39,6 +39,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Zilean title-only fallback: retries without IMDB/season/episode filters when strict query returns 0
 - Alternative title fallback: retries Zilean with TMDB original/alternative titles when English title returns 0 (critical for anime)
 - AniDB title enrichment (opt-in): injects romaji/synonym/official titles from AniDB's 60k+ title database into Zilean alt-title search — zero-latency SQLite lookups, no API calls during scraping
+- Nyaa.si RSS scraper (opt-in): direct anime torrent search with multi-level query fallback (SxxExx → bare episode → season → title), trusted uploader filtering, AniDB alt-title search. Complements Torrentio's Nyaa indexing with real-time results and broader title matching.
 - Sequential RD cache checking: checks top result first, stops on cache hit (2-3 API calls vs 12)
 - Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
 
@@ -90,7 +91,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 **Web UI**
 - Dashboard with queue stats and system health
 - Queue management with filtering, bulk actions, detail panels
-- Manual search with progressive RD cache checking
+- Manual search with progressive RD cache checking and per-result source labels (Torrentio results show the specific tracker name — NyaaSi, RARBG, 1337x, etc.; Zilean and Nyaa results are labeled by scraper)
 - Settings page for all configuration
 - Live updates via Server-Sent Events
 - Responsive design (mobile + desktop)
@@ -374,6 +375,7 @@ export VIBE_PATHS__ZURG_MOUNT=/mnt/zurg/__all__
 | `real_debrid` | `api_key`, `prefer_cached`, `allow_uncached` | cached only |
 | `scrapers.torrentio` | `enabled`, `base_url`, `opts`, `timeout_seconds` | enabled, 10s timeout |
 | `scrapers.zilean` | `enabled`, `base_url`, `timeout_seconds` | enabled, 10s timeout |
+| `scrapers.nyaa` | `enabled`, `base_url`, `category`, `filter`, `timeout_seconds`, `max_results` | disabled, English-translated anime, no-remakes filter, 15s timeout |
 | `paths` | `zurg_mount`, `library_movies`, `library_shows` | must configure |
 | `quality` | `default_profile`, profiles with resolution/codec/audio/source prefs | "high" profile |
 | `filters` | `blocked_keywords`, `preferred_languages`, `allow_multi_audio`, `title_similarity_threshold`, `title_similarity_bonus` | cam/ts/telesync blocked, similarity threshold 0.0 (off), bonus 15 pts |

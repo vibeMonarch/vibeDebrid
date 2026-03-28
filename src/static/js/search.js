@@ -193,6 +193,23 @@ window.handleSearch = async function(event) {
       });
     }
 
+    // Fire nyaa request in parallel (shows only — backend returns [] for movies
+    // and when Nyaa is disabled, so no extra gate needed here).
+    let nyaaPromise = null;
+    if (payload.media_type === 'show') {
+      nyaaPromise = csrfFetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, scrapers: ['nyaa'] }),
+      }).then(r => {
+        if (!r.ok) throw new Error('Nyaa search failed');
+        return r.json();
+      }).catch(err => {
+        console.warn('Nyaa search failed:', err);
+        return null;
+      });
+    }
+
     // Render zilean results immediately
     const zileanData = await zileanPromise;
     _currentResults = (zileanData.results || []).slice();
@@ -237,6 +254,37 @@ window.handleSearch = async function(event) {
 
           // Check cache for NEW torrentio hashes only (reuse current generation
           // so we don't cancel the still-running zilean cache loop).
+          const newHashes = newResults.slice(0, PAGE_DATA.cacheCheckLimit).map(r => r.info_hash).filter(Boolean);
+          checkCachedProgressive(newHashes, _cacheCheckGeneration);
+        }
+      }
+    }
+
+    // Wait for nyaa results and merge
+    if (nyaaPromise) {
+      showMoreResultsIndicator(true);
+
+      const nyaaData = await nyaaPromise;
+      showMoreResultsIndicator(false);
+
+      if (nyaaData && nyaaData.results && nyaaData.results.length > 0) {
+        // Dedup by info_hash (may overlap with zilean or torrentio results)
+        const existingHashes = new Set(_currentResults.map(r => r.info_hash));
+        const newResults = nyaaData.results.filter(r => !existingHashes.has(r.info_hash));
+
+        if (newResults.length > 0) {
+          // Merge, re-sort by score, re-render
+          _currentResults = [..._currentResults, ...newResults].sort((a, b) => (b.score || 0) - (a.score || 0));
+          _totalRaw += nyaaData.total_raw || 0;
+          _totalFiltered += nyaaData.total_filtered || 0;
+
+          renderResults({ results: _currentResults, total_raw: _totalRaw, total_filtered: _totalFiltered });
+
+          // Reapply cached statuses that were already checked
+          reapplyCacheStatuses();
+
+          // Check cache for NEW nyaa hashes only (reuse current generation
+          // so we don't cancel the still-running cache loops).
           const newHashes = newResults.slice(0, PAGE_DATA.cacheCheckLimit).map(r => r.info_hash).filter(Boolean);
           checkCachedProgressive(newHashes, _cacheCheckGeneration);
         }
@@ -464,11 +512,20 @@ function buildResultCard(item, idx) {
     '720p':  'bg-sky-700 text-sky-100',
   }[item.resolution] || 'bg-gray-700 text-gray-200';
 
+  // Source text colour (column cell, not badge)
+  const sourceTextColors = {
+    'Torrentio': 'text-blue-400',
+    'Zilean':    'text-purple-400',
+    'Nyaa':      'text-green-400',
+  };
+  const sourceColorClass = item.source ? (sourceTextColors[item.source] || 'text-gray-400') : 'text-gray-500';
+  const sourceText = item.source ? VD.escapeHtml(item.source) : '\u2014';
+
   const badgeHtml = cacheBadgeHtml(item, idx);
 
   wrapper.innerHTML = `
     <!-- Desktop table-like row -->
-    <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
+    <div class="hidden md:grid md:grid-cols-[1fr_auto_auto_auto_auto_auto_auto_auto] md:items-center gap-4 px-5 py-4">
 
       <!-- Title + badges -->
       <div class="min-w-0">
@@ -497,6 +554,11 @@ function buildResultCard(item, idx) {
       <!-- Size -->
       <div class="text-right">
         <span class="text-sm text-gray-300 tabular-nums">${VD.escapeHtml(sizeFormatted)}</span>
+      </div>
+
+      <!-- Source -->
+      <div class="text-center">
+        <span class="text-xs font-medium tabular-nums ${sourceColorClass}">${sourceText}</span>
       </div>
 
       <!-- Cached badge -->
@@ -561,6 +623,7 @@ function buildResultCard(item, idx) {
       <div class="flex items-center gap-4 text-xs text-vd-muted flex-wrap">
         <span>${VD.escapeHtml(sizeFormatted)}</span>
         ${item.season != null ? `<span class="text-gray-300">${'S' + String(item.season).padStart(2, '0')}${item.is_season_pack ? ' Full Season' : (item.episode != null ? 'E' + String(item.episode).padStart(2, '0') : '')}</span>` : ''}
+        ${item.source ? `<span class="${sourceColorClass} font-medium">${sourceText}</span>` : ''}
       </div>
 
       <!-- Score bar -->

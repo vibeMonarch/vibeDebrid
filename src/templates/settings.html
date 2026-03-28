@@ -86,6 +86,21 @@
       <span id="test-result-zilean" class="test-result text-sm"></span>
     </div>
 
+    <!-- Nyaa test -->
+    <div class="flex flex-col gap-2 flex-1">
+      <button onclick="runTest('nyaa', this)"
+              class="flex items-center justify-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+        <svg class="w-4 h-4 btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <svg class="w-4 h-4 btn-spinner hidden spinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Test Nyaa
+      </button>
+      <span id="test-result-nyaa" class="test-result text-sm"></span>
+    </div>
+
     <!-- TMDB test -->
     <div class="flex flex-col gap-2 flex-1">
       <button onclick="runTest('tmdb', this)"
@@ -303,6 +318,60 @@
               <div>
                 <label class="block text-xs text-gray-400 mb-1" for="zilean-timeout">Timeout (seconds)</label>
                 <input type="number" id="zilean-timeout" min="1" max="120"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+            </div>
+          </div>
+
+          <hr class="border-vd-border">
+
+          <!-- Nyaa -->
+          <div>
+            <div class="flex items-center gap-3 mb-3">
+              <span class="text-sm font-semibold text-gray-300">Nyaa</span>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="nyaa-enabled" class="toggle-input sr-only">
+                <div class="toggle-track w-10 h-6 bg-vd-border rounded-full relative">
+                  <div class="toggle-thumb absolute left-1 top-1 w-4 h-4 bg-white rounded-full shadow"></div>
+                </div>
+              </label>
+              <span class="text-xs text-vd-muted">Anime-focused torrent scraper (optional)</span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="nyaa-url">Base URL</label>
+                <input type="url" id="nyaa-url"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="nyaa-category">Category</label>
+                <select id="nyaa-category"
+                        class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+                  <option value="1_0">All Anime</option>
+                  <option value="1_2">English-translated</option>
+                  <option value="1_3">Non-English-translated</option>
+                  <option value="1_4">Raw</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="nyaa-filter">Quality Filter</label>
+                <select id="nyaa-filter"
+                        class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+                  <option value="0">No filter</option>
+                  <option value="1">No remakes</option>
+                  <option value="2">Trusted only</option>
+                </select>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="nyaa-timeout">Timeout (seconds)</label>
+                <input type="number" id="nyaa-timeout" min="1" max="120"
+                       class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1" for="nyaa-max-results">Max Results</label>
+                <input type="number" id="nyaa-max-results" min="1" max="150"
                        class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
               </div>
             </div>

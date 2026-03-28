@@ -450,7 +450,7 @@ class TorrentioClient:
         # --- Metadata from emoji-encoded line ---
         size_bytes = self._parse_size(meta_line)
         seeders = self._parse_seeders(meta_line)
-        source_tracker = self._parse_source(meta_line)
+        source_tracker = self._parse_source(meta_line) or "Torrentio"
 
         # --- Parse release name with PTN ---
         ptn_data: dict[str, Any] = {}

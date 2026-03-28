@@ -52,9 +52,21 @@ class TmdbConfig(BaseModel):
     timeout_seconds: int = 10
 
 
+class NyaaConfig(BaseModel):
+    """Configuration for Nyaa.si RSS torrent scraper (anime-focused)."""
+
+    enabled: bool = False
+    base_url: str = "https://nyaa.si"
+    category: str = "1_2"  # 1_2 = Anime English-translated
+    filter: int = Field(default=1, ge=0, le=2)  # 0=all, 1=no remakes, 2=trusted only
+    timeout_seconds: int = 15
+    max_results: int = 75
+
+
 class ScrapersConfig(BaseModel):
     torrentio: TorrentioConfig = TorrentioConfig()
     zilean: ZileanConfig = ZileanConfig()
+    nyaa: NyaaConfig = NyaaConfig()
 
 
 class PathsConfig(BaseModel):

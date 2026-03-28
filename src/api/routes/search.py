@@ -24,6 +24,7 @@ from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
+from src.services.nyaa import nyaa_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
 
@@ -48,7 +49,7 @@ class SearchRequest(BaseModel):
     season: int | None = None
     episode: int | None = None
     quality_profile: str | None = None
-    scrapers: list[Literal["torrentio", "zilean"]] | None = None
+    scrapers: list[Literal["torrentio", "zilean", "nyaa"]] | None = None
 
 
 class SearchResultItem(BaseModel):
@@ -67,6 +68,7 @@ class SearchResultItem(BaseModel):
     cached: bool | None = None  # True=cached, False=not cached, None=unchecked
     score: float = 0.0
     score_breakdown: dict[str, float] = {}
+    source: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -127,13 +129,16 @@ class AddResponse(BaseModel):
 async def search(body: SearchRequest) -> SearchResponse:
     """Search scrapers, filter and rank results with RD cache status.
 
-    Queries Torrentio (when imdb_id is provided) and Zilean in parallel,
-    combines the results, checks Real-Debrid instant availability, then
-    applies the filter engine to produce a ranked list.
+    Queries Torrentio (when imdb_id is provided), Zilean, and Nyaa (shows only)
+    in parallel, deduplicates results by info_hash, then applies the filter
+    engine to produce a ranked list.  Cache status is not checked here — it is
+    fetched lazily by the frontend via /api/check-cached so results appear
+    immediately.
 
     Args:
         body: Search parameters including query, optional IMDB ID, media type,
-              season/episode numbers, and quality profile name.
+              season/episode numbers, quality profile name, and optional scraper
+              allow-list (torrentio, zilean, nyaa).
 
     Returns:
         Ranked search results with cache status and scoring breakdown.
@@ -198,15 +203,61 @@ async def search(body: SearchRequest) -> SearchResponse:
             logger.warning("search: zilean search failed: %s", exc)
             return []
 
+    async def _scrape_nyaa() -> list:
+        """Query Nyaa with a fallback chain (title-based, shows only).
+
+        Tries progressively broader queries:
+          1. SxxExx format (e.g. "Title S01E05") — standard Western format
+          2. Bare episode number (e.g. "Title 05") — common anime format
+          3. Season-only (e.g. "Title S01") — when only season is provided
+          4. Title-only (e.g. "Title") — broadest fallback
+        Returns results from the first query that yields anything.
+        """
+        if body.media_type != "show":
+            return []
+        try:
+            queries: list[str] = []
+            if body.season is not None and body.episode is not None:
+                queries.append(f"{body.query} S{body.season:02d}E{body.episode:02d}")
+                queries.append(f"{body.query} {body.episode:02d}")
+            elif body.season is not None:
+                queries.append(f"{body.query} S{body.season:02d}")
+            queries.append(body.query)
+
+            results: list = []
+            for q in queries:
+                results = await nyaa_client.search(q)
+                if results:
+                    logger.debug(
+                        "search: nyaa returned %d results for query=%r",
+                        len(results),
+                        q,
+                    )
+                    break
+
+            if not results:
+                logger.debug(
+                    "search: nyaa returned 0 results for all %d query variants of %r",
+                    len(queries),
+                    body.query,
+                )
+            return results
+        except Exception as exc:
+            logger.warning("search: nyaa search failed: %s", exc)
+            return []
+
     # Determine which scrapers to run based on request.
     run_torrentio = body.scrapers is None or "torrentio" in body.scrapers
     run_zilean = body.scrapers is None or "zilean" in body.scrapers
+    run_nyaa = body.scrapers is None or "nyaa" in body.scrapers
 
     tasks = []
     if run_torrentio:
         tasks.append(_scrape_torrentio())
     if run_zilean:
         tasks.append(_scrape_zilean())
+    if run_nyaa:
+        tasks.append(_scrape_nyaa())
 
     if not tasks:
         return SearchResponse(results=[], total_raw=0, total_filtered=0)
@@ -215,6 +266,20 @@ async def search(body: SearchRequest) -> SearchResponse:
     combined = []
     for r in results_lists:
         combined.extend(r)
+
+    # Deduplicate by info_hash — the same hash may appear from multiple scrapers
+    # (e.g. Nyaa and Zilean both index the same release).  Keep the first
+    # occurrence, which preserves scraper priority order (torrentio → zilean →
+    # nyaa as appended above).
+    seen_hashes: set[str] = set()
+    deduped: list = []
+    for result in combined:
+        h = result.info_hash
+        if h not in seen_hashes:
+            seen_hashes.add(h)
+            deduped.append(result)
+    combined = deduped
+
     total_raw = len(combined)
 
     if not combined:
@@ -256,6 +321,7 @@ async def search(body: SearchRequest) -> SearchResponse:
             cached=None,  # checked async by frontend via /api/check-cached
             score=fr.score,
             score_breakdown=fr.score_breakdown,
+            source=fr.result.source_tracker,
         )
         for fr in ranked
     ]

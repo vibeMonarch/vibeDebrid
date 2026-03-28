@@ -47,13 +47,14 @@ from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrent_parser import parse_episode_from_filename
+from src.services.nyaa import NyaaResult, nyaa_client
 from src.services.torrentio import TorrentioResult, torrentio_client
 from src.services.zilean import ZileanResult, zilean_client
 
 logger = logging.getLogger(__name__)
 
 # Union type for combined scraper results
-_AnyResult = TorrentioResult | ZileanResult
+_AnyResult = TorrentioResult | ZileanResult | NyaaResult
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +118,9 @@ class ScrapePipeline:
         Executes the seven-step acquisition flow in order:
           1. Mount check — return immediately on a hit.
           2. Dedup check — return immediately when content already tracked.
-          3. XEM scene numbering resolution (once for both scrapers).
+          3. XEM scene numbering resolution (once for all scrapers).
           4. Zilean scrape — swallows all errors.
+          4.5. Nyaa scrape (anime only, optional) — swallows all errors.
           5. Torrentio scrape — swallows all errors.
           6. Combine, check RD cache, filter.
           7. Add best result to Real-Debrid.
@@ -345,6 +347,17 @@ class ScrapePipeline:
         )
 
         # ------------------------------------------------------------------
+        # Step 4.5 — Nyaa scrape (anime-focused, SHOW-only, optional)
+        # ------------------------------------------------------------------
+        nyaa_results, nyaa_duration_ms = await self._step_nyaa(
+            session,
+            item,
+            scene_season=scene_season,
+            scene_episode=scene_episode,
+            alt_titles=_alt_titles,
+        )
+
+        # ------------------------------------------------------------------
         # Step 5 — Torrentio scrape
         # ------------------------------------------------------------------
         torrentio_results, torrentio_duration_ms = await self._step_torrentio(
@@ -354,7 +367,18 @@ class ScrapePipeline:
         # ------------------------------------------------------------------
         # Step 6 — Combine, RD cache check, filter
         # ------------------------------------------------------------------
-        combined: list[_AnyResult] = zilean_results + torrentio_results  # type: ignore[assignment]
+        # Dedup by info_hash across all scrapers before passing to filter so
+        # the same torrent from Nyaa and Torrentio doesn't inflate counts.
+        _seen_hashes: set[str] = set()
+        _combined_deduped: list[_AnyResult] = []
+        for _r in zilean_results + nyaa_results + torrentio_results:  # type: ignore[operator]
+            _h = getattr(_r, "info_hash", None)
+            if _h and _h in _seen_hashes:
+                continue
+            if _h:
+                _seen_hashes.add(_h)
+            _combined_deduped.append(_r)
+        combined: list[_AnyResult] = _combined_deduped  # type: ignore[assignment]
         total_count = len(combined)
 
         if not combined:
@@ -371,7 +395,7 @@ class ScrapePipeline:
                 results_count=0,
                 results_summary=json.dumps([]),
                 selected_result=None,
-                duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                duration_ms=zilean_duration_ms + nyaa_duration_ms + torrentio_duration_ms,
             )
             await queue_manager.transition(session, item.id, QueueState.SLEEPING)
             return PipelineResult(
@@ -573,7 +597,7 @@ class ScrapePipeline:
                                     "rd_id": existing_torrent.rd_id,
                                     "action": "hash_dedup_hit",
                                 }),
-                                duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                                duration_ms=zilean_duration_ms + nyaa_duration_ms + torrentio_duration_ms,
                             )
                             await queue_manager.transition(session, item.id, QueueState.CHECKING)
                             return PipelineResult(
@@ -621,7 +645,7 @@ class ScrapePipeline:
                         results_count=total_count,
                         results_summary=json.dumps(self._summarise_results(combined[:5])),
                         selected_result=None,
-                        duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                        duration_ms=zilean_duration_ms + nyaa_duration_ms + torrentio_duration_ms,
                     )
                     await queue_manager.transition(session, item.id, QueueState.COMPLETE)
                     return PipelineResult(
@@ -655,7 +679,7 @@ class ScrapePipeline:
                     self._summarise_results(combined[:5])
                 ),
                 selected_result=None,
-                duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                duration_ms=zilean_duration_ms + nyaa_duration_ms + torrentio_duration_ms,
             )
             await queue_manager.transition(session, item.id, QueueState.SLEEPING)
             return PipelineResult(
@@ -716,7 +740,7 @@ class ScrapePipeline:
                         results_count=total_count,
                         results_summary=json.dumps(self._summarise_results(combined[:5])),
                         selected_result=None,
-                        duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                        duration_ms=zilean_duration_ms + nyaa_duration_ms + torrentio_duration_ms,
                     )
                     await queue_manager.transition(session, item.id, QueueState.COMPLETE)
                     return PipelineResult(
@@ -748,7 +772,7 @@ class ScrapePipeline:
             winner_is_cached=winner_is_cached,
             scrape_results_count=total_count,
             filtered_results_count=filtered_count,
-            total_duration_ms=zilean_duration_ms + torrentio_duration_ms,
+            total_duration_ms=zilean_duration_ms + nyaa_duration_ms + torrentio_duration_ms,
         )
 
     # ------------------------------------------------------------------
@@ -1226,6 +1250,163 @@ class ScrapePipeline:
             session,
             media_item_id=item.id,
             scraper="zilean",
+            query_params=query_params,
+            results_count=len(results),
+            results_summary=results_summary,
+            selected_result=None,
+            duration_ms=duration_ms,
+        )
+        return results, duration_ms
+
+    async def _step_nyaa(
+        self,
+        session: AsyncSession,
+        item: MediaItem,
+        *,
+        scene_season: int | None = None,
+        scene_episode: int | None = None,
+        alt_titles: list[str] | None = None,
+    ) -> tuple[list[NyaaResult], int]:
+        """Query Nyaa.si RSS for anime torrent results.
+
+        Only runs when ``settings.scrapers.nyaa.enabled`` is ``True`` and the
+        item is a TV show (``MediaType.SHOW``).  Movies are not indexed on Nyaa
+        in a way that benefits the pipeline, so they are skipped.
+
+        For episode items a multi-level query fallback is tried:
+          1. ``"{title} S{season:02d}E{episode:02d}"`` — standard SxxExx notation
+          2. ``"{title} {episode:02d}"`` — bare anime episode number
+          3. ``"{title}"`` — broad title-only search
+
+        For season packs:
+          1. ``"{title} S{season:02d} batch"`` — explicit batch search
+          2. ``"{title} S{season:02d}"`` — season-only search
+
+        When the primary title returns no results at all levels and ``alt_titles``
+        has entries, the first alternative title is retried through the same
+        fallback chain.
+
+        Errors are caught and logged; an empty list is returned so the pipeline
+        continues to Torrentio.
+
+        Args:
+            session: Caller-managed async database session.
+            item: The MediaItem to search for.
+            scene_season: Pre-resolved scene season from XEM (or item.season if
+                not provided).
+            scene_episode: Pre-resolved scene episode from XEM (or item.episode
+                if not provided).
+            alt_titles: Pre-computed alternative titles to try on zero results
+                (e.g. original_title from the TMDB detail call in Step 0).
+
+        Returns:
+            2-tuple of (results, duration_ms).
+        """
+        if not settings.scrapers.nyaa.enabled:
+            return [], 0
+
+        if item.media_type != MediaType.SHOW:
+            return [], 0
+
+        t0 = time.monotonic()
+
+        # Fall back to item's original numbering when not pre-resolved.
+        eff_season = scene_season if scene_season is not None else item.season
+        eff_episode = scene_episode if scene_episode is not None else item.episode
+
+        title = item.title
+        results: list[NyaaResult] = []
+        query_used: str = title
+
+        async def _try_queries(search_title: str) -> list[NyaaResult]:
+            """Run the fallback query chain for a given title.
+
+            Returns the first non-empty result list encountered, or an empty
+            list if all fallback levels return nothing.
+            """
+            if item.is_season_pack:
+                # Season pack query chain
+                if eff_season is not None:
+                    queries = [
+                        f"{search_title} S{eff_season:02d} batch",
+                        f"{search_title} S{eff_season:02d}",
+                    ]
+                else:
+                    queries = [search_title]
+            elif eff_season is not None and eff_episode is not None:
+                # Episode query chain
+                queries = [
+                    f"{search_title} S{eff_season:02d}E{eff_episode:02d}",
+                    f"{search_title} {eff_episode:02d}",
+                    search_title,
+                ]
+            else:
+                queries = [search_title]
+
+            for q in queries:
+                try:
+                    r = await nyaa_client.search(q)
+                except Exception as exc:
+                    logger.warning(
+                        "scrape_pipeline: Nyaa search failed for item id=%d query=%r: %s",
+                        item.id,
+                        q,
+                        exc,
+                    )
+                    r = []
+                if r:
+                    logger.debug(
+                        "scrape_pipeline: Nyaa returned %d results for item id=%d query=%r",
+                        len(r),
+                        item.id,
+                        q,
+                    )
+                    return r
+            return []
+
+        results = await _try_queries(title)
+        query_used = title
+
+        # Alternative title fallback: try first alt title only when all primary
+        # queries returned nothing.
+        if not results and alt_titles:
+            primary_lower = title.lower()
+            for alt in alt_titles[:1]:
+                if alt.lower() == primary_lower:
+                    continue
+                alt_results = await _try_queries(alt)
+                if alt_results:
+                    logger.info(
+                        "scrape_pipeline: Nyaa alt-title hit for item id=%d — "
+                        "primary=%r alt=%r returned=%d",
+                        item.id,
+                        title,
+                        alt,
+                        len(alt_results),
+                    )
+                    results = alt_results
+                    query_used = alt
+                    break
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        query_params = json.dumps(
+            {
+                "query": query_used,
+                "primary_query": title,
+                "season": item.season,
+                "episode": item.episode,
+                "scene_season": eff_season,
+                "scene_episode": eff_episode,
+                "is_season_pack": item.is_season_pack,
+            }
+        )
+
+        results_summary = json.dumps(self._summarise_results(results[:5]))  # type: ignore[arg-type]
+        await self._log_scrape(
+            session,
+            media_item_id=item.id,
+            scraper="nyaa",
             query_params=query_params,
             results_count=len(results),
             results_summary=results_summary,
