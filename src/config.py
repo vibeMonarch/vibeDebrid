@@ -103,6 +103,7 @@ class FiltersConfig(BaseModel):
     cached_bonus: int = Field(default=25, ge=0, le=100)
     title_similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     title_similarity_bonus: float = Field(default=15.0, ge=0.0, le=50.0)
+    season_pack_min_size_mb_per_episode: int = Field(default=0, ge=0)
 
 
 class RetryConfig(BaseModel):

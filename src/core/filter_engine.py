@@ -240,6 +240,7 @@ class FilterEngine:
         requested_season: int | None = None,
         requested_episode: int | None = None,
         known_titles: list[str] | None = None,
+        expected_episode_count: int | None = None,
     ) -> list[FilteredResult]:
         """Apply Tier 1 hard filters then Tier 2 quality scoring to a result list.
 
@@ -279,6 +280,11 @@ class FilterEngine:
                 primary title, original title, alternative titles).  Used for
                 title similarity scoring and hard-reject filtering.  When None,
                 title similarity features are disabled.  Defaults to None.
+            expected_episode_count: Number of episodes in the requested season,
+                used to validate season pack size-per-episode against
+                ``settings.filters.season_pack_min_size_mb_per_episode``.
+                When None or when the setting is 0, the check is skipped.
+                Defaults to None.
 
         Returns:
             List of FilteredResult objects sorted by score descending.
@@ -344,6 +350,7 @@ class FilterEngine:
                 preferred_lower=preferred_lower,
                 ref_token_sets=ref_token_sets if ref_token_sets else None,
                 result_tokens=result_tokens,
+                expected_episode_count=expected_episode_count,
             )
             if not passed:
                 logger.debug(
@@ -402,6 +409,7 @@ class FilterEngine:
         requested_season: int | None = None,
         requested_episode: int | None = None,
         known_titles: list[str] | None = None,
+        expected_episode_count: int | None = None,
     ) -> FilteredResult | None:
         """Return the highest-scored result, or None if all were rejected.
 
@@ -423,6 +431,8 @@ class FilterEngine:
                 episode are hard-rejected.  Defaults to None.
             known_titles: List of known canonical titles for title similarity
                 scoring and hard-reject filtering.  Defaults to None.
+            expected_episode_count: Number of episodes in the requested season
+                for season pack size validation.  Defaults to None.
 
         Returns:
             The top-ranked FilteredResult, or None when the list is empty or
@@ -437,6 +447,7 @@ class FilterEngine:
             requested_season=requested_season,
             requested_episode=requested_episode,
             known_titles=known_titles,
+            expected_episode_count=expected_episode_count,
         )
         return ranked[0] if ranked else None
 
@@ -456,6 +467,7 @@ class FilterEngine:
         preferred_lower: list[str] | None = None,
         ref_token_sets: list[set[str]] | None = None,
         result_tokens: set[str] | None = None,
+        expected_episode_count: int | None = None,
     ) -> tuple[bool, str | None]:
         """Evaluate Tier 1 hard-reject rules against a single result.
 
@@ -495,6 +507,11 @@ class FilterEngine:
                 (avoids double computation when the caller pre-computes tokens
                 for both hard-filter and scoring).  When None the tokens are
                 computed inline if ``ref_token_sets`` is set.
+            expected_episode_count: Number of episodes expected in the season
+                pack.  When set together with a positive
+                ``season_pack_min_size_mb_per_episode`` config value, season
+                pack results whose size-per-episode falls below the floor are
+                hard-rejected.  When None the check is skipped entirely.
 
         Returns:
             A 2-tuple ``(passed, reason)`` where ``passed`` is True when the
@@ -637,6 +654,23 @@ class FilterEngine:
                 sim = _title_similarity(tokens, ref_token_sets)
                 if sim < threshold:
                     return False, f"title similarity {sim:.2f} below threshold {threshold:.2f}"
+
+        # 10. Season pack size-per-episode floor
+        min_mb = settings.filters.season_pack_min_size_mb_per_episode
+        if (
+            min_mb > 0
+            and result.is_season_pack
+            and result.size_bytes is not None
+            and expected_episode_count is not None
+            and expected_episode_count > 0
+        ):
+            size_per_ep_mb = (result.size_bytes / (1024 * 1024)) / expected_episode_count
+            if size_per_ep_mb < min_mb:
+                return False, (
+                    f"season pack too small per episode: "
+                    f"{size_per_ep_mb:.1f}MB/ep "
+                    f"(need {min_mb}MB/ep for {expected_episode_count} episodes)"
+                )
 
         return True, None
 

@@ -113,6 +113,7 @@
     setField('filters-cached-bonus',                  filters.cached_bonus                  != null ? filters.cached_bonus                  : 25);
     setField('filters-title-similarity-threshold',    filters.title_similarity_threshold    != null ? filters.title_similarity_threshold    : 0.0);
     setField('filters-title-similarity-bonus',        filters.title_similarity_bonus        != null ? filters.title_similarity_bonus        : 15);
+    setField('filters-season-pack-min-size',          filters.season_pack_min_size_mb_per_episode != null ? filters.season_pack_min_size_mb_per_episode : 0);
 
     // Retry
     const retry = s.retry || {};
@@ -291,6 +292,7 @@
         const cachedBonus = parseInt(document.getElementById('filters-cached-bonus').value);
         const titleSimilarityThreshold = parseFloat(document.getElementById('filters-title-similarity-threshold').value);
         const titleSimilarityBonus = parseFloat(document.getElementById('filters-title-similarity-bonus').value);
+        const seasonPackMinSize = parseInt(document.getElementById('filters-season-pack-min-size').value);
         return {
           filters: {
             blocked_keywords:             keywords,
@@ -302,6 +304,7 @@
             cached_bonus:                 isNaN(cachedBonus)                 ? 25  : Math.min(100, Math.max(0, cachedBonus)),
             title_similarity_threshold:   isNaN(titleSimilarityThreshold)    ? 0.0 : Math.min(1.0, Math.max(0.0, titleSimilarityThreshold)),
             title_similarity_bonus:       isNaN(titleSimilarityBonus)        ? 15  : Math.min(50, Math.max(0, titleSimilarityBonus)),
+            season_pack_min_size_mb_per_episode: isNaN(seasonPackMinSize)    ? 0   : Math.min(5000, Math.max(0, seasonPackMinSize)),
           }
         };
       }

@@ -211,6 +211,7 @@ class ScrapePipeline:
         # is enabled — avoids mutating the item without the feature on.
         # ------------------------------------------------------------------
         _tmdb_original_title: str | None = None  # populated below when available
+        _detail_for_ep_count: Any = None
 
         if item.tmdb_id and settings.tmdb.enabled and settings.tmdb.api_key:
             try:
@@ -222,6 +223,7 @@ class ScrapePipeline:
                 else:
                     _detail = await _tmdb_client.get_show_details(tmdb_id_int)
                 if _detail is not None:
+                    _detail_for_ep_count = _detail
                     if (
                         item.original_language is None
                         and settings.filters.prefer_original_language
@@ -398,6 +400,50 @@ class ScrapePipeline:
             if alt.lower() not in {t.lower() for t in known_titles}:
                 known_titles.append(alt)
 
+        # Resolve expected episode count for season pack size validation.
+        _expected_episode_count: int | None = None
+        if item.is_season_pack and item.season is not None:
+            # XEM scene packs: use stored TMDB episode list length
+            if item.metadata_json:
+                try:
+                    _meta_ep = json.loads(item.metadata_json) if isinstance(item.metadata_json, str) else item.metadata_json
+                    if _meta_ep.get("xem_scene_pack") and _meta_ep.get("tmdb_episodes"):
+                        _expected_episode_count = len(_meta_ep["tmdb_episodes"])
+                except (ValueError, TypeError):
+                    pass
+
+            # TMDB show details (already fetched in Step 0)
+            if _expected_episode_count is None and _detail_for_ep_count is not None:
+                seasons = getattr(_detail_for_ep_count, "seasons", None)
+                if seasons:
+                    season_info = next(
+                        (s for s in seasons if s.season_number == item.season),
+                        None,
+                    )
+                    if season_info is not None and season_info.episode_count > 0:
+                        _expected_episode_count = season_info.episode_count
+
+            # AniDB override for anime (read-only cache, no API calls)
+            if _expected_episode_count is None and item.tmdb_id:
+                try:
+                    from src.services.anidb import anidb_client
+                    _anidb_counts = await anidb_client.get_cached_episode_counts(session, int(item.tmdb_id))
+                    if _anidb_counts:
+                        _anidb_ep = _anidb_counts.get(item.season)
+                        if _anidb_ep is not None and _anidb_ep > 0:
+                            _expected_episode_count = _anidb_ep
+                except (ValueError, TypeError, ImportError) as exc:
+                    logger.debug(
+                        "scrape_pipeline: AniDB episode count lookup failed for tmdb_id=%s: %s",
+                        item.tmdb_id, exc,
+                    )
+
+            if _expected_episode_count is not None:
+                logger.debug(
+                    "scrape_pipeline: expected_episode_count=%d for item id=%d season=%d",
+                    _expected_episode_count, item.id, item.season,
+                )
+
         # Filter and rank first, then probe RD cache on the top candidates.
         ranked = filter_engine.filter_and_rank(
             combined,  # type: ignore[arg-type]
@@ -408,6 +454,7 @@ class ScrapePipeline:
             requested_season=scene_season if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
             requested_episode=scene_episode if item.media_type == MediaType.SHOW and not item.is_season_pack else None,
             known_titles=known_titles,
+            expected_episode_count=_expected_episode_count,
         )
 
         # Extract XEM scene pack episode range early — needed for both dedup

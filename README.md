@@ -43,7 +43,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
 
 **Three-Tier Filtering**
-- Tier 1 — hard reject: size limits, blocked keywords/groups, resolution floor, language filter, episode mismatch, title similarity floor
+- Tier 1 — hard reject: size limits, blocked keywords/groups, resolution floor, language filter, episode mismatch, title similarity floor, season pack completeness (size-per-episode heuristic)
 - Tier 2 — quality scoring: resolution, codec, audio, source, seeders, cache status, language preference, original language bonus, title similarity bonus
 - Title similarity scoring: Jaccard token-overlap comparison against all known title variants (TMDB primary, original, alternative titles + AniDB romaji/kanji/synonyms). Catches wrong-IMDB mappings from scrapers and promotes correct-title results. Configurable hard-reject threshold and scoring bonus.
 - Two quality profiles (high / standard) with full customization
@@ -399,6 +399,35 @@ Two built-in profiles:
 Set `filters.preferred_languages` to an ordered list (e.g., `["English", "Japanese"]`). Results with detected languages not in the list are rejected. Untagged results are assumed English. Supports Cyrillic detection and abbreviated language tokens.
 
 Available: English, French, German, Spanish, Portuguese, Italian, Dutch, Russian, Japanese, Korean, Chinese.
+
+### Recommended Settings
+
+These are starting points — adjust based on your library. All settings are in the web UI under Settings.
+
+**General (works for most libraries)**
+
+| Setting | Recommended | Why |
+|---------|------------|-----|
+| `filters.preferred_languages` | `["English", "Japanese"]` | Rejects foreign dubs. Add your languages as needed. |
+| `filters.blocked_keywords` | `["cam", "ts", "telesync", "hdts", "telecine"]` | Rejects low-quality theater captures (default). |
+| `filters.title_similarity_threshold` | `0.0` (off) | Only raise if you're getting wrong-title results. Values above 0.5 may reject valid short-title results. |
+| `filters.title_similarity_bonus` | `15` | Rewards results whose title closely matches known TMDB/AniDB variants (default). |
+| `filters.cached_bonus` | `25` | Strongly prefers RD-cached results for instant availability (default). |
+| `real_debrid.prefer_cached` | `true` | Only add torrents that are already cached in RD (default). |
+
+**Season pack completeness** (`filters.season_pack_min_size_mb_per_episode`)
+
+Rejects season packs that are implausibly small for their episode count. The right value depends on what you watch:
+
+| Content type | Suggested threshold | Rationale |
+|-------------|-------------------|-----------|
+| Mixed (anime + live action) | `0` (disabled) | Anime x265 packs are typically 10-30 MB/ep, which is valid. Any threshold that works for live action would reject most anime. |
+| Live action only | `100`–`200` | A legitimate 1080p BluRay episode is 100MB+ even with heavy compression. Catches fake "Complete" packs. |
+| Anime only | `5`–`10` | Catches completely broken packs while allowing heavily compressed x265 batches. |
+
+**Quality profiles**
+
+The `high` profile targets 2160p/1080p BluRay with premium audio. The `standard` profile targets 1080p WEB-DL with smaller file sizes. Both are fully customizable. For anime-heavy libraries, consider lowering `min_size_mb` in your profile since anime encodes are smaller than live action.
 
 ## Architecture
 

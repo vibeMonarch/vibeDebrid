@@ -698,6 +698,13 @@
               <p class="text-xs text-vd-muted mt-1">Maximum scoring bonus for results whose title closely matches the search query.</p>
             </div>
           </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1" for="filters-season-pack-min-size">Season Pack Min Size Per Episode (MB)</label>
+            <input type="number" id="filters-season-pack-min-size" min="0" max="5000" step="10"
+                   placeholder="0"
+                   class="w-full bg-vd-bg border border-vd-border text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-vd-accent">
+            <p class="text-xs text-vd-muted mt-1">Minimum megabytes per episode for season packs. Rejects packs too small to plausibly contain all episodes. 0 = disabled. Suggested: 100–200 for 1080p.</p>
+          </div>
           <div class="pt-2">
             <button type="button" onclick="saveSection('filters')"
                     class="flex items-center gap-2 px-4 py-2 bg-vd-accent hover:bg-vd-accent-hover text-white text-sm font-medium rounded-lg transition-colors">

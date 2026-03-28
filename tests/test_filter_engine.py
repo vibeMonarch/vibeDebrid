@@ -1849,3 +1849,306 @@ class TestTier1EpisodeMismatchFilter:
         )
         assert passed is False
         assert "S01" in reason or "S1" in reason or "01" in reason
+
+
+# ---------------------------------------------------------------------------
+# Group N: Tier 1 — Season Pack Size-per-Episode Floor (Issue #10)
+# ---------------------------------------------------------------------------
+
+
+class TestTier1SeasonPackCompleteness:
+    """Hard-reject season packs whose per-episode size falls below the configured floor.
+
+    The check is controlled by ``settings.filters.season_pack_min_size_mb_per_episode``.
+    When the setting is 0 (default), the check is disabled entirely.  The check
+    only applies to results where ``is_season_pack=True`` AND
+    ``expected_episode_count`` is a positive integer.
+    """
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _run_hard(
+        self,
+        result: "TorrentioResult",
+        *,
+        expected_episode_count: int | None = None,
+        min_mb_per_episode: int = 100,
+    ) -> tuple[bool, str | None]:
+        """Call _apply_hard_filters with the season pack completeness params."""
+        filters = FiltersConfig(
+            blocked_keywords=[],
+            blocked_release_groups=[],
+            required_language=None,
+            allow_multi_audio=True,
+            season_pack_min_size_mb_per_episode=min_mb_per_episode,
+        )
+        with patch("src.core.filter_engine.settings.quality", _DEFAULT_QUALITY_CONFIG), \
+             patch("src.core.filter_engine.settings.filters", filters):
+            return ENGINE._apply_hard_filters(
+                result,
+                _DEFAULT_PROFILE,
+                expected_episode_count=expected_episode_count,
+            )
+
+    # ------------------------------------------------------------------
+    # Core rejection / pass cases
+    # ------------------------------------------------------------------
+
+    def test_reject_season_pack_below_threshold(self):
+        """Season pack whose size/episode is below the threshold must be rejected.
+
+        6.9 GB across 153 episodes = ~45 MB/ep, well below the 100 MB/ep floor.
+        """
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=6_900_000_000,  # ~6.9 GB
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=153, min_mb_per_episode=100
+        )
+
+        assert passed is False
+        assert reason is not None
+        assert "season pack too small" in reason.lower() or "per episode" in reason.lower()
+
+    def test_pass_season_pack_above_threshold(self):
+        """Season pack whose size/episode is above the threshold must pass.
+
+        30 GB across 12 episodes = 2500 MB/ep, well above the 100 MB/ep floor.
+        """
+        result = _make_result(
+            title="Sample Series S01 Complete.1080p.BluRay.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=30 * 1024 * 1024 * 1024,  # 30 GB
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=12, min_mb_per_episode=100
+        )
+
+        assert passed is True
+        assert reason is None
+
+    def test_pass_threshold_disabled(self):
+        """When season_pack_min_size_mb_per_episode=0 the check is disabled.
+
+        Same tiny torrent as the rejection test must pass when the setting is 0.
+        """
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=6_900_000_000,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=153, min_mb_per_episode=0
+        )
+
+        assert passed is True
+        assert reason is None
+
+    def test_pass_not_season_pack(self):
+        """The size-per-episode check must be skipped for single-episode results."""
+        result = _make_result(
+            title="Test Show S01E01.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=False,
+            size_bytes=500 * 1024 * 1024,  # 500 MB — very small for a season pack
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=20, min_mb_per_episode=100
+        )
+
+        assert passed is True
+        assert reason is None
+
+    def test_pass_episode_count_unknown(self):
+        """When expected_episode_count=None the check must be skipped."""
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=6_900_000_000,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=None, min_mb_per_episode=100
+        )
+
+        assert passed is True
+        assert reason is None
+
+    def test_pass_size_bytes_unknown(self):
+        """When size_bytes=None the check must be skipped (cannot compute MB/ep)."""
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=None,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=12, min_mb_per_episode=100
+        )
+
+        assert passed is True
+        assert reason is None
+
+    def test_pass_episode_count_zero(self):
+        """When expected_episode_count=0 the check must be skipped (prevents ZeroDivisionError)."""
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=6_900_000_000,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=0, min_mb_per_episode=100
+        )
+
+        assert passed is True
+        assert reason is None
+
+    # ------------------------------------------------------------------
+    # Boundary conditions
+    # ------------------------------------------------------------------
+
+    def test_boundary_exactly_at_threshold(self):
+        """A season pack whose size/episode equals the threshold exactly must pass (not < threshold)."""
+        episode_count = 12
+        threshold_mb = 100
+        # Compute size such that size_per_ep_mb == threshold exactly
+        size_bytes = threshold_mb * episode_count * 1024 * 1024
+
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=size_bytes,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=episode_count, min_mb_per_episode=threshold_mb
+        )
+
+        assert passed is True
+        assert reason is None
+
+    def test_one_byte_below_threshold_rejected(self):
+        """One byte below the exact threshold must be rejected."""
+        episode_count = 12
+        threshold_mb = 100
+        size_bytes = threshold_mb * episode_count * 1024 * 1024 - 1
+
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=size_bytes,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=episode_count, min_mb_per_episode=threshold_mb
+        )
+
+        assert passed is False
+        assert reason is not None
+
+    # ------------------------------------------------------------------
+    # Rejection reason content
+    # ------------------------------------------------------------------
+
+    def test_rejection_reason_mentions_mb_per_episode(self):
+        """Rejection reason must describe the per-episode size and the threshold."""
+        result = _make_result(
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=6_900_000_000,
+        )
+        passed, reason = self._run_hard(
+            result, expected_episode_count=153, min_mb_per_episode=100
+        )
+
+        assert passed is False
+        assert reason is not None
+        # Reason should contain MB/ep and the episode count
+        assert "episode" in reason.lower()
+        assert "153" in reason
+
+    # ------------------------------------------------------------------
+    # Integration: filter_and_rank excludes under-size season packs
+    # ------------------------------------------------------------------
+
+    def test_filter_and_rank_excludes_small_packs(self):
+        """filter_and_rank() must exclude season packs below the threshold while
+        keeping those that pass, using the expected_episode_count parameter."""
+        episode_count = 12
+        threshold_mb = 100
+
+        # Good pack: 30 GB / 12 ep = 2560 MB/ep — well above threshold
+        good_pack = _make_result(
+            info_hash="a" * 40,
+            title="Sample Series S01 Complete.1080p.BluRay.x265-GOODGROUP",
+            is_season_pack=True,
+            size_bytes=30 * 1024 * 1024 * 1024,
+        )
+        # Bad pack: 100 MB / 12 ep = ~8 MB/ep — far below threshold
+        bad_pack = _make_result(
+            info_hash="b" * 40,
+            title="Sample Series S01 Complete.1080p.WEB-DL.x265-TINYGROUP",
+            is_season_pack=True,
+            size_bytes=100 * 1024 * 1024,
+        )
+        # Another bad pack: 600 MB / 12 ep = 50 MB/ep — below 100 MB/ep threshold
+        another_bad = _make_result(
+            info_hash="c" * 40,
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-BADGROUP",
+            is_season_pack=True,
+            size_bytes=600 * 1024 * 1024,
+        )
+
+        filters = FiltersConfig(
+            blocked_keywords=[],
+            blocked_release_groups=[],
+            required_language=None,
+            allow_multi_audio=True,
+            season_pack_min_size_mb_per_episode=threshold_mb,
+        )
+        with patch("src.core.filter_engine.settings.quality", _DEFAULT_QUALITY_CONFIG), \
+             patch("src.core.filter_engine.settings.filters", filters):
+            ranked = ENGINE.filter_and_rank(
+                [good_pack, bad_pack, another_bad],
+                prefer_season_packs=True,
+                expected_episode_count=episode_count,
+            )
+
+        hashes = [r.result.info_hash for r in ranked]
+        assert "a" * 40 in hashes, "Good season pack must survive filtering"
+        assert "b" * 40 not in hashes, "Tiny season pack must be rejected"
+        assert "c" * 40 not in hashes, "Under-size season pack must be rejected"
+        assert len(ranked) == 1
+
+    def test_filter_and_rank_no_episode_count_all_survive(self):
+        """When expected_episode_count is not provided all season packs survive
+        the size-per-episode check regardless of size."""
+        small_pack = _make_result(
+            info_hash="a" * 40,
+            title="Test Show S01 Complete.1080p.WEB-DL.x265-GROUP",
+            is_season_pack=True,
+            # 300 MB: above profile min_size_mb=200, but only 25 MB/ep at 12 eps
+            size_bytes=300 * 1024 * 1024,
+        )
+        big_pack = _make_result(
+            info_hash="b" * 40,
+            title="Sample Series S01 Complete.1080p.BluRay.x265-GROUP",
+            is_season_pack=True,
+            size_bytes=30 * 1024 * 1024 * 1024,  # 30 GB
+        )
+
+        filters = FiltersConfig(
+            blocked_keywords=[],
+            blocked_release_groups=[],
+            required_language=None,
+            allow_multi_audio=True,
+            season_pack_min_size_mb_per_episode=100,
+        )
+        with patch("src.core.filter_engine.settings.quality", _DEFAULT_QUALITY_CONFIG), \
+             patch("src.core.filter_engine.settings.filters", filters):
+            ranked = ENGINE.filter_and_rank(
+                [small_pack, big_pack],
+                prefer_season_packs=True,
+                # No expected_episode_count passed
+            )
+
+        assert len(ranked) == 2, "Both packs must survive when episode count is unknown"
