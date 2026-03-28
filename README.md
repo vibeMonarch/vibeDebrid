@@ -116,6 +116,42 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. Title similarity scoring further protects against wrong-IMDB mappings by comparing scraper results against all known title variants and deprioritizing or rejecting mismatches. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
+## Plex Best Practices (Real-Debrid bandwidth)
+
+Since all media is streamed through Zurg/rclone from Real-Debrid, Plex features that analyze media files consume your RD daily traffic allowance. The most expensive are **intro/credits detection** (Skip Intro / Skip Credits) and **video preview thumbnails**. Configure Plex carefully to avoid waking up to exhausted bandwidth.
+
+### Scheduled Tasks (Settings → Scheduled Tasks)
+
+Restrict Plex maintenance to a fixed window when you're not watching:
+
+- **Time at which tasks start to run** → e.g. `22:30`
+- **Time at which tasks stop running** → e.g. `00:00`
+- **Run scanner tasks at a lower priority** → enable (prevents CPU starvation if you're still watching when the window starts)
+
+### Library Analysis (Settings → Library)
+
+Only enable the features you actually want — each one reads media files through the mount:
+
+| Setting | Recommendation | Why |
+|---------|---------------|-----|
+| **Generate intro video markers** | Enable (if you want Skip Intro) | Reads video data to detect intros |
+| **Generate credits video markers** | Enable (if you want Skip Credits) | Reads video data to detect credits |
+| **Marker source** | Both | Online markers are free (no bandwidth). "Both" checks online first, only analyzes locally when no online marker exists. Locally detected markers are submitted back anonymously. |
+| **Generate video preview thumbnails** | Disable | Extremely bandwidth-heavy — reads entire files to generate seek thumbnails |
+| **Generate chapter thumbnails** | Disable | Reads video data for chapter images |
+| **Generate voice activity data** | Disable | Reads audio tracks for subtitle sync |
+| **Analyze audio tracks for loudness** | Disable | Reads audio tracks |
+| **Analyze audio tracks for sonic features** | Disable | Reads audio tracks |
+
+### Hard stop at midnight (optional)
+
+Plex respects the maintenance window but may finish analyzing the current item after the window closes. If you need a guaranteed hard stop, add a cron job on the host that cancels all in-progress analysis:
+
+```bash
+# Cancel Plex analysis tasks at midnight
+0 0 * * * curl -s -X DELETE "http://localhost:32400/activities?X-Plex-Token=YOUR_TOKEN"
+```
+
 ## How It All Fits Together
 
 ```
