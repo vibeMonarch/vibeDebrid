@@ -194,6 +194,16 @@ class ScrapePipeline:
             A PipelineResult describing the outcome.
         """
         # ------------------------------------------------------------------
+        # Extract loop-prevention metadata early (used in hash-based dedup).
+        # ------------------------------------------------------------------
+        _checking_failed_hash: str | None = None
+        try:
+            _meta = json.loads(item.metadata_json) if item.metadata_json else {}
+            _checking_failed_hash = _meta.get("checking_failed_hash")
+        except (ValueError, TypeError):
+            pass
+
+        # ------------------------------------------------------------------
         # Step 0 — Fetch TMDB details for original_language backfill and
         # alternative title collection (used by Zilean fallback).
         # Runs whenever tmdb_id is present and TMDB is configured.
@@ -464,39 +474,70 @@ class ScrapePipeline:
                             dedup_valid = False
 
                     if dedup_valid:
-                        logger.info(
-                            "scrape_pipeline: hash-based dedup hit for item id=%d — "
-                            "hash=%s already registered (rd_id=%s), skipping to CHECKING",
-                            item.id, top_hash, existing_torrent.rd_id,
-                        )
-                        await self._log_scrape(
-                            session,
-                            media_item_id=item.id,
-                            scraper="pipeline",
-                            query_params=json.dumps({
-                                "title": item.title,
-                                "step": "hash_dedup",
-                                "info_hash": top_hash,
-                            }),
-                            results_count=total_count,
-                            results_summary=json.dumps(self._summarise_results(combined[:5])),
-                            selected_result=json.dumps({
-                                "info_hash": top_hash,
-                                "rd_id": existing_torrent.rd_id,
-                                "action": "hash_dedup_hit",
-                            }),
-                            duration_ms=zilean_duration_ms + torrentio_duration_ms,
-                        )
-                        await queue_manager.transition(session, item.id, QueueState.CHECKING)
-                        return PipelineResult(
-                            item_id=item.id,
-                            action="dedup_hit",
-                            message=f"Torrent already in RD registry (hash={top_hash}, rd_id={existing_torrent.rd_id})",
-                            selected_hash=top_hash,
-                            rd_torrent_id=existing_torrent.rd_id,
-                            scrape_results_count=total_count,
-                            filtered_results_count=len(ranked),
-                        )
+                        # Loop prevention: skip if this hash previously failed CHECKING
+                        if _checking_failed_hash and _checking_failed_hash == top_hash:
+                            logger.warning(
+                                "scrape_pipeline: hash-based dedup for item id=%d skipped — "
+                                "hash %s previously failed CHECKING",
+                                item.id, top_hash,
+                            )
+                            # Remove the failed hash from ranked results and clear flag
+                            ranked = [r for r in ranked if r.result.info_hash != top_hash]
+                            try:
+                                meta = json.loads(item.metadata_json) if item.metadata_json else {}
+                            except (ValueError, TypeError):
+                                meta = {}
+                            meta.pop("checking_failed_hash", None)
+                            item.metadata_json = json.dumps(meta) if meta else None
+                            await session.flush()
+                            if not ranked:
+                                # No alternatives — transition to SLEEPING
+                                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                                return PipelineResult(
+                                    item_id=item.id,
+                                    action="checking_loop_skip",
+                                    message=f"No alternatives after skipping failed hash {top_hash}",
+                                    selected_hash=top_hash,
+                                    scrape_results_count=total_count,
+                                    filtered_results_count=0,
+                                )
+                            # Falls through to normal cache-check flow with the next-best result.
+                            # The flag was cleared, so if this result also fails CHECKING,
+                            # it will get a fresh CHECKING attempt with its own flag.
+                        else:
+                            logger.info(
+                                "scrape_pipeline: hash-based dedup hit for item id=%d — "
+                                "hash=%s already registered (rd_id=%s), skipping to CHECKING",
+                                item.id, top_hash, existing_torrent.rd_id,
+                            )
+                            await self._log_scrape(
+                                session,
+                                media_item_id=item.id,
+                                scraper="pipeline",
+                                query_params=json.dumps({
+                                    "title": item.title,
+                                    "step": "hash_dedup",
+                                    "info_hash": top_hash,
+                                }),
+                                results_count=total_count,
+                                results_summary=json.dumps(self._summarise_results(combined[:5])),
+                                selected_result=json.dumps({
+                                    "info_hash": top_hash,
+                                    "rd_id": existing_torrent.rd_id,
+                                    "action": "hash_dedup_hit",
+                                }),
+                                duration_ms=zilean_duration_ms + torrentio_duration_ms,
+                            )
+                            await queue_manager.transition(session, item.id, QueueState.CHECKING)
+                            return PipelineResult(
+                                item_id=item.id,
+                                action="dedup_hit",
+                                message=f"Torrent already in RD registry (hash={top_hash}, rd_id={existing_torrent.rd_id})",
+                                selected_hash=top_hash,
+                                rd_torrent_id=existing_torrent.rd_id,
+                                scrape_results_count=total_count,
+                                filtered_results_count=len(ranked),
+                            )
 
         filtered_count = len(ranked)
         best: FilteredResult | None = ranked[0] if ranked else None
@@ -884,6 +925,34 @@ class ScrapePipeline:
             existing.id,
             existing.info_hash,
         )
+
+        # Loop prevention: skip if this hash previously failed CHECKING
+        if existing.info_hash:
+            try:
+                meta = json.loads(item.metadata_json) if item.metadata_json else {}
+            except (ValueError, TypeError):
+                meta = {}
+            failed_hash = meta.get("checking_failed_hash")
+            if failed_hash and failed_hash == existing.info_hash:
+                logger.warning(
+                    "scrape_pipeline: dedup hit for item id=%d skipped — hash %s "
+                    "previously failed CHECKING, transitioning to SLEEPING",
+                    item.id, existing.info_hash,
+                )
+                # Clear flag so next retry can attempt CHECKING
+                meta.pop("checking_failed_hash", None)
+                item.metadata_json = json.dumps(meta) if meta else None
+                await session.flush()
+                await queue_manager.transition(session, item.id, QueueState.SLEEPING)
+                return PipelineResult(
+                    item_id=item.id,
+                    action="checking_loop_skip",
+                    message=f"Skipping CHECKING for hash {existing.info_hash} — previously failed",
+                    selected_hash=existing.info_hash,
+                    scrape_results_count=1,
+                    filtered_results_count=1,
+                )
+
         selected = json.dumps(
             {
                 "rd_id": existing.rd_id,

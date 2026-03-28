@@ -818,7 +818,7 @@ class TestLookup:
     """Tests for MountScanner.lookup (DB-only, no filesystem access)."""
 
     async def test_lookup_by_title_exact(self, session: AsyncSession) -> None:
-        """Exact normalized title match returns the correct entry; partial words do not match."""
+        """Exact normalized title match returns the correct entry; short words do not match."""
         await _insert_entry(
             session, filepath="/mnt/dark.knight.mkv", parsed_title="the dark knight"
         )
@@ -826,8 +826,9 @@ class TestLookup:
             session, filepath="/mnt/batman.mkv", parsed_title="batman begins"
         )
         scanner = MountScanner()
-        # Partial word "dark" must NOT match "the dark knight"
-        no_results = await scanner.lookup(session, "dark")
+        # Short word "of" (< 4 chars) must NOT match anything — below minimum length
+        # for single-word Tier 2 matching.
+        no_results = await scanner.lookup(session, "of")
         assert len(no_results) == 0
         # Full exact title must match
         results = await scanner.lookup(session, "the dark knight")
@@ -858,15 +859,17 @@ class TestLookup:
         results = await scanner.lookup(session, "judgement day")
         assert len(results) == 0
 
-    async def test_lookup_word_subsequence_single_word_no_fallback(self, session: AsyncSession) -> None:
-        """Single-word queries do not trigger the subsequence fallback."""
+    async def test_lookup_word_subsequence_single_word_fallback(self, session: AsyncSession) -> None:
+        """Single-word queries with 4+ chars do trigger whole-word Tier 2 matching."""
         await _insert_entry(
             session, filepath="/mnt/movie.mkv",
             parsed_title="the terminator",
         )
         scanner = MountScanner()
+        # "terminator" (10 chars) appears as a whole token in "the terminator"
         results = await scanner.lookup(session, "terminator")
-        assert len(results) == 0  # exact fails, and single word = no fallback
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/movie.mkv"
 
     async def test_lookup_case_insensitive(self, session: AsyncSession) -> None:
         """Title lookup is case-insensitive."""
@@ -3208,44 +3211,43 @@ class TestGatherAltTitles:
 class TestSingleWordLookup:
     """Tests for the single-word title edge case in lookup/lookup_multi.
 
-    A single-word query skips Tier 2 (word-subsequence) entirely because a
-    one-word LIKE pattern is too broad.  It falls through to Tier 3, where
-    the DB title must have 3+ words AND the DB words must appear as a
-    subsequence of the (single) search word — which is impossible unless the
-    DB title also consists of that exact single word (handled by Tier 1).
-    In practice, single-word queries that don't exact-match return nothing.
+    Single-word queries with 4+ characters use a whole-word Tier 2 check:
+    the DB parsed_title must contain that word as a complete token (not a
+    substring).  This enables matching titles like "Sinners" or "Parasite"
+    that are indexed as single-word parsed_title values.
+
+    Words shorter than 4 characters skip Tier 2 entirely and fall through to
+    Tier 3 (reverse containment), which requires 3+ DB words — so short
+    single-word queries that don't exact-match return nothing.
     """
 
-    async def test_single_word_skips_tier2_reaches_tier3_no_match(
+    async def test_single_word_tier2_match_against_multi_word_db_title(
         self, session: AsyncSession
     ) -> None:
-        """Single-word query does not match a 2-word DB title (2 < 3-word Tier 3 guard)."""
+        """4+ char single-word query matches a DB title where that word is a token."""
         await _insert_entry(
             session,
             filepath="/mnt/show.mkv",
-            parsed_title="test show",  # 2 words — below Tier 3 guard
+            parsed_title="test show",  # "show" is a token here
         )
         results = await mount_scanner.lookup(session, "Show")
-        assert results == []
+        # "show" (4 chars) appears as a whole token in "test show" — Tier 2 matches
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/show.mkv"
 
-    async def test_single_word_no_match_against_long_db_title(
+    async def test_single_word_match_against_long_db_title(
         self, session: AsyncSession
     ) -> None:
-        """Single-word query cannot match a 3-word DB title via Tier 3.
-
-        Tier 3 requires all DB words to appear as a subsequence of the search
-        title.  "test" (1 word) cannot contain the subsequence ["test", "show",
-        "title"] (3 words), so no match is returned.
-        """
+        """4+ char single-word query matches a 3-word DB title via whole-word Tier 2."""
         await _insert_entry(
             session,
             filepath="/mnt/long.show.mkv",
-            parsed_title="test show title",  # 3 words — meets Tier 3 word count guard
+            parsed_title="test show title",
         )
         results = await mount_scanner.lookup(session, "test")
-        # Tier 3: DB words ["test","show","title"] must be a subsequence of
-        # search words ["test"] — impossible. No match expected.
-        assert results == []
+        # "test" (4 chars) is a token in "test show title" — Tier 2 matches
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/long.show.mkv"
 
     async def test_single_word_no_false_positive(self, session: AsyncSession) -> None:
         """Single short word "It" does not match unrelated DB entries."""
@@ -3408,3 +3410,314 @@ class TestSpecialFilenameFilter:
     def test_ova_not_filtered(self) -> None:
         """OVA files should NOT be filtered (user may want them)."""
         assert not self._matches("[Anime Time] Show Title OVA - Training.mkv")
+
+
+# ---------------------------------------------------------------------------
+# Change 1: Single-word Tier 2 in lookup_multi
+# ---------------------------------------------------------------------------
+
+
+class TestSingleWordTier2LookupMulti:
+    """Tests for the single-word Tier 2 path in lookup_multi.
+
+    A single-word query with 4+ characters now performs a LIKE search and
+    verifies the word appears as a whole token in the DB title (not a
+    substring).  Words shorter than 4 characters are skipped entirely.
+    """
+
+    async def test_single_word_tier2_matches_word_in_multi_word_title(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-word 4+ char query matches DB entry where that word is a token.
+
+        lookup("sinners") should match parsed_title="sinners 2025" because
+        "sinners" is a whole word in that title.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/sinners/movie.mkv",
+            parsed_title="sinners 2025",
+        )
+        results = await mount_scanner.lookup(session, "sinners")
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/sinners/movie.mkv"
+
+    async def test_single_word_tier2_no_partial_match(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-word query must NOT match when the word is a substring of another word.
+
+        lookup("black") should NOT match parsed_title="blackberry 2023" because
+        "black" is not a whole token — it is part of "blackberry".
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/blackberry/movie.mkv",
+            parsed_title="blackberry 2023",
+        )
+        results = await mount_scanner.lookup(session, "black")
+        assert results == []
+
+    async def test_single_word_tier2_short_word_skipped(
+        self, session: AsyncSession
+    ) -> None:
+        """Words shorter than 4 characters skip Tier 2 entirely.
+
+        lookup("it") should NOT match parsed_title="it chapter two" because
+        the word "it" is only 2 chars — Tier 2 is skipped, and Tier 3
+        requires 3+ DB words but the exact match fails as well.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/it/movie.mkv",
+            parsed_title="it chapter two",
+        )
+        # "it" is 2 chars; skip Tier 2.  Tier 3 requires DB title words to be
+        # a subsequence of the input words — "it chapter two" (3 words) would
+        # need all three to appear in ["it"], which fails.
+        results = await mount_scanner.lookup(session, "it")
+        assert results == []
+
+    async def test_single_word_tier2_exact_takes_priority(
+        self, session: AsyncSession
+    ) -> None:
+        """Tier 1 (exact match) is returned before Tier 2 is consulted.
+
+        When parsed_title is exactly the query word, the exact-match path
+        returns it without needing the Tier 2 LIKE path.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/parasite/movie.mkv",
+            parsed_title="parasite",
+        )
+        # Also insert a multi-word entry to confirm Tier 2 is not needed.
+        await _insert_entry(
+            session,
+            filepath="/mnt/parasite2/movie.mkv",
+            parsed_title="parasite 2019",
+        )
+        results = await mount_scanner.lookup(session, "parasite")
+        # Exact match returns the exact entry (and possibly the multi-word one
+        # too via IN query), but the result must include the exact entry.
+        filepaths = {r.filepath for r in results}
+        assert "/mnt/parasite/movie.mkv" in filepaths
+
+    async def test_single_word_tier2_with_season_filter(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-word Tier 2 respects the season filter.
+
+        lookup("sinners", season=1) should NOT match an entry with parsed_season=2.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/sinners/s02.mkv",
+            parsed_title="sinners 2025",
+            parsed_season=2,
+        )
+        results = await mount_scanner.lookup(session, "sinners", season=1)
+        assert results == []
+
+    async def test_single_word_tier2_with_episode_filter(
+        self, session: AsyncSession
+    ) -> None:
+        """Single-word Tier 2 respects the episode filter.
+
+        lookup("sinners", episode=5) should only return entries with parsed_episode=5.
+        """
+        await _insert_entry(
+            session,
+            filepath="/mnt/sinners/ep05.mkv",
+            parsed_title="sinners 2025",
+            parsed_season=1,
+            parsed_episode=5,
+        )
+        await _insert_entry(
+            session,
+            filepath="/mnt/sinners/ep06.mkv",
+            parsed_title="sinners 2025",
+            parsed_season=1,
+            parsed_episode=6,
+        )
+        results = await mount_scanner.lookup(session, "sinners", episode=5)
+        assert len(results) == 1
+        assert results[0].filepath == "/mnt/sinners/ep05.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Change 2: Bidirectional fuzzy match in scan_directory
+# ---------------------------------------------------------------------------
+
+
+class TestScanDirectoryBidirectionalFuzzy:
+    """Tests for the bidirectional fuzzy word-subsequence match in scan_directory.
+
+    The fuzzy directory search now checks both forward (input words subset of
+    dir name words) AND reverse (dir name words subset of input words).
+    A guard prevents single-word directory names from reverse-matching.
+    """
+
+    async def test_scan_directory_fuzzy_reverse_match(
+        self, session: AsyncSession
+    ) -> None:
+        """Torrent filename with many words (codec/resolution tags) fuzzy-matches a
+        Zurg directory that only contains the base title and year.
+
+        The torrent name words are a superset of the directory name words, so
+        the reverse direction (dir_words IN input_words) triggers the match.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # The directory name is short — just title + year.
+            short_dir = os.path.join(tmpdir, "Sample Film 2023")
+            os.makedirs(short_dir)
+            open(os.path.join(short_dir, "Sample.Film.2023.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                # The torrent name has many extra words; exact match will fail.
+                result = await scanner.scan_directory(
+                    session,
+                    "Sample Film 2023 1080p BluRay x264-GROUP",
+                )
+
+        # The fuzzy reverse match should have found "Sample Film 2023".
+        assert result.files_indexed == 1
+        assert result.matched_dir_path is not None
+        assert "Sample Film 2023" in result.matched_dir_path
+
+    async def test_scan_directory_fuzzy_single_word_dir_guard(
+        self, session: AsyncSession
+    ) -> None:
+        """A directory with a single-word name must NOT match via reverse direction.
+
+        The guard `len(norm_words) < 2` prevents broad matches like a directory
+        named "2023" matching every torrent that contains the year.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Single-word directory name.
+            single_dir = os.path.join(tmpdir, "2023")
+            os.makedirs(single_dir)
+            open(os.path.join(single_dir, "Some.Movie.2023.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                # Input does contain "2023" but the dir is single-word — guard fires.
+                result = await scanner.scan_directory(
+                    session,
+                    "Totally Different Movie 2023 1080p",
+                )
+
+        # Single-word reverse match was blocked; directory was not matched.
+        assert result.files_indexed == 0
+        assert result.matched_dir_path is None
+
+    async def test_scan_directory_fuzzy_forward_still_works(
+        self, session: AsyncSession
+    ) -> None:
+        """The original forward-direction fuzzy match (dir name words subset of input)
+        continues to work after the bidirectional change.
+        """
+        scanner = MountScanner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Directory name is longer; the input is a shortened version.
+            long_dir = os.path.join(tmpdir, "Test Show Season One 2022")
+            os.makedirs(long_dir)
+            open(os.path.join(long_dir, "Show.S01E01.mkv"), "wb").write(b"v")
+
+            with patch("src.core.mount_scanner.settings") as mock_settings:
+                mock_settings.paths.zurg_mount = tmpdir
+                # Input words are a subsequence of the directory name words
+                # (forward direction: "test show season one 2022" contains "test show").
+                result = await scanner.scan_directory(
+                    session,
+                    "test show",
+                )
+
+        assert result.files_indexed == 1
+        assert result.matched_dir_path is not None
+
+
+# ---------------------------------------------------------------------------
+# Change 3: torrent_filename parameter in gather_alt_titles
+# ---------------------------------------------------------------------------
+
+
+class TestGatherAltTitlesTorrentFilename:
+    """Tests for the torrent_filename parameter added to gather_alt_titles.
+
+    When a raw torrent filename is supplied, PTN parses it and the extracted
+    title is appended to the list (if not a duplicate of existing titles).
+    """
+
+    async def test_gather_alt_titles_with_torrent_filename(
+        self, session: AsyncSession
+    ) -> None:
+        """PTN-parsed title from torrent_filename is appended to the list."""
+        item = _make_media_item(title="Cool Movie")
+        result = await gather_alt_titles(
+            session,
+            item,
+            torrent_filename="Cool.Movie.2023.BluRay.x264-GROUP",
+        )
+        # PTN should extract "Cool Movie" from the filename.  Since it
+        # normalizes to the same lower-case as item.title, it should be deduped.
+        # But PTN may return a different casing or abbreviation.  At minimum
+        # the primary title must be present and no crash must occur.
+        assert "Cool Movie" in result
+        assert result[0] == "Cool Movie"
+
+    async def test_gather_alt_titles_torrent_filename_adds_different_title(
+        self, session: AsyncSession
+    ) -> None:
+        """When the PTN-parsed title differs from item.title it is appended."""
+        item = _make_media_item(title="Sample Film English Title")
+        result = await gather_alt_titles(
+            session,
+            item,
+            torrent_filename="Sample.Film.Original.Language.2023.1080p.mkv",
+        )
+        # PTN extracts "Sample Film Original Language" — different from item.title
+        # so it should be appended.
+        assert "Sample Film English Title" in result
+        assert len(result) >= 2
+
+    async def test_gather_alt_titles_torrent_filename_dedup(
+        self, session: AsyncSession
+    ) -> None:
+        """PTN-parsed title identical to item.title (case-insensitive) is not duplicated."""
+        item = _make_media_item(title="Test Movie")
+        # Filename parses to "Test Movie" — same as item.title after normalization.
+        result = await gather_alt_titles(
+            session,
+            item,
+            torrent_filename="Test.Movie.2024.1080p.WEB-DL.x265-GRP",
+        )
+        # "Test Movie" (or equivalent) must appear exactly once.
+        lower_titles = [t.lower() for t in result]
+        assert lower_titles.count("test movie") == 1
+
+    async def test_gather_alt_titles_torrent_filename_none(
+        self, session: AsyncSession
+    ) -> None:
+        """When torrent_filename=None, behavior is identical to the original signature."""
+        item = _make_media_item(title="Test Show")
+        result_without = await gather_alt_titles(session, item)
+        result_with_none = await gather_alt_titles(session, item, torrent_filename=None)
+        assert result_without == result_with_none
+
+    async def test_gather_alt_titles_torrent_filename_ptn_failure(
+        self, session: AsyncSession
+    ) -> None:
+        """When PTN fails on the torrent_filename no crash occurs and normal titles return."""
+        item = _make_media_item(title="Test Movie")
+        with patch("src.core.mount_scanner.PTN.parse", side_effect=RuntimeError("PTN boom")):
+            result = await gather_alt_titles(
+                session,
+                item,
+                torrent_filename="anything.mkv",
+            )
+        # Must not raise; primary title must still be in result.
+        assert result[0] == "Test Movie"

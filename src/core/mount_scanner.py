@@ -454,7 +454,9 @@ class MountScanner:
         - Tier 1 (exact): batch ``WHERE parsed_title IN (...)`` — single query.
         - Tier 2 (word-subsequence): iterate titles, short-circuit on first hit.
           Skipped for titles with fewer than 2 words (would produce over-broad
-          matches) but execution always falls through to Tier 3.
+          matches) but execution always falls through to Tier 3.  Single-word
+          titles with 4+ characters use a whole-word LIKE match instead of the
+          multi-word subsequence pattern.
         - Tier 3 (reverse containment): iterate titles, short-circuit on first
           hit.  Only DB titles with 3+ words are accepted.
 
@@ -507,7 +509,26 @@ class MountScanner:
         for normalized in normalized_titles:
             words = normalized.split()
             if len(words) < 2:
-                # Skip Tier 2 for single-word titles; fall through to Tier 3.
+                if len(words) == 1 and len(words[0]) >= 4:
+                    # Single-word query with enough specificity.
+                    # Match DB titles containing this word as a whole token.
+                    like_pattern = f"%{words[0]}%"
+                    stmt = select(MountIndex).where(
+                        MountIndex.parsed_title.like(like_pattern)
+                    )
+                    result = await session.execute(_apply_filters(stmt))
+                    candidates = list(result.scalars().all())
+                    if candidates:
+                        verified = [
+                            m for m in candidates
+                            if words[0] in (m.parsed_title or "").split()
+                        ]
+                        if verified:
+                            logger.info(
+                                "lookup_multi: single-word Tier 2 on %r found %d result(s)",
+                                normalized, len(verified),
+                            )
+                            return verified
                 continue
             like_pattern = "%" + "%".join(words) + "%"
             stmt = select(MountIndex).where(
@@ -746,7 +767,13 @@ class MountScanner:
                             continue
                         norm = _normalize_title(entry.name)
                         norm_words = norm.split()
-                        if not _is_word_subsequence(input_words, norm_words):
+                        fwd = _is_word_subsequence(input_words, norm_words)
+                        rev = _is_word_subsequence(norm_words, input_words)
+                        if not fwd and not rev:
+                            continue
+                        # Guard: single-word directory names are too broad for
+                        # reverse matching (e.g. "2023" would match everything).
+                        if not fwd and rev and len(norm_words) < 2 and norm != normalized_input:
                             continue
                         candidates.append((norm, entry.name, entry.path))
                 if not candidates:
@@ -1612,6 +1639,7 @@ async def gather_alt_titles(
     session: AsyncSession,
     item: "MediaItem",
     tmdb_original_title: str | None = None,
+    torrent_filename: str | None = None,
 ) -> list[str]:
     """Build deduplicated list of all known title variants for an item.
 
@@ -1620,6 +1648,7 @@ async def gather_alt_titles(
     1. ``item.title`` (always first).
     2. ``tmdb_original_title`` (if provided and different from item.title).
     3. AniDB titles from local cache (zero-latency SQLite query).
+    4. PTN-parsed title from ``torrent_filename`` (if provided and different).
 
     Does NOT call TMDB alternative_titles API (too expensive for hot path).
 
@@ -1627,6 +1656,8 @@ async def gather_alt_titles(
         session: Async database session (used for AniDB cache lookup).
         item: The MediaItem whose title variants are needed.
         tmdb_original_title: Optional TMDB original language title.
+        torrent_filename: Optional raw torrent filename to parse for an
+            additional title variant (e.g. the actual RD torrent name).
 
     Returns:
         Deduplicated list of title strings, primary title first.
@@ -1654,6 +1685,19 @@ async def gather_alt_titles(
             logger.debug(
                 "gather_alt_titles: AniDB lookup failed for tmdb_id=%s, skipping",
                 item.tmdb_id,
+            )
+
+    if torrent_filename:
+        try:
+            ptn_result = PTN.parse(torrent_filename)
+            ptn_title = ptn_result.get("title")
+            if ptn_title and ptn_title.lower() not in seen_lower:
+                titles.append(ptn_title)
+                seen_lower.add(ptn_title.lower())
+        except (TypeError, KeyError, AttributeError, ValueError, RuntimeError) as exc:
+            logger.debug(
+                "gather_alt_titles: PTN parse failed for %r: %s",
+                torrent_filename, exc,
             )
 
     return titles

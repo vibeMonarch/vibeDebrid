@@ -715,6 +715,16 @@ async def _job_queue_processor() -> None:
                         if sca is not None and sca.tzinfo is None:
                             sca = sca.replace(tzinfo=timezone.utc)
                         if sca and sca <= timeout_threshold:
+                            # Store failed hash for loop prevention (before transition)
+                            _sp_torrent = await _find_torrent_for_item(session, item)
+                            if _sp_torrent and _sp_torrent.info_hash:
+                                try:
+                                    _sp_meta = json.loads(item.metadata_json) if item.metadata_json else {}
+                                except (ValueError, TypeError):
+                                    _sp_meta = {}
+                                _sp_meta["checking_failed_hash"] = _sp_torrent.info_hash
+                                item.metadata_json = json.dumps(_sp_meta)
+                                await session.flush()
                             logger.warning(
                                 "CHECKING season pack id=%d title=%r timed out after %d min, transitioning to SLEEPING",
                                 item.id, item.title, settings.retry.checking_timeout_minutes,
@@ -802,12 +812,18 @@ async def _job_queue_processor() -> None:
                         if torrent and torrent.filename:
                             scan_result = await mount_scanner.scan_directory(session, torrent.filename)
                             if scan_result.files_indexed > 0:
-                                matches = await mount_scanner.lookup(
+                                _post_scan_titles = await gather_alt_titles(
+                                    session, item,
+                                    torrent_filename=torrent.filename,
+                                )
+                                matches = await mount_scanner.lookup_multi(
                                     session,
-                                    title=item.title,
+                                    _post_scan_titles,
                                     season=item.season,
                                     episode=item.episode,
                                 )
+                            # Save matched_dir_path before RD refresh may overwrite scan_result
+                            first_matched_dir_path = scan_result.matched_dir_path if scan_result else None
                             # RD filename refresh: torrent.filename may be stale (e.g.
                             # stored as item title instead of actual RD torrent name).
                             # Re-fetch from RD API and retry scan+lookup if it differs.
@@ -823,9 +839,12 @@ async def _job_queue_processor() -> None:
                                         torrent.filename = rd_filename
                                         scan_result = await mount_scanner.scan_directory(session, rd_filename)
                                         if scan_result.files_indexed > 0:
-                                            matches = await mount_scanner.lookup(
+                                            matches = await mount_scanner.lookup_multi(
                                                 session,
-                                                title=item.title,
+                                                await gather_alt_titles(
+                                                    session, item,
+                                                    torrent_filename=rd_filename,
+                                                ),
                                                 season=item.season,
                                                 episode=item.episode,
                                             )
@@ -840,15 +859,19 @@ async def _job_queue_processor() -> None:
                             # Run whenever matched_dir_path is known, regardless of whether
                             # new files were indexed (files may have been indexed by a prior
                             # full scan).
-                            if not matches and scan_result.matched_dir_path:
+                            effective_dir_path = (
+                                (scan_result.matched_dir_path if scan_result else None)
+                                or first_matched_dir_path
+                            )
+                            if not matches and effective_dir_path:
                                 logger.info(
                                     "CHECKING item id=%d: title lookup failed, "
                                     "trying path prefix %r",
-                                    item.id, scan_result.matched_dir_path,
+                                    item.id, effective_dir_path,
                                 )
                                 matches = await mount_scanner.lookup_by_path_prefix(
                                     session,
-                                    scan_result.matched_dir_path,
+                                    effective_dir_path,
                                     season=item.season,
                                     episode=item.episode,
                                 )
@@ -859,7 +882,7 @@ async def _job_queue_processor() -> None:
                                 if not matches:
                                     matches = await mount_scanner.lookup_by_path_prefix(
                                         session,
-                                        scan_result.matched_dir_path,
+                                        effective_dir_path,
                                         season=None,
                                         episode=item.episode,
                                     )
@@ -868,7 +891,7 @@ async def _job_queue_processor() -> None:
                                 if not matches:
                                     matches = await mount_scanner.lookup_by_path_prefix(
                                         session,
-                                        scan_result.matched_dir_path,
+                                        effective_dir_path,
                                         season=None,
                                         episode=None,
                                     )
@@ -935,6 +958,17 @@ async def _job_queue_processor() -> None:
                         if sca is not None and sca.tzinfo is None:
                             sca = sca.replace(tzinfo=timezone.utc)
                         if sca and sca <= timeout_threshold:
+                            # Store failed hash BEFORE transitioning (so both happen or neither)
+                            if torrent is None:
+                                torrent = await _find_torrent_for_item(session, item)
+                            if torrent and torrent.info_hash:
+                                try:
+                                    meta = json.loads(item.metadata_json) if item.metadata_json else {}
+                                except (ValueError, TypeError):
+                                    meta = {}
+                                meta["checking_failed_hash"] = torrent.info_hash
+                                item.metadata_json = json.dumps(meta)
+                                await session.flush()
                             logger.warning(
                                 "CHECKING item id=%d title=%r timed out after %d min, transitioning to SLEEPING",
                                 item.id, item.title, settings.retry.checking_timeout_minutes,
@@ -1023,6 +1057,16 @@ async def _job_queue_processor() -> None:
                                 if len(file_seasons) == 1:
                                     item.season = file_seasons.pop()
 
+                            # Clear loop-prevention flag on success (auto-promote path)
+                            if item.metadata_json:
+                                try:
+                                    _meta_ap = json.loads(item.metadata_json)
+                                    if _meta_ap.pop("checking_failed_hash", None) is not None:
+                                        item.metadata_json = json.dumps(_meta_ap) if _meta_ap else None
+                                        await session.flush()
+                                except (ValueError, TypeError):
+                                    pass
+
                             await queue_manager.transition(session, item.id, QueueState.COMPLETE)
                             for sl in created_symlinks:
                                 media_scan_queue.append((item.media_type, sl.target_path))
@@ -1075,6 +1119,16 @@ async def _job_queue_processor() -> None:
                             item.id, source_path,
                         )
                         continue
+
+                # Clear loop-prevention flag on success
+                if item.metadata_json:
+                    try:
+                        _meta_complete = json.loads(item.metadata_json)
+                        if _meta_complete.pop("checking_failed_hash", None) is not None:
+                            item.metadata_json = json.dumps(_meta_complete) if _meta_complete else None
+                            await session.flush()
+                    except (ValueError, TypeError):
+                        pass
 
                 await queue_manager.transition(session, item.id, QueueState.COMPLETE)
 

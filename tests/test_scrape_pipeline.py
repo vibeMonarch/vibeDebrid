@@ -2380,3 +2380,197 @@ class TestZileanAltTitleRetry:
         )
         assert params["query"] == "Winning Alt Title"
         assert params["primary_query"] == "English Title"
+
+
+# ---------------------------------------------------------------------------
+# Change 4: CHECKING dedup loop-breaking (checking_failed_hash)
+# ---------------------------------------------------------------------------
+
+
+import json as _json_module  # noqa: E402 — import after existing imports to keep diff small
+
+
+class TestCheckingFailedHashDedup:
+    """Tests for the checking_failed_hash loop-prevention mechanism.
+
+    When a CHECKING stage times out, the pipeline stores the offending hash in
+    metadata_json["checking_failed_hash"].  On the next run:
+
+    - _step_dedup_check: if the dedup hit matches the failed hash, skip it,
+      clear the flag, and transition to SLEEPING instead of CHECKING.
+    - Hash-based dedup block: if the top ranked result matches the failed hash,
+      remove it from ranked and either continue with alternatives or go SLEEPING.
+    """
+
+    # -----------------------------------------------------------------------
+    # _step_dedup_check — content-dedup path (Step 2)
+    # -----------------------------------------------------------------------
+
+    async def test_dedup_check_skips_failed_hash(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When dedup hit hash matches checking_failed_hash, action='checking_loop_skip'."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        failed_hash = "a" * 40
+        mock_rd_torrent.info_hash = failed_hash
+        wanted_item.metadata_json = _json_module.dumps({"checking_failed_hash": failed_hash})
+        await session.flush()
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.dedup_check.return_value = mock_rd_torrent
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        assert result.action == "checking_loop_skip"
+
+    async def test_dedup_check_clears_flag_after_skip(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """After skipping the failed hash, checking_failed_hash is removed from metadata_json."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        failed_hash = "a" * 40
+        mock_rd_torrent.info_hash = failed_hash
+        wanted_item.metadata_json = _json_module.dumps(
+            {"checking_failed_hash": failed_hash, "other_key": "preserved"}
+        )
+        await session.flush()
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.dedup_check.return_value = mock_rd_torrent
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        # Reload from session to pick up the flush.
+        await session.refresh(wanted_item)
+        if wanted_item.metadata_json:
+            meta = _json_module.loads(wanted_item.metadata_json)
+            assert "checking_failed_hash" not in meta
+        # other_key may or may not survive depending on whether meta is empty,
+        # but the important thing is the failed hash flag is gone.
+
+    async def test_dedup_check_different_hash_proceeds_normally(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When the dedup hit has a different hash than checking_failed_hash, normal CHECKING."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        failed_hash = "f" * 40
+        different_hash = "a" * 40
+        mock_rd_torrent.info_hash = different_hash
+        wanted_item.metadata_json = _json_module.dumps({"checking_failed_hash": failed_hash})
+        await session.flush()
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.dedup_check.return_value = mock_rd_torrent
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        # Normal dedup hit — should be "dedup_hit", NOT "checking_loop_skip".
+        assert result.action == "dedup_hit"
+
+    async def test_dedup_check_no_flag_normal_behavior(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When metadata_json has no checking_failed_hash, standard dedup_hit path runs."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_rd_torrent.info_hash = "b" * 40
+        # No metadata_json / no flag.
+        wanted_item.metadata_json = None
+        await session.flush()
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.dedup_check.return_value = mock_rd_torrent
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        assert result.action == "dedup_hit"
+
+    # -----------------------------------------------------------------------
+    # Hash-based dedup block — top ranked result path
+    # -----------------------------------------------------------------------
+
+    async def test_hash_dedup_skips_failed_hash_no_alternatives(
+        self, session: AsyncSession, wanted_item: MediaItem
+    ) -> None:
+        """Hash-based dedup: if top result matches checking_failed_hash and no alternatives,
+        action='checking_loop_skip' and transition to SLEEPING.
+        """
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        failed_hash = "c" * 40
+        wanted_item.metadata_json = _json_module.dumps({"checking_failed_hash": failed_hash})
+        await session.flush()
+
+        # Build a scrape result with the failed hash.
+        torrentio_result = _make_torrentio_result(info_hash=failed_hash)
+        filtered = _make_filtered_result(torrentio_result, score=80.0)
+
+        # The dedup engine will "find" this hash as an existing torrent
+        # via check_local_duplicate (the hash-based dedup call in the pipeline).
+        existing_torrent = MagicMock(spec=RdTorrent)
+        existing_torrent.rd_id = "RD999"
+        existing_torrent.info_hash = failed_hash
+
+        async with _all_mocks() as m:
+            m.dedup_check.return_value = None          # content-dedup misses
+            m.torrentio_movie.return_value = [torrentio_result]
+            m.filter_rank.return_value = [filtered]
+            with patch(
+                "src.core.scrape_pipeline.dedup_engine.check_local_duplicate",
+                new=AsyncMock(return_value=existing_torrent),
+            ):
+                pipeline = ScrapePipeline()
+                result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        assert result.action == "checking_loop_skip"
+
+    async def test_corrupted_metadata_json_no_crash(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When metadata_json is malformed JSON the pipeline handles it gracefully."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        # Store deliberately malformed JSON.
+        wanted_item.metadata_json = "not valid json {{{"
+        mock_rd_torrent.info_hash = "a" * 40
+        await session.flush()
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.dedup_check.return_value = mock_rd_torrent
+            pipeline = ScrapePipeline()
+            # Must not raise — malformed metadata_json is treated as empty.
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        # Normal dedup_hit because no valid checking_failed_hash was parsed.
+        assert result.action == "dedup_hit"
+
+    async def test_dedup_check_transitions_sleeping_on_skip(
+        self, session: AsyncSession, wanted_item: MediaItem, mock_rd_torrent: RdTorrent
+    ) -> None:
+        """When _step_dedup_check skips the failed hash, queue_manager.transition is called
+        with SLEEPING.
+        """
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        failed_hash = "d" * 40
+        mock_rd_torrent.info_hash = failed_hash
+        wanted_item.metadata_json = _json_module.dumps({"checking_failed_hash": failed_hash})
+        await session.flush()
+
+        async with _all_mocks(mock_rd_torrent) as m:
+            m.dedup_check.return_value = mock_rd_torrent
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, wanted_item)
+
+        # Verify transition was called at least once with SLEEPING.
+        from src.models.media_item import QueueState  # noqa: PLC0415
+
+        sleeping_calls = [
+            call_args
+            for call_args in m.queue_transition.call_args_list
+            if QueueState.SLEEPING in call_args.args or QueueState.SLEEPING in call_args.kwargs.values()
+        ]
+        assert len(sleeping_calls) >= 1
