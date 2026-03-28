@@ -51,9 +51,12 @@ def _cache_get(key: tuple) -> Any | None:
 
 
 def _cache_set(key: tuple, value: Any) -> None:
-    """Store a value in the cache with TTL. Evict oldest entry if at capacity."""
+    """Store a value in the cache with TTL. Evict oldest entry if at capacity.
+
+    Safe without locking: runs in the asyncio event loop with no await points,
+    so the min/pop/insert sequence executes atomically.
+    """
     if len(_detail_cache) >= _CACHE_MAX_SIZE:
-        # Evict the entry closest to expiry (smallest expire_time)
         oldest_key = min(_detail_cache, key=lambda k: _detail_cache[k][0])
         _detail_cache.pop(oldest_key, None)
     _detail_cache[key] = (time.monotonic() + _CACHE_TTL, value)

@@ -310,6 +310,8 @@ async def _job_queue_processor() -> None:
             except Exception:
                 logger.exception("Failed to recover stuck item id=%d", item.id)
 
+        await session.commit()
+
         # --- Stage 1: WANTED/SCRAPING → pipeline ---
         # Include SCRAPING items: process_queue() transitions SLEEPING→SCRAPING,
         # but Stage 1 previously only queried WANTED, leaving those items stuck
@@ -352,6 +354,8 @@ async def _job_queue_processor() -> None:
                         "Failed to transition item id=%d to SLEEPING after pipeline error",
                         item_id,
                     )
+
+        await session.commit()
 
         # --- Stage 2: ADDING → check RD status → CHECKING ---
         result = await session.execute(
@@ -424,6 +428,8 @@ async def _job_queue_processor() -> None:
                     "Failed to check RD status for ADDING item id=%d title=%s",
                     item.id, item.title,
                 )
+
+        await session.commit()
 
         # --- Stage 3: CHECKING → mount lookup → symlink → COMPLETE ---
         result = await session.execute(
@@ -1141,6 +1147,8 @@ async def _job_queue_processor() -> None:
                     "Failed to process CHECKING item id=%d title=%s",
                     item.id, item.title,
                 )
+
+        await session.commit()
 
         # --- Plex scans (batched, deduplicated) ---
         if media_scan_queue:

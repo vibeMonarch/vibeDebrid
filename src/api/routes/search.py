@@ -180,8 +180,11 @@ async def search(body: SearchRequest) -> SearchResponse:
                     body.media_type,
                 )
                 return []
-        except Exception as exc:
+        except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
             logger.warning("search: torrentio scrape failed: %s", exc)
+            return []
+        except Exception as exc:
+            logger.error("search: torrentio unexpected error: %s", exc)
             return []
 
     async def _scrape_zilean() -> list:
@@ -199,8 +202,11 @@ async def search(body: SearchRequest) -> SearchResponse:
                 body.query,
             )
             return results
-        except Exception as exc:
+        except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
             logger.warning("search: zilean search failed: %s", exc)
+            return []
+        except Exception as exc:
+            logger.error("search: zilean unexpected error: %s", exc)
             return []
 
     async def _scrape_nyaa() -> list:
@@ -242,8 +248,11 @@ async def search(body: SearchRequest) -> SearchResponse:
                     body.query,
                 )
             return results
-        except Exception as exc:
+        except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
             logger.warning("search: nyaa search failed: %s", exc)
+            return []
+        except Exception as exc:
+            logger.error("search: nyaa unexpected error: %s", exc)
             return []
 
     # Determine which scrapers to run based on request.

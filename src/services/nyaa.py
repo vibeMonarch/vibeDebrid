@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from typing import Any
 
 import httpx
@@ -114,6 +114,7 @@ class NyaaResult(BaseModel):
     source_tracker: str | None = None  # Always "Nyaa"
     season: int | None = None
     episode: int | None = None
+    episodes: list[int] = []
     is_season_pack: bool = False
     file_idx: int | None = None  # Always None — Nyaa RSS has no file-level index
     languages: list[str] = []
@@ -407,14 +408,22 @@ class NyaaClient:
         if isinstance(ptn_season, list):
             ptn_season = ptn_season[0] if ptn_season else None
 
-        ptn_episode: int | None = ptn_data.get("episode")
-        if isinstance(ptn_episode, list):
-            ptn_episode = ptn_episode[0] if ptn_episode else None
+        ptn_episode_raw = ptn_data.get("episode")
+        ptn_episodes: list[int] = []
+        if isinstance(ptn_episode_raw, list):
+            ptn_episodes = [int(e) for e in ptn_episode_raw if isinstance(e, (int, float))]
+            ptn_episode: int | None = ptn_episodes[0] if ptn_episodes else None
+        else:
+            ptn_episode = ptn_episode_raw
+            if ptn_episode is not None:
+                ptn_episodes = [int(ptn_episode)]
 
         # --- Anime / non-standard episode fallback chain ---
         ptn_season, ptn_episode, _is_anime_batch = parse_episode_fallbacks(
             title, ptn_season, ptn_episode
         )
+        if ptn_episode is not None and ptn_episode not in ptn_episodes:
+            ptn_episodes = [ptn_episode]
 
         # --- Season pack detection ---
         is_season_pack = detect_season_pack(title, ptn_episode, _is_anime_batch)
@@ -434,6 +443,7 @@ class NyaaClient:
             source_tracker="Nyaa",
             season=ptn_season,
             episode=ptn_episode,
+            episodes=ptn_episodes,
             is_season_pack=is_season_pack,
             file_idx=None,
             languages=languages,

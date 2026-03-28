@@ -516,7 +516,11 @@ class DedupEngine:
             raw_title: str = ptn_data.get("title") or filename
             norm_title = _normalize_title(raw_title)
             season: int | None = ptn_data.get("season")
+            if isinstance(season, list):
+                season = season[0] if season else None
             episode: int | None = ptn_data.get("episode")
+            if isinstance(episode, list):
+                episode = episode[0] if episode else None
 
             key: tuple[str, int | None, int | None] = (norm_title, season, episode)
             groups.setdefault(key, []).append((ptn_data, rd_dict))

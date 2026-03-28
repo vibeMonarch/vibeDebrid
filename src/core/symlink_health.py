@@ -427,10 +427,12 @@ async def scan_symlink_health(session: AsyncSession) -> SymlinkHealthScan:
     # ------------------------------------------------------------------
     # Map: item_id -> first broken row + checks
     broken_by_item: dict[int, tuple[object, bool, bool]] = {}
+    total_broken_symlink_rows: int = 0
 
     for row, (source_exists, target_valid) in zip(rows, path_results):
         is_healthy = source_exists and target_valid
         if not is_healthy:
+            total_broken_symlink_rows += 1
             item_id = int(row.item_id)
             # Keep the first broken symlink as the representative for this item.
             if item_id not in broken_by_item:
@@ -504,8 +506,8 @@ async def scan_symlink_health(session: AsyncSession) -> SymlinkHealthScan:
 
     # broken = deduplicated item count (one per item_id)
     scan.broken = len(scan.items)
-    # healthy = total symlinks minus the number of unique broken items
-    scan.healthy = scan.total_symlinks - scan.broken
+    # healthy = total symlinks minus the raw broken symlink row count
+    scan.healthy = scan.total_symlinks - total_broken_symlink_rows
 
     logger.info(
         "scan_symlink_health: total=%d healthy=%d broken=%d recoverable=%d dead=%d errors=%d",
@@ -601,6 +603,7 @@ async def execute_symlink_health(
                 # Direct recreate: source files are still on disk.
                 # Delete old DB records and rebuild symlinks in place.
                 # ----------------------------------------------------------
+                new_targets: list[MediaScanTarget] = []
                 try:
                     async with await session.begin_nested():
                         # Delete all old Symlink DB records for this item.
@@ -609,7 +612,6 @@ async def execute_symlink_health(
                         await session.flush()
 
                         # Recreate a symlink for each live source_path.
-                        new_targets: list[MediaScanTarget] = []
                         for symlink in live_symlinks:
                             try:
                                 new_symlink = await symlink_manager.create_symlink(

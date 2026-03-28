@@ -510,6 +510,9 @@ async def retry_item(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+_MANUAL_TRANSITION_ALLOWED = {QueueState.WANTED, QueueState.SLEEPING, QueueState.DORMANT}
+
+
 @router.post("/{item_id}/state")
 async def change_state(
     item_id: int,
@@ -521,6 +524,13 @@ async def change_state(
         new_state = QueueState(body.state)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid state: {body.state}")
+
+    if new_state not in _MANUAL_TRANSITION_ALLOWED:
+        allowed = sorted(s.value for s in _MANUAL_TRANSITION_ALLOWED)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Manual transition to {new_state.value!r} is not allowed. Allowed states: {allowed}",
+        )
 
     try:
         item = await queue_manager.force_transition(session, item_id, new_state)

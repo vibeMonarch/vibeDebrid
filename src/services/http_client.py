@@ -282,6 +282,59 @@ async def get_client(
         return client
 
 
+async def invalidate_client(key: tuple[str, str]) -> None:
+    """Close and remove a specific pooled client so it is recreated on next use.
+
+    Args:
+        key: The ``(service_name, base_url)`` tuple used when the client was
+             created via :func:`get_client`.
+    """
+    async with _pool_lock:
+        client = _client_pool.pop(key, None)
+        if client is None:
+            return
+        service_name, base_url = key
+        try:
+            await client.aclose()
+            logger.debug(
+                "http_client: invalidated pooled client for service='%s' base_url=%r",
+                service_name,
+                base_url,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            logger.warning(
+                "http_client: error closing client for service='%s' during invalidation: %s",
+                service_name,
+                exc,
+            )
+
+
+async def invalidate_all_clients() -> None:
+    """Close and remove all pooled clients so they are recreated with fresh credentials.
+
+    Call this after settings are reloaded so services pick up new API keys on
+    their next request.
+    """
+    async with _pool_lock:
+        stale_clients = list(_client_pool.items())
+        _client_pool.clear()
+        for (service_name, base_url), client in stale_clients:
+            try:
+                await client.aclose()
+                logger.debug(
+                    "http_client: invalidated pooled client for service='%s' base_url=%r",
+                    service_name,
+                    base_url,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                logger.warning(
+                    "http_client: error closing client for service='%s' during invalidation: %s",
+                    service_name,
+                    exc,
+                )
+        logger.info("http_client: all pooled clients invalidated — will reconnect with fresh credentials")
+
+
 async def close_all() -> None:
     """Close all pooled HTTP clients.
 

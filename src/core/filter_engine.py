@@ -59,6 +59,7 @@ class ScrapeResult(Protocol):
     is_season_pack: bool
     season: int | None
     episode: int | None
+    episodes: list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -530,10 +531,11 @@ class FilterEngine:
                     f"but S{requested_season:02d} was requested"
                 )
             if result.episode is not None and result.episode != requested_episode:
-                return False, (
-                    f"episode mismatch: result has E{result.episode:02d} "
-                    f"but E{requested_episode:02d} was requested"
-                )
+                if requested_episode not in result.episodes:
+                    return False, (
+                        f"episode mismatch: result has E{result.episode:02d} "
+                        f"but E{requested_episode:02d} was requested"
+                    )
 
         # 3. Minimum file size
         if result.size_bytes is not None:

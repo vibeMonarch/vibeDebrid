@@ -72,6 +72,7 @@ class ZileanResult(BaseModel):
     source_tracker: str | None = None  # Set to "Zilean" during result construction
     season: int | None = None
     episode: int | None = None
+    episodes: list[int] = []
     is_season_pack: bool = False
     file_idx: int | None = None  # Always None — not applicable for Zilean
     languages: list[str] = []
@@ -350,8 +351,10 @@ class ZileanClient:
             season = int(seasons_arr[0])
 
         episodes_arr = entry.get("episodes")
+        episodes: list[int] = []
         if isinstance(episodes_arr, list) and episodes_arr:
-            episode = int(episodes_arr[0])
+            episodes = [int(e) for e in episodes_arr if isinstance(e, (int, float))]
+            episode = episodes[0] if episodes else None
 
         # --- Metadata from top-level fields, PTN as fallback ---
         resolution: str | None = entry.get("resolution") or None
@@ -389,15 +392,21 @@ class ZileanClient:
                 ptn_season = ptn_season[0] if ptn_season else None
             season = ptn_season
         if episode is None:
-            ptn_episode = ptn_data.get("episode")
-            if isinstance(ptn_episode, list):
-                ptn_episode = ptn_episode[0] if ptn_episode else None
-            episode = ptn_episode
+            ptn_episode_raw = ptn_data.get("episode")
+            if isinstance(ptn_episode_raw, list):
+                episodes = [int(e) for e in ptn_episode_raw if isinstance(e, (int, float))]
+                episode = episodes[0] if episodes else None
+            else:
+                episode = ptn_episode_raw
+                if episode is not None:
+                    episodes = [int(episode)]
 
         # Apply anime/non-standard episode fallback chain (shared with Torrentio).
         season, episode, _is_anime_batch = parse_episode_fallbacks(
             raw_title, season, episode
         )
+        if episode is not None and episode not in episodes:
+            episodes = [episode]
 
         # --- Season pack detection ---
         # A result is a season pack if:
@@ -421,6 +430,7 @@ class ZileanClient:
             source_tracker="Zilean",
             season=season,
             episode=episode,
+            episodes=episodes,
             is_season_pack=is_season_pack,
             file_idx=None,
             languages=languages,

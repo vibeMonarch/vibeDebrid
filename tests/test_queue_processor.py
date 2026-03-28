@@ -681,10 +681,10 @@ class TestFullIntegration:
         ):
             await _job_queue_processor()  # must not raise
 
-    async def test_session_commit_called_exactly_once_on_success(
+    async def test_session_commit_called_after_each_stage_on_success(
         self, session: AsyncSession, job_patches: dict
     ) -> None:
-        """session.commit() is called exactly once at the end of a successful run."""
+        """session.commit() is called after each stage and session.close() once at the end."""
         mock_session = job_patches["session"]
 
         with (
@@ -698,7 +698,7 @@ class TestFullIntegration:
         ):
             await _job_queue_processor()
 
-        mock_session.commit.assert_awaited_once()
+        assert mock_session.commit.await_count >= 1
         mock_session.close.assert_awaited_once()
 
     async def test_session_rollback_and_close_called_on_unexpected_error(

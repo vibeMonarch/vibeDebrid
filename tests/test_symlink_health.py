@@ -408,7 +408,7 @@ class TestScanSymlinkHealth:
         # Three broken symlinks but only one unique item — broken is deduped
         assert result.total_symlinks == 3
         assert result.broken == 1  # deduplicated by item_id
-        assert result.healthy == 2  # total - broken
+        assert result.healthy == 0  # total - total broken symlink rows (3-3=0)
         assert len(result.items) == 1
         assert result.items[0].item_id == item.id
 

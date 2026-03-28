@@ -30,7 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import CONFIG_FILE, Settings, config_lock, settings
@@ -818,45 +819,59 @@ async def execute_migration(
     logger.info("execute_migration: removing %d duplicates", len(preview.duplicates))
     for dup in preview.duplicates:
         try:
-            # Remove vibeDebrid's symlinks for the existing item from filesystem + DB.
-            existing_symlinks_result = await session.execute(
-                select(Symlink).where(Symlink.media_item_id == dup.existing_id)
-            )
-            existing_symlinks = list(existing_symlinks_result.scalars().all())
+            async with session.begin_nested():
+                # Remove vibeDebrid's symlinks for the existing item from filesystem + DB.
+                existing_symlinks_result = await session.execute(
+                    select(Symlink).where(Symlink.media_item_id == dup.existing_id)
+                )
+                existing_symlinks = list(existing_symlinks_result.scalars().all())
 
-            for sl in existing_symlinks:
-                is_link = await asyncio.to_thread(os.path.islink, sl.target_path)
-                if is_link:
-                    try:
-                        await asyncio.to_thread(os.unlink, sl.target_path)
-                        logger.info(
-                            "execute_migration: removed duplicate symlink %r",
-                            sl.target_path,
-                        )
-                    except OSError as exc:
-                        logger.warning(
-                            "execute_migration: could not remove symlink %r: %s",
-                            sl.target_path,
-                            exc,
-                        )
-                await session.delete(sl)
+                for sl in existing_symlinks:
+                    is_link = await asyncio.to_thread(os.path.islink, sl.target_path)
+                    if is_link:
+                        try:
+                            await asyncio.to_thread(os.unlink, sl.target_path)
+                            logger.info(
+                                "execute_migration: removed duplicate symlink %r",
+                                sl.target_path,
+                            )
+                        except OSError as exc:
+                            logger.warning(
+                                "execute_migration: could not remove symlink %r: %s",
+                                sl.target_path,
+                                exc,
+                            )
+                    await session.delete(sl)
 
-            # Delete the MediaItem record.
-            existing_mi_result = await session.execute(
-                select(MediaItem).where(MediaItem.id == dup.existing_id)
-            )
-            existing_mi = existing_mi_result.scalar_one_or_none()
-            if existing_mi is not None:
-                await session.delete(existing_mi)
+                # Delete FK children before the MediaItem.
+                await session.execute(
+                    text("DELETE FROM scrape_log WHERE media_item_id = :mid").bindparams(
+                        mid=dup.existing_id
+                    )
+                )
+                await session.execute(
+                    text("DELETE FROM rd_torrents WHERE media_item_id = :mid").bindparams(
+                        mid=dup.existing_id
+                    )
+                )
 
-            await session.flush()
+                # Delete the MediaItem record.
+                existing_mi_result = await session.execute(
+                    select(MediaItem).where(MediaItem.id == dup.existing_id)
+                )
+                existing_mi = existing_mi_result.scalar_one_or_none()
+                if existing_mi is not None:
+                    await session.delete(existing_mi)
+
+                await session.flush()
+
             result.duplicates_removed += 1
             logger.debug(
                 "execute_migration: removed duplicate media_item_id=%s (%s)",
                 dup.existing_id,
                 dup.existing_title,
             )
-        except Exception as exc:
+        except (SQLAlchemyError, OSError, ValueError) as exc:
             msg = f"Failed to remove duplicate id={dup.existing_id} ({dup.existing_title!r}): {exc}"
             logger.warning("execute_migration: %s", msg)
             result.errors.append(msg)
@@ -868,101 +883,114 @@ async def execute_migration(
     for item_dict in preview.to_move:
         item_id: int = item_dict["id"]
         try:
-            # Fetch current symlinks for this item.
-            symlinks_result = await session.execute(
-                select(Symlink).where(Symlink.media_item_id == item_id)
-            )
-            symlinks = list(symlinks_result.scalars().all())
-
-            mi_result = await session.execute(
-                select(MediaItem).where(MediaItem.id == item_id)
-            )
-            mi = mi_result.scalar_one_or_none()
-            if mi is None:
-                logger.warning(
-                    "execute_migration: media_item_id=%s not found, skipping move",
-                    item_id,
+            async with session.begin_nested():
+                # Fetch current symlinks for this item.
+                symlinks_result = await session.execute(
+                    select(Symlink).where(Symlink.media_item_id == item_id)
                 )
-                continue
+                symlinks = list(symlinks_result.scalars().all())
 
-            for sl in symlinks:
-                old_target = sl.target_path
-                filename = os.path.basename(old_target)
-
-                # Build new target directory using vibeDebrid naming convention.
-                if mi.media_type == MediaType.MOVIE:
-                    new_target_dir = await asyncio.to_thread(
-                        build_movie_dir,
-                        mi.title,
-                        mi.year,
-                        mi.requested_resolution,
-                    )
-                else:
-                    season = mi.season if mi.season is not None else 1
-                    new_target_dir = await asyncio.to_thread(
-                        build_show_dir,
-                        mi.title,
-                        mi.year,
-                        season,
-                        mi.requested_resolution,
-                    )
-
-                new_target = os.path.join(new_target_dir, filename)
-
-                # Skip if already in the right place.
-                if os.path.normpath(new_target) == os.path.normpath(old_target):
-                    logger.debug(
-                        "execute_migration: symlink already at correct location %r",
-                        new_target,
+                mi_result = await session.execute(
+                    select(MediaItem).where(MediaItem.id == item_id)
+                )
+                mi = mi_result.scalar_one_or_none()
+                if mi is None:
+                    logger.warning(
+                        "execute_migration: media_item_id=%s not found, skipping move",
+                        item_id,
                     )
                     continue
 
-                # Create parent directories.
-                try:
-                    await asyncio.to_thread(os.makedirs, new_target_dir, exist_ok=True)
-                except OSError as exc:
-                    msg = f"Could not create dir {new_target_dir!r}: {exc}"
-                    logger.warning("execute_migration: %s", msg)
-                    result.errors.append(msg)
-                    continue
+                for sl in symlinks:
+                    old_target = sl.target_path
+                    filename = os.path.basename(old_target)
 
-                # Create new symlink at new location.
-                try:
-                    await asyncio.to_thread(os.symlink, sl.source_path, new_target)
-                except FileExistsError:
-                    logger.debug(
-                        "execute_migration: new symlink already exists at %r", new_target
-                    )
-                except OSError as exc:
-                    msg = f"Could not create symlink {new_target!r} -> {sl.source_path!r}: {exc}"
-                    logger.warning("execute_migration: %s", msg)
-                    result.errors.append(msg)
-                    continue
+                    # Build new target directory using vibeDebrid naming convention.
+                    if mi.media_type == MediaType.MOVIE:
+                        new_target_dir = await asyncio.to_thread(
+                            build_movie_dir,
+                            mi.title,
+                            mi.year,
+                            mi.requested_resolution,
+                        )
+                    else:
+                        season = mi.season if mi.season is not None else 1
+                        new_target_dir = await asyncio.to_thread(
+                            build_show_dir,
+                            mi.title,
+                            mi.year,
+                            season,
+                            mi.requested_resolution,
+                        )
 
-                # Remove old symlink from filesystem.
-                old_is_link = await asyncio.to_thread(os.path.islink, old_target)
-                if old_is_link:
-                    try:
-                        await asyncio.to_thread(os.unlink, old_target)
-                        logger.info(
-                            "execute_migration: moved %r -> %r",
-                            old_target,
+                    new_target = os.path.join(new_target_dir, filename)
+
+                    # Skip if already in the right place.
+                    if os.path.normpath(new_target) == os.path.normpath(old_target):
+                        logger.debug(
+                            "execute_migration: symlink already at correct location %r",
                             new_target,
                         )
+                        continue
+
+                    # Create parent directories.
+                    try:
+                        await asyncio.to_thread(os.makedirs, new_target_dir, exist_ok=True)
                     except OSError as exc:
-                        logger.warning(
-                            "execute_migration: could not remove old symlink %r: %s",
-                            old_target,
-                            exc,
+                        msg = f"Could not create dir {new_target_dir!r}: {exc}"
+                        logger.warning("execute_migration: %s", msg)
+                        result.errors.append(msg)
+                        continue
+
+                    # Create new symlink at new location.
+                    try:
+                        await asyncio.to_thread(os.symlink, sl.source_path, new_target)
+                    except FileExistsError:
+                        existing_target = await asyncio.to_thread(
+                            os.readlink, new_target
+                        ) if await asyncio.to_thread(os.path.islink, new_target) else None
+                        if existing_target != sl.source_path:
+                            msg = (
+                                f"File exists at {new_target!r} but points to"
+                                f" {existing_target!r}, expected {sl.source_path!r}"
+                            )
+                            logger.warning("execute_migration: %s", msg)
+                            result.errors.append(msg)
+                            continue
+                        logger.debug(
+                            "execute_migration: symlink already correct at %r", new_target
                         )
+                    except OSError as exc:
+                        msg = f"Could not create symlink {new_target!r} -> {sl.source_path!r}: {exc}"
+                        logger.warning("execute_migration: %s", msg)
+                        result.errors.append(msg)
+                        continue
 
-                # Update DB record.
-                sl.target_path = new_target
+                    # Remove old symlink from filesystem.
+                    old_is_link = await asyncio.to_thread(os.path.islink, old_target)
+                    if old_is_link:
+                        try:
+                            await asyncio.to_thread(os.unlink, old_target)
+                            logger.info(
+                                "execute_migration: moved %r -> %r",
+                                old_target,
+                                new_target,
+                            )
+                        except OSError as exc:
+                            logger.warning(
+                                "execute_migration: could not remove old symlink %r: %s",
+                                old_target,
+                                exc,
+                            )
 
-            await session.flush()
+                    # Update DB record.
+                    sl.target_path = new_target
+
+                await session.flush()
+
             result.moved += 1
 
-        except Exception as exc:
+        except (SQLAlchemyError, OSError, ValueError) as exc:
             msg = f"Failed to move item id={item_id}: {exc}"
             logger.warning("execute_migration: %s", msg)
             result.errors.append(msg)

@@ -34,6 +34,7 @@ from src.config import (
     config_lock,
     settings,
 )
+from src.services.http_client import invalidate_all_clients
 from src.services.nyaa import nyaa_client
 from src.services.plex import plex_client
 from src.services.real_debrid import RealDebridAuthError, RealDebridError, rd_client
@@ -168,6 +169,10 @@ async def update_settings(body: SettingsUpdate) -> dict[str, Any]:
         for field in reloaded.model_fields:
             setattr(settings, field, getattr(reloaded, field))
 
+        # Invalidate all pooled HTTP clients so they are recreated with the
+        # new credentials on their next request.
+        await invalidate_all_clients()
+
     logger.info("Settings updated and written to %s", CONFIG_FILE)
     return {"status": "ok", "message": "Settings updated."}
 
@@ -297,6 +302,8 @@ async def plex_auth_check(pin_id: int) -> dict[str, Any]:
         reloaded = Settings.load()
         for field in reloaded.model_fields:
             setattr(settings, field, getattr(reloaded, field))
+
+        await invalidate_all_clients()
 
     masked = "***" + token[-4:] if len(token) >= 4 else "***"
     return {"status": "authenticated", "token_masked": masked}

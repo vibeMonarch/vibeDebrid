@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.core.queue_manager import queue_manager
 from src.core.xem_mapper import xem_mapper
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.monitored_show import MonitoredShow
@@ -1649,8 +1650,7 @@ class ShowManager:
                         )
                         if existing_item is not None and existing_item.air_date is None:
                             existing_item.air_date = ep_air_date
-                            existing_item.state = QueueState.WANTED
-                            existing_item.state_changed_at = now
+                            await queue_manager.transition(session, existing_item.id, QueueState.WANTED)
                             new_items += 1
                             logger.info(
                                 "monitor: advanced stuck UNRELEASED %s S%02dE%02d to WANTED "

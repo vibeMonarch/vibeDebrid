@@ -30,7 +30,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -1874,14 +1874,18 @@ class ScrapePipeline:
             try:
                 add_response = await rd_client.add_magnet(candidate_magnet)
             except RealDebridRateLimitError as exc:
-                # Rate limit is transient — leave in SCRAPING so the next queue
-                # cycle (60s) retries automatically. No state transition needed.
                 err_msg = f"RD rate limited during add_magnet: {exc}"
                 logger.warning(
-                    "scrape_pipeline: %s for item id=%d — staying in SCRAPING, "
-                    "will retry next cycle",
+                    "scrape_pipeline: %s for item id=%d — transitioning to SLEEPING (5 min)",
                     err_msg, item.id,
                 )
+                transitioned = await queue_manager.transition(
+                    session, item.id, QueueState.SLEEPING
+                )
+                transitioned.next_retry_at = (
+                    datetime.now(timezone.utc) + timedelta(minutes=5)
+                )
+                await session.flush()
                 return PipelineResult(
                     item_id=item.id,
                     action="rate_limited",
