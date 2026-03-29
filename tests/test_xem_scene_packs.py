@@ -812,19 +812,19 @@ class TestCheckingStageXemScenePack:
 
     @pytest.fixture
     def patch_async_session(self, mock_session: AsyncSession):
-        """Patch src.main.async_session to return the test session."""
-        with patch("src.main.async_session", return_value=mock_session):
+        """Patch src.core.queue_processor.async_session to return the test session."""
+        with patch("src.core.queue_processor.async_session", return_value=mock_session):
             yield mock_session
 
     @pytest.fixture
     def patch_process_queue(self, patch_async_session):
         """Silence Stage 0/1 transitions so tests focus on Stage 3."""
         with patch(
-            "src.main.queue_manager.process_queue",
+            "src.core.queue_processor.queue_manager.process_queue",
             new_callable=AsyncMock,
             return_value={"unreleased_advanced": 0, "retries_triggered": 0},
         ):
-            with patch("src.main.scrape_pipeline.run", new_callable=AsyncMock):
+            with patch("src.core.queue_processor.scrape_pipeline.run", new_callable=AsyncMock):
                 yield
 
     async def test_checking_xem_scene_pack_retries_with_tmdb_season(
@@ -836,7 +836,7 @@ class TestCheckingStageXemScenePack:
         with TMDB season=1.  The initial lookup(season=2) returns nothing; the XEM
         fallback lookup(season=1) returns files.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         meta = _make_xem_pack_metadata(
             scene_season=2,
@@ -881,20 +881,20 @@ class TestCheckingStageXemScenePack:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 side_effect=lambda session, item, tmdb_original_title=None: [item.title],
             ),
-            patch("src.main.mount_scanner.lookup_multi", side_effect=_mock_lookup_multi),
-            patch("src.main.mount_scanner.lookup", side_effect=_mock_lookup),
+            patch("src.core.queue_processor.mount_scanner.lookup_multi", side_effect=_mock_lookup_multi),
+            patch("src.core.queue_processor.mount_scanner.lookup", side_effect=_mock_lookup),
             patch(
-                "src.main.mount_scanner.is_mount_available",
+                "src.core.queue_processor.mount_scanner.is_mount_available",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
             patch(
-                "src.main.rd_client.get_torrent_info",
+                "src.core.queue_processor.rd_client.get_torrent_info",
                 new_callable=AsyncMock,
                 return_value={"status": "downloaded"},
             ),
@@ -918,7 +918,7 @@ class TestCheckingStageXemScenePack:
         scene S02.  The CHECKING stage must filter to that range so only 13
         symlinks are created.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         meta = _make_xem_pack_metadata(
             scene_season=2,
@@ -961,19 +961,19 @@ class TestCheckingStageXemScenePack:
             return []
 
         with (
-            patch("src.main.mount_scanner.lookup", side_effect=_mock_lookup),
+            patch("src.core.queue_processor.mount_scanner.lookup", side_effect=_mock_lookup),
             patch(
-                "src.main.mount_scanner.is_mount_available",
+                "src.core.queue_processor.mount_scanner.is_mount_available",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
                 side_effect=_mock_create_symlink,
             ) as mock_symlink,
             patch(
-                "src.main.rd_client.get_torrent_info",
+                "src.core.queue_processor.rd_client.get_torrent_info",
                 new_callable=AsyncMock,
                 return_value={"status": "downloaded"},
             ),
@@ -994,7 +994,7 @@ class TestCheckingStageXemScenePack:
         TMDB file E14 → scene E01, file E15 → scene E02, etc.
         symlink_manager.create_symlink must be called with episode_offset=13.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         anchor_ep = 14
         end_ep = 26
@@ -1032,18 +1032,18 @@ class TestCheckingStageXemScenePack:
             return []
 
         with (
-            patch("src.main.mount_scanner.lookup", side_effect=_mock_lookup),
+            patch("src.core.queue_processor.mount_scanner.lookup", side_effect=_mock_lookup),
             patch(
-                "src.main.mount_scanner.is_mount_available",
+                "src.core.queue_processor.mount_scanner.is_mount_available",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
             ) as mock_symlink,
             patch(
-                "src.main.rd_client.get_torrent_info",
+                "src.core.queue_processor.rd_client.get_torrent_info",
                 new_callable=AsyncMock,
                 return_value={"status": "downloaded"},
             ),

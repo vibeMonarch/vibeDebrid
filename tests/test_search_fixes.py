@@ -1429,7 +1429,7 @@ class TestMultiSeasonFiltering:
         multi-season guard detects distinct parsed_season values {1, 2} and must
         re-apply the item.season=2 filter so only the two S02 entries survive.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         item = MediaItem(
             title="Multi Season Show",
@@ -1466,32 +1466,32 @@ class TestMultiSeasonFiltering:
         mock_scan.matched_dir_path = "/mnt/show"
 
         with (
-            patch("src.main.async_session", _make_session_factory_new(session)),
+            patch("src.core.queue_processor.async_session", _make_session_factory_new(session)),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
             patch(
-                "src.main.mount_scanner.lookup_by_path_prefix",
+                "src.core.queue_processor.mount_scanner.lookup_by_path_prefix",
                 side_effect=_prefix_lookup,
             ),
             patch(
-                "src.main.mount_scanner.scan_directory",
+                "src.core.queue_processor.mount_scanner.scan_directory",
                 new_callable=AsyncMock,
                 return_value=mock_scan,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 mock_create_symlink,
             ),
             patch(
-                "src.main.queue_manager.process_queue",
+                "src.core.queue_processor.queue_manager.process_queue",
                 new_callable=AsyncMock,
                 return_value={"unreleased_advanced": 0, "retries_triggered": 0},
             ),
             patch(
-                "src.main._find_torrent_for_item",
+                "src.core.queue_processor._find_torrent_for_item",
                 new_callable=AsyncMock,
                 return_value=MagicMock(rd_id=None, filename="show-s01-s02"),
             ),
@@ -1512,7 +1512,7 @@ class TestMultiSeasonFiltering:
         When the relaxed fallback returns files all from the same season,
         distinct_seasons has only one entry so the guard does not apply.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         item = MediaItem(
             title="Single Season Show",
@@ -1546,32 +1546,32 @@ class TestMultiSeasonFiltering:
         mock_scan.matched_dir_path = "/mnt/show"
 
         with (
-            patch("src.main.async_session", _make_session_factory_new(session)),
+            patch("src.core.queue_processor.async_session", _make_session_factory_new(session)),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
             patch(
-                "src.main.mount_scanner.lookup_by_path_prefix",
+                "src.core.queue_processor.mount_scanner.lookup_by_path_prefix",
                 side_effect=_prefix_lookup,
             ),
             patch(
-                "src.main.mount_scanner.scan_directory",
+                "src.core.queue_processor.mount_scanner.scan_directory",
                 new_callable=AsyncMock,
                 return_value=mock_scan,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 mock_create_symlink,
             ),
             patch(
-                "src.main.queue_manager.process_queue",
+                "src.core.queue_processor.queue_manager.process_queue",
                 new_callable=AsyncMock,
                 return_value={"unreleased_advanced": 0, "retries_triggered": 0},
             ),
             patch(
-                "src.main._find_torrent_for_item",
+                "src.core.queue_processor._find_torrent_for_item",
                 new_callable=AsyncMock,
                 return_value=MagicMock(rd_id=None, filename="show-s01"),
             ),
@@ -1589,7 +1589,7 @@ class TestMultiSeasonFiltering:
         empty (all parsed_season are None) the multi-season guard must not drop
         any files — all 3 should be symlinked.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         item = MediaItem(
             title="Anime Show",
@@ -1624,32 +1624,32 @@ class TestMultiSeasonFiltering:
         mock_scan.matched_dir_path = "/mnt/anime"
 
         with (
-            patch("src.main.async_session", _make_session_factory_new(session)),
+            patch("src.core.queue_processor.async_session", _make_session_factory_new(session)),
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
             patch(
-                "src.main.mount_scanner.lookup_by_path_prefix",
+                "src.core.queue_processor.mount_scanner.lookup_by_path_prefix",
                 side_effect=_prefix_lookup,
             ),
             patch(
-                "src.main.mount_scanner.scan_directory",
+                "src.core.queue_processor.mount_scanner.scan_directory",
                 new_callable=AsyncMock,
                 return_value=mock_scan,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 mock_create_symlink,
             ),
             patch(
-                "src.main.queue_manager.process_queue",
+                "src.core.queue_processor.queue_manager.process_queue",
                 new_callable=AsyncMock,
                 return_value={"unreleased_advanced": 0, "retries_triggered": 0},
             ),
             patch(
-                "src.main._find_torrent_for_item",
+                "src.core.queue_processor._find_torrent_for_item",
                 new_callable=AsyncMock,
                 return_value=MagicMock(rd_id=None, filename="anime-s02"),
             ),

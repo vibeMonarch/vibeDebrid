@@ -802,7 +802,7 @@ class TestSeasonPackCheckingDedup:
         releases exist for each of episodes 1, 2, and 3 the stage must produce
         exactly three symlink calls, not six.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         # Persist a season pack item in CHECKING state.
         item = MediaItem(
@@ -831,25 +831,25 @@ class TestSeasonPackCheckingDedup:
         mock_create_symlink = AsyncMock()
 
         with (
-            patch("src.main.async_session", _make_session_factory(session)),
+            patch("src.core.queue_processor.async_session", _make_session_factory(session)),
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 side_effect=lambda session, item, tmdb_original_title=None: [item.title],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=mock_matches,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 mock_create_symlink,
             ),
             # Stage 0: suppress queue_manager.process_queue so no state-machine
             # side-effects interfere with CHECKING items in this test.
             patch(
-                "src.main.queue_manager.process_queue",
+                "src.core.queue_processor.queue_manager.process_queue",
                 new_callable=AsyncMock,
                 return_value={"unreleased_advanced": 0, "retries_triggered": 0},
             ),
@@ -870,7 +870,7 @@ class TestSeasonPackCheckingDedup:
         item.requested_resolution. Even though 2160p ranks higher by default
         resolution ordering, an exact preference match must take priority.
         """
-        from src.main import _job_queue_processor
+        from src.core.queue_processor import _job_queue_processor
 
         item = MediaItem(
             title="The Wire",
@@ -907,23 +907,23 @@ class TestSeasonPackCheckingDedup:
             captured_paths.append(source_path)
 
         with (
-            patch("src.main.async_session", _make_session_factory(session)),
+            patch("src.core.queue_processor.async_session", _make_session_factory(session)),
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 side_effect=lambda session, item, tmdb_original_title=None: [item.title],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[entry_2160p, entry_1080p],
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 side_effect=_capture_symlink,
             ),
             patch(
-                "src.main.queue_manager.process_queue",
+                "src.core.queue_processor.queue_manager.process_queue",
                 new_callable=AsyncMock,
                 return_value={"unreleased_advanced": 0, "retries_triggered": 0},
             ),

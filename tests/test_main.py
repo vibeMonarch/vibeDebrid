@@ -30,7 +30,7 @@ from src.models.torrent import RdTorrent, TorrentStatus
 
 def _import_find_torrent():
     """Import _find_torrent_for_item without triggering app startup side-effects."""
-    from src.main import _find_torrent_for_item  # noqa: PLC0415
+    from src.core.queue_processor import _find_torrent_for_item  # noqa: PLC0415
 
     return _find_torrent_for_item
 

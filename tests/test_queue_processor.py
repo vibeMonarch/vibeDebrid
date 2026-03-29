@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.main import _job_queue_processor
+from src.core.queue_processor import _job_queue_processor
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
 from src.models.torrent import RdTorrent, TorrentStatus
@@ -113,12 +113,12 @@ def mock_session(session: AsyncSession) -> AsyncSession:
 
 @pytest.fixture
 def patch_async_session(mock_session: AsyncSession):
-    """Patch src.main.async_session to return the test session as a context-less callable.
+    """Patch src.core.queue_processor.async_session to return the test session as a context-less callable.
 
     The job calls ``session = async_session()`` and then uses the result as a
     plain AsyncSession (not a context manager), so we return the session directly.
     """
-    with patch("src.main.async_session", return_value=mock_session):
+    with patch("src.core.queue_processor.async_session", return_value=mock_session):
         yield mock_session
 
 
@@ -130,7 +130,7 @@ def patch_process_queue(patch_async_session):
     the Stage 2/3/4 behaviour.
     """
     with patch(
-        "src.main.queue_manager.process_queue",
+        "src.core.queue_processor.queue_manager.process_queue",
         new_callable=AsyncMock,
         return_value={"unreleased_advanced": 0, "retries_triggered": 0},
     ) as mock:
@@ -146,7 +146,7 @@ def patch_scrape_pipeline(patch_process_queue):
     transition would break the real transition calls used in Stages 2-4, we use
     a side_effect that wraps the real implementation.
     """
-    with patch("src.main.scrape_pipeline.run", new_callable=AsyncMock) as mock:
+    with patch("src.core.queue_processor.scrape_pipeline.run", new_callable=AsyncMock) as mock:
         yield mock
 
 
@@ -183,7 +183,7 @@ class TestStage2AddingToChecking:
         await _make_rd_torrent(session, media_item_id=item.id, rd_id="RD_DONE")
 
         with patch(
-            "src.main.rd_client.get_torrent_info",
+            "src.core.queue_processor.rd_client.get_torrent_info",
             new_callable=AsyncMock,
             return_value={"status": "downloaded", "id": "RD_DONE"},
         ):
@@ -200,7 +200,7 @@ class TestStage2AddingToChecking:
         await _make_rd_torrent(session, media_item_id=item.id, rd_id="RD_WAIT")
 
         with patch(
-            "src.main.rd_client.get_torrent_info",
+            "src.core.queue_processor.rd_client.get_torrent_info",
             new_callable=AsyncMock,
             return_value={"status": "downloading", "id": "RD_WAIT"},
         ):
@@ -223,7 +223,7 @@ class TestStage2AddingToChecking:
         )
 
         with patch(
-            "src.main.rd_client.get_torrent_info",
+            "src.core.queue_processor.rd_client.get_torrent_info",
             new_callable=AsyncMock,
         ) as mock_rd:
             await _job_queue_processor()
@@ -241,7 +241,7 @@ class TestStage2AddingToChecking:
         await _make_rd_torrent(session, media_item_id=item.id, rd_id="RD_ERR")
 
         with patch(
-            "src.main.rd_client.get_torrent_info",
+            "src.core.queue_processor.rd_client.get_torrent_info",
             new_callable=AsyncMock,
             side_effect=RuntimeError("RD API timeout"),
         ):
@@ -269,17 +269,17 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 return_value=["Test Movie"],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
             ) as mock_symlink,
         ):
@@ -301,17 +301,17 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 return_value=["Test Movie"],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[],  # empty — file not mounted yet
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
             ) as mock_symlink,
         ):
@@ -330,17 +330,17 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 return_value=["Test Movie"],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
                 side_effect=OSError("Permission denied"),
             ),
@@ -366,16 +366,16 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 return_value=["Breaking Bad"],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[],
             ) as mock_lookup,
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -394,17 +394,17 @@ class TestStage3CheckingToComplete:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 return_value=["Test Movie"],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[first_match, second_match],
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
             ) as mock_symlink,
         ):
@@ -436,8 +436,8 @@ class TestStage4CompleteToDone:
         )
 
         with (
-            patch("src.main.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -456,8 +456,8 @@ class TestStage4CompleteToDone:
         )
 
         with (
-            patch("src.main.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -477,8 +477,8 @@ class TestStage4CompleteToDone:
         )
 
         with (
-            patch("src.main.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -566,22 +566,22 @@ class TestFullIntegration:
 
         with (
             patch(
-                "src.main.rd_client.get_torrent_info",
+                "src.core.queue_processor.rd_client.get_torrent_info",
                 new_callable=AsyncMock,
                 return_value={"status": "downloaded"},
             ),
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 side_effect=lambda session, item, tmdb_original_title=None: [item.title],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 side_effect=_fake_lookup,
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
             ),
         ):
@@ -638,21 +638,21 @@ class TestFullIntegration:
 
         with (
             patch(
-                "src.main.rd_client.get_torrent_info",
+                "src.core.queue_processor.rd_client.get_torrent_info",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("RD down"),
             ),
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 side_effect=lambda session, item, tmdb_original_title=None: [item.title],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -669,11 +669,11 @@ class TestFullIntegration:
     ) -> None:
         """Running the job against an empty queue must succeed silently."""
         with (
-            patch("src.main.rd_client.get_torrent_info", new_callable=AsyncMock),
+            patch("src.core.queue_processor.rd_client.get_torrent_info", new_callable=AsyncMock),
             patch(
-                "src.main.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]
+                "src.core.queue_processor.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()  # must not raise
 
@@ -685,12 +685,12 @@ class TestFullIntegration:
 
         with (
             patch(
-                "src.main.rd_client.get_torrent_info", new_callable=AsyncMock, return_value={}
+                "src.core.queue_processor.rd_client.get_torrent_info", new_callable=AsyncMock, return_value={}
             ),
             patch(
-                "src.main.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]
+                "src.core.queue_processor.mount_scanner.lookup", new_callable=AsyncMock, return_value=[]
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -710,9 +710,9 @@ class TestFullIntegration:
         session.rollback = AsyncMock()
 
         with (
-            patch("src.main.async_session", return_value=session),
+            patch("src.core.queue_processor.async_session", return_value=session),
             patch(
-                "src.main.queue_manager.process_queue",
+                "src.core.queue_processor.queue_manager.process_queue",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("DB exploded"),
             ),
@@ -745,7 +745,7 @@ class TestStage2EdgeCases:
         )
 
         with patch(
-            "src.main.rd_client.get_torrent_info", new_callable=AsyncMock
+            "src.core.queue_processor.rd_client.get_torrent_info", new_callable=AsyncMock
         ) as mock_rd:
             await _job_queue_processor()
 
@@ -773,7 +773,7 @@ class TestStage2EdgeCases:
             return {"status": "downloading"}
 
         with patch(
-            "src.main.rd_client.get_torrent_info",
+            "src.core.queue_processor.rd_client.get_torrent_info",
             new_callable=AsyncMock,
             side_effect=_fake_rd,
         ):
@@ -792,7 +792,7 @@ class TestStage2EdgeCases:
         await _make_rd_torrent(session, media_item_id=item.id, rd_id="RD_WEIRD")
 
         with patch(
-            "src.main.rd_client.get_torrent_info",
+            "src.core.queue_processor.rd_client.get_torrent_info",
             new_callable=AsyncMock,
             return_value={},  # no 'status' key
         ):
@@ -818,11 +818,11 @@ class TestStage3EdgeCases:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("Mount unavailable"),
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -849,12 +849,12 @@ class TestStage3EdgeCases:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 side_effect=lambda session, item, tmdb_original_title=None: [item.title],
             ),
-            patch("src.main.mount_scanner.lookup_multi", new_callable=AsyncMock, side_effect=_fake_lookup),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.mount_scanner.lookup_multi", new_callable=AsyncMock, side_effect=_fake_lookup),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -896,11 +896,11 @@ class TestStage3CheckingTimeout:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],  # file not yet on the mount
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -926,11 +926,11 @@ class TestStage3CheckingTimeout:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],  # file not yet on the mount
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -958,17 +958,17 @@ class TestStage3CheckingTimeout:
 
         with (
             patch(
-                "src.main.gather_alt_titles",
+                "src.core.queue_processor.gather_alt_titles",
                 new_callable=AsyncMock,
                 return_value=["Test Movie"],
             ),
             patch(
-                "src.main.mount_scanner.lookup_multi",
+                "src.core.queue_processor.mount_scanner.lookup_multi",
                 new_callable=AsyncMock,
                 return_value=[mount_match],
             ),
             patch(
-                "src.main.symlink_manager.create_symlink",
+                "src.core.queue_processor.symlink_manager.create_symlink",
                 new_callable=AsyncMock,
             ) as mock_symlink,
         ):
@@ -1003,11 +1003,11 @@ class TestStage3CheckingTimeout:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 
@@ -1026,7 +1026,7 @@ class TestStage3CheckingTimeout:
         ago (half the configured timeout) must stay in CHECKING because the
         threshold has not yet elapsed.
         """
-        monkeypatch.setattr("src.main.settings.retry.checking_timeout_minutes", 10)
+        monkeypatch.setattr("src.core.queue_processor.settings.retry.checking_timeout_minutes", 10)
 
         five_minutes_ago = _utcnow() - timedelta(minutes=5)
         item = await _make_media_item(
@@ -1037,11 +1037,11 @@ class TestStage3CheckingTimeout:
 
         with (
             patch(
-                "src.main.mount_scanner.lookup",
+                "src.core.queue_processor.mount_scanner.lookup",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
-            patch("src.main.symlink_manager.create_symlink", new_callable=AsyncMock),
+            patch("src.core.queue_processor.symlink_manager.create_symlink", new_callable=AsyncMock),
         ):
             await _job_queue_processor()
 

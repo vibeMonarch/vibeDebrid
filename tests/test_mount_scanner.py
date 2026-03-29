@@ -3358,7 +3358,7 @@ class TestSpecialFilenameFilter:
     """Tests for _SPECIAL_FILENAME_RE filtering of non-episode files."""
 
     def _matches(self, filename: str) -> bool:
-        from src.main import _SPECIAL_FILENAME_RE
+        from src.core.queue_processor import _SPECIAL_FILENAME_RE
 
         return bool(_SPECIAL_FILENAME_RE.search(filename))
 
