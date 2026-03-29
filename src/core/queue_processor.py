@@ -266,24 +266,29 @@ async def _job_queue_processor() -> None:
             item_title = item.title
             item_state = item.state
             try:
+                # Transition WANTED→SCRAPING outside the savepoint so it
+                # persists even if the pipeline fails.  The savepoint only
+                # protects scrape_pipeline side-effects; on rollback the item
+                # stays SCRAPING and SCRAPING→SLEEPING is a valid recovery.
                 if item_state == QueueState.WANTED:
-                    # Normal path: transition to SCRAPING before running pipeline.
                     await queue_manager.transition(session, item_id, QueueState.SCRAPING)
                 else:
-                    # Item already in SCRAPING (set by process_queue from SLEEPING).
-                    # Skip the WANTED→SCRAPING transition and run pipeline directly.
                     logger.debug(
                         "Item id=%d title=%s already SCRAPING, running pipeline directly",
                         item_id, item_title,
                     )
-                await scrape_pipeline.run(session, item)
+                async with session.begin_nested():
+                    await scrape_pipeline.run(session, item)
             except Exception:
                 logger.exception(
                     "Scrape pipeline failed for item id=%d title=%s", item_id, item_title
                 )
+                # The savepoint (if entered) has been rolled back automatically.
+                # Use a fresh savepoint to persist the SLEEPING transition without
+                # disturbing previously successful items in this stage's loop.
                 try:
-                    await session.rollback()
-                    await queue_manager.transition(session, item_id, QueueState.SLEEPING)
+                    async with session.begin_nested():
+                        await queue_manager.transition(session, item_id, QueueState.SLEEPING)
                 except Exception:
                     logger.exception(
                         "Failed to transition item id=%d to SLEEPING after pipeline error",

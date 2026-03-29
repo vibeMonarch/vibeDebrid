@@ -1050,3 +1050,163 @@ class TestStage3CheckingTimeout:
             "With a 10-minute timeout, an item 5 minutes into CHECKING must not "
             "transition to SLEEPING yet"
         )
+
+
+# ---------------------------------------------------------------------------
+# Group 8: Stage 1 savepoints — per-item isolation
+# ---------------------------------------------------------------------------
+
+
+class TestStage1Savepoints:
+    """Stage 1 per-item savepoints: a failing item must not roll back successful ones.
+
+    These tests verify the ``async with session.begin_nested()`` wrapping
+    introduced in Stage 1 to prevent a single pipeline failure from wiping out
+    the state transitions of previously processed items in the same loop.
+    """
+
+    async def test_failing_item_does_not_roll_back_previously_successful_item(
+        self, session: AsyncSession, patch_async_session: AsyncSession, patch_process_queue
+    ) -> None:
+        """A pipeline error on item B must not undo item A's SCRAPING transition.
+
+        Item A (WANTED) is processed first and transitions to SCRAPING via the
+        real queue_manager.  Item B (WANTED) is processed second and its
+        scrape_pipeline.run raises.  After the job, item A must still be in
+        SCRAPING (its savepoint was committed) while item B must be in SLEEPING
+        (the recovery savepoint transitions it there).
+        """
+        item_a = await _make_media_item(
+            session, state=QueueState.WANTED, title="Good Item A", imdb_id="tt8000001"
+        )
+        item_b = await _make_media_item(
+            session, state=QueueState.WANTED, title="Bad Item B", imdb_id="tt8000002"
+        )
+
+        call_count = 0
+
+        async def _pipeline_side_effect(sess, item):
+            nonlocal call_count
+            call_count += 1
+            if item.id == item_b.id:
+                raise RuntimeError("Simulated pipeline failure for item B")
+            # item_a: silent success (pipeline handles its own state transitions)
+
+        with patch(
+            "src.core.queue_processor.scrape_pipeline.run",
+            new_callable=AsyncMock,
+            side_effect=_pipeline_side_effect,
+        ):
+            await _job_queue_processor()
+
+        assert call_count == 2, "Both items must have been attempted"
+
+        await session.refresh(item_a)
+        await session.refresh(item_b)
+
+        # item_a's WANTED→SCRAPING transition must be preserved (its savepoint committed)
+        assert item_a.state == QueueState.SCRAPING, (
+            "item_a was processed before item_b failed; its SCRAPING transition "
+            "must not have been rolled back"
+        )
+        # item_b must have been transitioned to SLEEPING by the recovery savepoint
+        assert item_b.state == QueueState.SLEEPING, (
+            "item_b's pipeline raised; the recovery savepoint must have moved it to SLEEPING"
+        )
+
+    async def test_loop_continues_after_item_failure(
+        self, session: AsyncSession, patch_async_session: AsyncSession, patch_process_queue
+    ) -> None:
+        """After one item fails, subsequent items in the same loop are still processed.
+
+        Three WANTED items are queued.  The middle one (item_b) has a failing
+        pipeline.  The first and third items must both reach SCRAPING.
+        """
+        item_a = await _make_media_item(
+            session, state=QueueState.WANTED, title="Good First", imdb_id="tt8100001"
+        )
+        item_b = await _make_media_item(
+            session, state=QueueState.WANTED, title="Bad Middle", imdb_id="tt8100002"
+        )
+        item_c = await _make_media_item(
+            session, state=QueueState.WANTED, title="Good Last", imdb_id="tt8100003"
+        )
+
+        processed_ids: list[int] = []
+
+        async def _pipeline_side_effect(sess, item):
+            processed_ids.append(item.id)
+            if item.id == item_b.id:
+                raise RuntimeError("Simulated pipeline failure")
+
+        with patch(
+            "src.core.queue_processor.scrape_pipeline.run",
+            new_callable=AsyncMock,
+            side_effect=_pipeline_side_effect,
+        ):
+            await _job_queue_processor()
+
+        assert item_a.id in processed_ids, "item_a must have been attempted"
+        assert item_b.id in processed_ids, "item_b must have been attempted"
+        assert item_c.id in processed_ids, "item_c must have been attempted after item_b's failure"
+
+        await session.refresh(item_a)
+        await session.refresh(item_b)
+        await session.refresh(item_c)
+
+        assert item_a.state == QueueState.SCRAPING, "item_a must be SCRAPING"
+        assert item_b.state == QueueState.SLEEPING, "item_b must be SLEEPING after failure"
+        assert item_c.state == QueueState.SCRAPING, "item_c must be SCRAPING"
+
+    async def test_normal_processing_unaffected_by_savepoints(
+        self, session: AsyncSession, patch_async_session: AsyncSession, patch_process_queue
+    ) -> None:
+        """When no items fail, savepoints are transparent — all items advance normally.
+
+        Two WANTED items both succeed.  Both must be in SCRAPING after the job.
+        """
+        item_a = await _make_media_item(
+            session, state=QueueState.WANTED, title="Normal A", imdb_id="tt8200001"
+        )
+        item_b = await _make_media_item(
+            session, state=QueueState.WANTED, title="Normal B", imdb_id="tt8200002"
+        )
+
+        with patch(
+            "src.core.queue_processor.scrape_pipeline.run",
+            new_callable=AsyncMock,
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item_a)
+        await session.refresh(item_b)
+
+        assert item_a.state == QueueState.SCRAPING, "item_a must be SCRAPING on success"
+        assert item_b.state == QueueState.SCRAPING, "item_b must be SCRAPING on success"
+
+    async def test_all_items_fail_all_transition_to_sleeping(
+        self, session: AsyncSession, patch_async_session: AsyncSession, patch_process_queue
+    ) -> None:
+        """When every item in Stage 1 fails, each is independently moved to SLEEPING.
+
+        No item should remain in WANTED or SCRAPING after all pipelines raise.
+        """
+        item_a = await _make_media_item(
+            session, state=QueueState.WANTED, title="Fail A", imdb_id="tt8300001"
+        )
+        item_b = await _make_media_item(
+            session, state=QueueState.WANTED, title="Fail B", imdb_id="tt8300002"
+        )
+
+        with patch(
+            "src.core.queue_processor.scrape_pipeline.run",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Every pipeline fails"),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item_a)
+        await session.refresh(item_b)
+
+        assert item_a.state == QueueState.SLEEPING, "item_a must be SLEEPING"
+        assert item_b.state == QueueState.SLEEPING, "item_b must be SLEEPING"
