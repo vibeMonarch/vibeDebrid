@@ -1851,6 +1851,168 @@ class TestTier1EpisodeMismatchFilter:
 
 
 # ---------------------------------------------------------------------------
+# Group N-1: Tier 1 — Multi-Episode Filter (episodes list branch)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiEpisodeFilter:
+    """Hard-reject rules for multi-episode releases where result.episode differs
+    from requested_episode but result.episodes list may still contain a match.
+
+    The branch under test (filter_engine.py ~line 534-539):
+
+        if result.episode is not None and result.episode != requested_episode:
+            if requested_episode not in result.episodes:
+                return False, "episode mismatch: ..."
+    """
+
+    def _run_hard(
+        self,
+        result_season: int | None,
+        result_episode: int | None,
+        result_episodes: list[int],
+        *,
+        requested_season: int | None,
+        requested_episode: int | None,
+    ) -> tuple[bool, str | None]:
+        """Call _apply_hard_filters with explicit episode list on the result."""
+        result = _make_result(
+            season=result_season,
+            episode=result_episode,
+            episodes=result_episodes,
+        )
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            return ENGINE._apply_hard_filters(
+                result,
+                _DEFAULT_PROFILE,
+                False,
+                requested_season=requested_season,
+                requested_episode=requested_episode,
+            )
+
+    def test_multi_ep_requested_in_episodes_list_passes(self) -> None:
+        """Multi-episode torrent containing the requested episode in its list passes.
+
+        result.episode=1, episodes=[1,2,3], requested=2 → 2 is in list → passes.
+        """
+        passed, reason = self._run_hard(
+            result_season=1,
+            result_episode=1,
+            result_episodes=[1, 2, 3],
+            requested_season=1,
+            requested_episode=2,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_multi_ep_requested_not_in_episodes_list_rejected(self) -> None:
+        """Multi-episode torrent whose episodes list does not contain the requested
+        episode is hard-rejected.
+
+        result.episode=1, episodes=[1,2,3], requested=5 → 5 not in list → rejected.
+        """
+        passed, reason = self._run_hard(
+            result_season=1,
+            result_episode=1,
+            result_episodes=[1, 2, 3],
+            requested_season=1,
+            requested_episode=5,
+        )
+        assert passed is False
+        assert reason is not None
+        assert "episode" in reason.lower() and "mismatch" in reason.lower()
+
+    def test_multi_ep_requested_equals_primary_episode_passes(self) -> None:
+        """When requested_episode matches result.episode the inner branch is never
+        entered, so the result passes regardless of the episodes list content.
+
+        result.episode=5, episodes=[5,6], requested=5 → outer condition False → passes.
+        """
+        passed, reason = self._run_hard(
+            result_season=1,
+            result_episode=5,
+            result_episodes=[5, 6],
+            requested_season=1,
+            requested_episode=5,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_multi_ep_empty_episodes_list_rejected(self) -> None:
+        """A mismatch with an empty episodes list cannot satisfy the list membership
+        check and must be rejected.
+
+        result.episode=1, episodes=[], requested=2 → [] does not contain 2 → rejected.
+        """
+        passed, reason = self._run_hard(
+            result_season=1,
+            result_episode=1,
+            result_episodes=[],
+            requested_season=1,
+            requested_episode=2,
+        )
+        assert passed is False
+        assert reason is not None
+
+    def test_multi_ep_season_mismatch_still_rejected(self) -> None:
+        """Season mismatch is checked before the episodes list branch, so a correct
+        episode in the list cannot rescue a wrong-season result.
+
+        result season=1, episodes=[1,2,3], requested season=2 → season check fires first.
+        """
+        passed, reason = self._run_hard(
+            result_season=1,
+            result_episode=1,
+            result_episodes=[1, 2, 3],
+            requested_season=2,
+            requested_episode=2,
+        )
+        assert passed is False
+        assert reason is not None
+        assert "season" in reason.lower() and "mismatch" in reason.lower()
+
+    def test_multi_ep_none_result_episode_skips_check(self) -> None:
+        """When result.episode is None the outer guard ``if result.episode is not None``
+        is False, so the episodes list is never consulted and the result passes.
+
+        result.episode=None, episodes=[1,2,3], requested=2 → outer guard False → passes.
+        """
+        passed, reason = self._run_hard(
+            result_season=1,
+            result_episode=None,
+            result_episodes=[1, 2, 3],
+            requested_season=1,
+            requested_episode=2,
+        )
+        assert passed is True
+        assert reason is None
+
+    def test_multi_ep_with_zilean_result(self) -> None:
+        """Same semantics as test_multi_ep_requested_in_episodes_list_passes but
+        using a ZileanResult to verify the ScrapeResult protocol is honoured.
+
+        result.episode=1, episodes=[1,2,3], requested=2 → 2 in list → passes.
+        """
+        result = _make_zilean(
+            season=1,
+            episode=1,
+            episodes=[1, 2, 3],
+        )
+        q_patch, f_patch = _patch_settings()
+        with q_patch, f_patch:
+            passed, reason = ENGINE._apply_hard_filters(
+                result,
+                _DEFAULT_PROFILE,
+                False,
+                requested_season=1,
+                requested_episode=2,
+            )
+        assert passed is True
+        assert reason is None
+
+
+# ---------------------------------------------------------------------------
 # Group N: Tier 1 — Season Pack Size-per-Episode Floor (Issue #10)
 # ---------------------------------------------------------------------------
 
