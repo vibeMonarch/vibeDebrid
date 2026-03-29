@@ -515,8 +515,7 @@ from fastapi.responses import HTMLResponse  # noqa: E402
 @app.get("/queue", response_class=HTMLResponse, tags=["pages"])
 async def queue_page(request: Request) -> HTMLResponse:
     """Queue management page."""
-    return templates.TemplateResponse("queue.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "queue.html", context={
         "active_page": "queue",
     })
 
@@ -524,8 +523,7 @@ async def queue_page(request: Request) -> HTMLResponse:
 @app.get("/search", response_class=HTMLResponse, tags=["pages"])
 async def search_page(request: Request) -> HTMLResponse:
     """Manual search page."""
-    return templates.TemplateResponse("search.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "search.html", context={
         "active_page": "search",
         "cache_check_limit": settings.search.cache_check_limit,
     })
@@ -534,8 +532,7 @@ async def search_page(request: Request) -> HTMLResponse:
 @app.get("/settings", response_class=HTMLResponse, tags=["pages"])
 async def settings_page(request: Request) -> HTMLResponse:
     """Settings page."""
-    return templates.TemplateResponse("settings.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "settings.html", context={
         "active_page": "settings",
     })
 
@@ -543,8 +540,7 @@ async def settings_page(request: Request) -> HTMLResponse:
 @app.get("/duplicates", response_class=HTMLResponse, tags=["pages"])
 async def duplicates_page(request: Request) -> HTMLResponse:
     """Duplicate manager page."""
-    return templates.TemplateResponse("duplicates.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "duplicates.html", context={
         "active_page": "duplicates",
     })
 
@@ -552,8 +548,7 @@ async def duplicates_page(request: Request) -> HTMLResponse:
 @app.get("/discover", response_class=HTMLResponse, tags=["pages"])
 async def discover_page(request: Request) -> HTMLResponse:
     """Content discovery page."""
-    return templates.TemplateResponse("discover.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "discover.html", context={
         "active_page": "discover",
     })
 
@@ -561,8 +556,7 @@ async def discover_page(request: Request) -> HTMLResponse:
 @app.get("/show/{tmdb_id}", response_class=HTMLResponse, tags=["pages"])
 async def show_detail_page(request: Request, tmdb_id: int) -> HTMLResponse:
     """Show detail page for TV shows."""
-    return templates.TemplateResponse("show.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "show.html", context={
         "active_page": "discover",
         "tmdb_id": tmdb_id,
     })
@@ -571,8 +565,7 @@ async def show_detail_page(request: Request, tmdb_id: int) -> HTMLResponse:
 @app.get("/movie/{tmdb_id}", response_class=HTMLResponse, tags=["pages"])
 async def movie_detail_page(request: Request, tmdb_id: int) -> HTMLResponse:
     """Movie detail page."""
-    return templates.TemplateResponse("movie.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "movie.html", context={
         "active_page": "discover",
         "tmdb_id": tmdb_id,
     })

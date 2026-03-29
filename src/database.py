@@ -1,5 +1,6 @@
 """Async SQLAlchemy engine, session factory, and model base for SQLite with WAL mode."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
@@ -41,8 +42,11 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield an async database session for dependency injection."""
-    async with async_session() as session:
+    session = async_session()
+    try:
         yield session
+    finally:
+        await asyncio.shield(session.close())
 
 
 async def _migrate_add_columns() -> None:

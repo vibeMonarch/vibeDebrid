@@ -85,8 +85,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     """Dashboard page."""
     from src.main import templates
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", context={
         "active_page": "dashboard",
     })
 

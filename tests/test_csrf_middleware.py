@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import OperationalError
 
 from src.main import app
 
@@ -144,12 +145,17 @@ async def test_put_with_matching_token_passes_csrf(http: AsyncClient) -> None:
 async def test_delete_with_matching_token_passes_csrf(http: AsyncClient) -> None:
     """DELETE request with matching cookie and header passes CSRF check."""
     token = "delete-csrf-token-9999"
-    response = await http.delete(
-        "/api/queue/99999",
-        cookies={"csrf_token": token},
-        headers={"X-CSRF-Token": token},
-    )
-    # Not a CSRF block (might be 404 because item doesn't exist)
+    try:
+        response = await http.delete(
+            "/api/queue/99999",
+            cookies={"csrf_token": token},
+            headers={"X-CSRF-Token": token},
+        )
+    except OperationalError:
+        # Starlette 1.0 propagates DB errors (no tables in CSRF-only test)
+        # as exceptions instead of 500 responses. Getting here means CSRF passed.
+        return
+    # Not a CSRF block (might be 404 or 500 because item doesn't exist)
     if response.status_code == 403:
         assert "CSRF" not in response.json().get("detail", "")
 

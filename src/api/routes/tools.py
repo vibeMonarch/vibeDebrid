@@ -157,9 +157,9 @@ async def tools_page(request: Request) -> HTMLResponse:
     from src.main import templates
 
     return templates.TemplateResponse(
+        request,
         "tools.html",
-        {
-            "request": request,
+        context={
             "active_page": "tools",
             "current_movies_path": settings.paths.library_movies,
             "current_shows_path": settings.paths.library_shows,
@@ -173,9 +173,9 @@ async def logs_page(request: Request) -> HTMLResponse:
     from src.main import templates
 
     return templates.TemplateResponse(
+        request,
         "logs.html",
-        {
-            "request": request,
+        context={
             "active_page": "tools",
         },
     )
