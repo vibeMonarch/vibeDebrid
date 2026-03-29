@@ -21,9 +21,9 @@ from __future__ import annotations
 import logging
 import re
 import time
-import defusedxml.ElementTree as ET
 from typing import Any
 
+import defusedxml.ElementTree as ET
 import httpx
 import PTN
 from pydantic import BaseModel

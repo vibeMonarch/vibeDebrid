@@ -19,11 +19,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from httpx import ASGITransport, AsyncClient as HttpxTestClient
+from httpx import ASGITransport
+from httpx import AsyncClient as HttpxTestClient
 
-from src.services.http_client import CircuitBreaker, CircuitOpenError
+from src.services.http_client import CircuitBreaker
 from src.services.omdb import OmdbClient, OmdbRatings
-
 
 # ---------------------------------------------------------------------------
 # Helpers — mock infrastructure

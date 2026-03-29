@@ -20,7 +20,7 @@ Group 4 — _step_nyaa pipeline integration (disabled, movie skip)
 from __future__ import annotations
 
 import textwrap
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,7 +31,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.services.http_client import CircuitBreaker
 from src.services.nyaa import NyaaClient, NyaaResult, _parse_nyaa_size
-
 
 # ---------------------------------------------------------------------------
 # Helper — noop circuit breaker
@@ -811,7 +810,7 @@ def _make_show_item(
         year=2024,
         media_type=MediaType.SHOW,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         season=season,
         episode=episode,
@@ -829,7 +828,7 @@ def _make_movie_item(*, title: str = "Test Movie") -> MediaItem:
         year=2024,
         media_type=MediaType.MOVIE,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
     )
     return item

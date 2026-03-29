@@ -12,7 +12,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -187,7 +187,7 @@ async def sync_watchlist(session: AsyncSession) -> dict[str, int]:
             )
 
         # --- Build the MediaItem ---
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         tmdb_id_str = str(tmdb_id) if tmdb_id else None
 
         if wl_item.media_type == "show":
@@ -329,7 +329,7 @@ async def sync_watchlist(session: AsyncSession) -> dict[str, int]:
 
         # --- Publish SSE event ---
         try:
-            from src.core.event_bus import event_bus, QueueEvent  # noqa: PLC0415
+            from src.core.event_bus import QueueEvent, event_bus  # noqa: PLC0415
             event_bus.publish(
                 QueueEvent(
                     item_id=item.id,

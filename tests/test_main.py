@@ -15,15 +15,13 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
-
 
 # ---------------------------------------------------------------------------
 # Lazy import helper — avoids triggering FastAPI app init at collection time
@@ -50,7 +48,7 @@ async def _make_item(session: AsyncSession, *, imdb_id: str = "tt1111111") -> Me
         year=2024,
         media_type=MediaType.MOVIE,
         state=QueueState.CHECKING,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
     )
     session.add(item)

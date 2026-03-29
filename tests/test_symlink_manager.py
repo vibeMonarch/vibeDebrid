@@ -29,7 +29,6 @@ Covers:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -44,7 +43,6 @@ from src.core.symlink_manager import (
     SymlinkManager,
     VerifyResult,
     _find_existing_show_dir,
-    _format_timestamp,
     _parse_episode_from_filename,
     build_movie_dir,
     build_show_dir,
@@ -53,7 +51,13 @@ from src.core.symlink_manager import (
 )
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
-from src.services.tmdb import TmdbCastMember, TmdbCredits, TmdbCrewMember, TmdbMovieDetail, TmdbShowDetail
+from src.services.tmdb import (
+    TmdbCastMember,
+    TmdbCredits,
+    TmdbCrewMember,
+    TmdbMovieDetail,
+    TmdbShowDetail,
+)
 
 # Naming config with date_prefix disabled — used in tests that assert exact
 # path equality so they are not coupled to the timestamp feature.
@@ -461,7 +465,7 @@ class TestCreateSymlinkMovie:
         self, session: AsyncSession, movie_item: MediaItem, library_paths: dict[str, str]
     ) -> None:
         """A stale symlink at the target path is replaced by the new symlink."""
-        source = _make_source_file(library_paths["mount"], "test.movie.2024.mkv")
+        _source = _make_source_file(library_paths["mount"], "test.movie.2024.mkv")
         old_source = _make_source_file(library_paths["mount"], "old.mkv")
         manager = SymlinkManager()
         with patch("src.core.symlink_manager.settings") as mock_settings:
@@ -1724,7 +1728,7 @@ class TestPlexNaming:
     # _find_existing_show_dir — TMDB tag stripping
     # ------------------------------------------------------------------
 
-    def test_find_existing_strips_tmdb_tag(self, tmp_path: "Path") -> None:
+    def test_find_existing_strips_tmdb_tag(self, tmp_path: Path) -> None:
         """_find_existing_show_dir matches a dir with a {tmdb-XXXXX} tag when searching by plain core_name.
 
         The function strips the tag from on-disk directory names before comparing
@@ -1735,7 +1739,7 @@ class TestPlexNaming:
         result = _find_existing_show_dir(str(tmp_path), "Show Name (2024)")
         assert result == dir_name
 
-    def test_find_existing_strips_tmdb_tag_from_search_key(self, tmp_path: "Path") -> None:
+    def test_find_existing_strips_tmdb_tag_from_search_key(self, tmp_path: Path) -> None:
         """_find_existing_show_dir matches a legacy dir when the search key contains a {tmdb-XXXXX} tag.
 
         The function also strips the tag from the *search key* (core_name) so that
@@ -2277,7 +2281,7 @@ class TestNfoGeneration:
         mock_tmdb = MagicMock()
         mock_tmdb.get_movie_details_full = AsyncMock(return_value=detail)
 
-        nfo_write_count = 0
+        _nfo_write_count = 0
         original_nfo = (movie_dir / "movie.nfo").read_text()
 
         with patch("src.core.symlink_manager.settings") as mock_settings, \

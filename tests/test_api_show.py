@@ -12,7 +12,7 @@ in-memory test session from conftest.py. Pattern follows test_api_discover.py.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -114,7 +114,7 @@ async def _make_show_item(
     title: str = "Test Show",
 ) -> MediaItem:
     """Persist a show MediaItem and return it."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     item = MediaItem(
         title=title,
         year=2020,
@@ -142,7 +142,7 @@ async def _make_monitored_show(
     enabled: bool = True,
 ) -> MonitoredShow:
     """Persist a MonitoredShow and return it."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     show = MonitoredShow(
         tmdb_id=tmdb_id,
         imdb_id="tt9999001",
@@ -722,7 +722,6 @@ class TestToggleSubscribe:
                 json=self._subscribe_body(enabled=enabled),
             )
             # Reset state between iterations
-            from sqlalchemy import select
             # Just verify the field matches the requested value
             assert resp.json()["enabled"] == enabled
 

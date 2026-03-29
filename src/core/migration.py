@@ -26,8 +26,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, text
@@ -757,7 +756,7 @@ async def execute_migration(
         duplicates_removed=0,
         config_updated=False,
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Determine which found items to import (non-duplicates).
     duplicate_target_paths = {dm.found_item.target_path for dm in preview.duplicates}

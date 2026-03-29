@@ -12,7 +12,7 @@ test_api_routes.py.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,7 +24,6 @@ from src.config import settings as app_settings
 from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.services.tmdb import TmdbExternalIds, TmdbItem, TmdbSearchResult
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -107,7 +106,7 @@ async def _create_media_item(
     source: str | None = None,
 ) -> MediaItem:
     """Persist a MediaItem and return it."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     item = MediaItem(
         title=title,
         year=year,

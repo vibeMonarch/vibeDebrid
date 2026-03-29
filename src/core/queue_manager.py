@@ -248,7 +248,7 @@ class QueueManager:
         )
 
         try:
-            from src.core.event_bus import event_bus, QueueEvent  # noqa: PLC0415
+            from src.core.event_bus import QueueEvent, event_bus  # noqa: PLC0415
             event_bus.publish(QueueEvent(
                 item_id=item.id,
                 title=item.title,
@@ -305,8 +305,8 @@ class QueueManager:
         # Without this, the old RdTorrent entry causes check_content_duplicate
         # to short-circuit back to CHECKING with the wrong torrent.
         if from_state in (QueueState.DONE, QueueState.COMPLETE) and new_state == QueueState.WANTED:
-            from src.models.torrent import RdTorrent, TorrentStatus  # noqa: PLC0415
             from src.core.symlink_manager import symlink_manager  # noqa: PLC0415
+            from src.models.torrent import RdTorrent, TorrentStatus  # noqa: PLC0415
 
             # Mark linked RdTorrent entries as REMOVED so dedup doesn't find them.
             stmt = select(RdTorrent).where(
@@ -349,7 +349,7 @@ class QueueManager:
         )
 
         try:
-            from src.core.event_bus import event_bus, QueueEvent  # noqa: PLC0415
+            from src.core.event_bus import QueueEvent, event_bus  # noqa: PLC0415
             event_bus.publish(QueueEvent(
                 item_id=item.id,
                 title=item.title,

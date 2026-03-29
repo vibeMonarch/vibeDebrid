@@ -21,9 +21,9 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,10 +31,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.media_item import MediaItem, MediaType, QueueState
-from src.services.tmdb import TmdbEpisodeInfo, TmdbSeasonDetail, TmdbSeasonInfo, TmdbShowDetail
+from src.services.tmdb import TmdbSeasonInfo, TmdbShowDetail
 from src.services.torrentio import TorrentioResult
 from src.services.zilean import ZileanResult
-
 
 # ---------------------------------------------------------------------------
 # Test data helpers
@@ -138,7 +137,7 @@ async def season_pack_item(session: AsyncSession) -> MediaItem:
         original_language="ja",
         media_type=MediaType.SHOW,
         state=QueueState.SCRAPING,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         season=1,
         episode=None,
@@ -161,7 +160,7 @@ async def season_pack_item_no_tmdb(session: AsyncSession) -> MediaItem:
         year=2023,
         media_type=MediaType.SHOW,
         state=QueueState.SCRAPING,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         season=1,
         episode=None,
@@ -182,7 +181,7 @@ async def season_pack_item_no_season(session: AsyncSession) -> MediaItem:
         year=2023,
         media_type=MediaType.SHOW,
         state=QueueState.SCRAPING,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         season=None,
         episode=None,
@@ -348,7 +347,7 @@ class TestSplitSeasonPackToEpisodesHappyPath:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                     MediaItem.season == 1,
                 )
             )
@@ -373,7 +372,7 @@ class TestSplitSeasonPackToEpisodesHappyPath:
                 year=season_pack_item.year,
                 media_type=MediaType.SHOW,
                 state=QueueState.WANTED,
-                state_changed_at=datetime.now(timezone.utc),
+                state_changed_at=datetime.now(UTC),
                 retry_count=0,
                 season=1,
                 episode=ep,
@@ -401,7 +400,7 @@ class TestSplitSeasonPackToEpisodesHappyPath:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                     MediaItem.season == 1,
                     MediaItem.state == QueueState.WANTED,
                 )
@@ -426,7 +425,7 @@ class TestSplitSeasonPackToEpisodesHappyPath:
                     year=season_pack_item.year,
                     media_type=MediaType.SHOW,
                     state=QueueState.COMPLETE,
-                    state_changed_at=datetime.now(timezone.utc),
+                    state_changed_at=datetime.now(UTC),
                     retry_count=0,
                     season=1,
                     episode=ep,
@@ -583,7 +582,7 @@ class TestSplitSeasonPackCreatedItemFields:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                 )
             )
         ).scalars().all()
@@ -617,7 +616,7 @@ class TestSplitSeasonPackCreatedItemFields:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                 )
             )
         ).scalars().all()
@@ -645,7 +644,7 @@ class TestSplitSeasonPackCreatedItemFields:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                 )
             )
         ).scalars().all()
@@ -738,7 +737,7 @@ class TestSeasonPackSplitIntegration:
             original_language="en",
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             episode=5,
@@ -899,7 +898,7 @@ class TestSplitSeasonPackEdgeCases:
                     year=season_pack_item.year,
                     media_type=MediaType.SHOW,
                     state=state,
-                    state_changed_at=datetime.now(timezone.utc),
+                    state_changed_at=datetime.now(UTC),
                     retry_count=0,
                     season=1,
                     episode=ep,
@@ -924,7 +923,7 @@ class TestSplitSeasonPackEdgeCases:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                     MediaItem.state == QueueState.WANTED,
                 )
             )
@@ -946,7 +945,7 @@ class TestSplitSeasonPackEdgeCases:
             year=2024,
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             episode=None,
@@ -1014,7 +1013,7 @@ class TestSplitSeasonPackEdgeCases:
             await session.execute(
                 select(MediaItem).where(
                     MediaItem.imdb_id == season_pack_item.imdb_id,
-                    MediaItem.is_season_pack == False,
+                    MediaItem.is_season_pack == False,  # noqa: E712
                 )
             )
         ).scalars().all()

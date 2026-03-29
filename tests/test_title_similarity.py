@@ -15,7 +15,6 @@ from src.core.filter_engine import (
 )
 from src.services.torrentio import TorrentioResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

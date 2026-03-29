@@ -16,10 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from src.core.event_bus import EventBus, QueueEvent
-
 
 # ---------------------------------------------------------------------------
 # Helpers

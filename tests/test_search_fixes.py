@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,11 +27,9 @@ from src.core.symlink_manager import SymlinkManager
 from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.services.real_debrid import (
-    CacheCheckResult,
     RealDebridError,
     RealDebridRateLimitError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -320,7 +318,7 @@ class TestBulkRemoveConcurrency:
             year=2024,
             media_type=MediaType.MOVIE,
             state=QueueState.COMPLETE,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
         )
         item2 = MediaItem(
@@ -329,7 +327,7 @@ class TestBulkRemoveConcurrency:
             year=2024,
             media_type=MediaType.MOVIE,
             state=QueueState.COMPLETE,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
         )
         session.add(item1)
@@ -393,7 +391,7 @@ class TestBulkRemoveConcurrency:
             year=2024,
             media_type=MediaType.MOVIE,
             state=QueueState.COMPLETE,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
         )
         session.add(item)
@@ -451,7 +449,7 @@ class TestBulkRemoveConcurrency:
                 year=2024,
                 media_type=MediaType.MOVIE,
                 state=QueueState.COMPLETE,
-                state_changed_at=datetime.now(timezone.utc),
+                state_changed_at=datetime.now(UTC),
                 retry_count=0,
             )
             session.add(itm)
@@ -576,7 +574,7 @@ class TestTmdbEnrichmentInAdd:
         """When tmdb_id is provided and TMDB returns show details, the canonical
         title and year from TMDB override the raw query string in the MediaItem.
         """
-        from src.services.tmdb import TmdbShowDetail, TmdbSeasonInfo
+        from src.services.tmdb import TmdbSeasonInfo, TmdbShowDetail
 
         fake_show = TmdbShowDetail(
             tmdb_id=12345,
@@ -1175,7 +1173,7 @@ class TestSourceTrackerFieldValues:
         """NyaaResult constructed by the parser always has source_tracker='Nyaa'."""
         import xml.etree.ElementTree as ET
 
-        from src.services.nyaa import NyaaClient, _NYAA_NS
+        from src.services.nyaa import _NYAA_NS, NyaaClient
 
         client = NyaaClient()
         # Build the <item> element programmatically to avoid Clark-notation
@@ -1437,7 +1435,7 @@ class TestMultiSeasonFiltering:
             title="Multi Season Show",
             media_type=MediaType.SHOW,
             state=QueueState.CHECKING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,
@@ -1520,7 +1518,7 @@ class TestMultiSeasonFiltering:
             title="Single Season Show",
             media_type=MediaType.SHOW,
             state=QueueState.CHECKING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             episode=None,
@@ -1597,7 +1595,7 @@ class TestMultiSeasonFiltering:
             title="Anime Show",
             media_type=MediaType.SHOW,
             state=QueueState.CHECKING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,

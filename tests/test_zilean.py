@@ -254,7 +254,7 @@ def disabled_client(monkeypatch: pytest.MonkeyPatch) -> ZileanClient:
 async def test_search_success(client: ZileanClient) -> None:
     """search returns a non-empty list of ZileanResult on a valid 200 response."""
     entry = _make_zilean_entry(info_hash="a" * 40, resolution="1080p")
-    transport = _patch_client(client, [_make_response(200, [entry])])
+    _transport = _patch_client(client, [_make_response(200, [entry])])
 
     results = await client.search("Movie 2024")
 

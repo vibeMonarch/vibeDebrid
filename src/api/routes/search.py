@@ -5,16 +5,14 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from typing import Literal
-
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
 from src.core.dedup import dedup_engine
@@ -23,8 +21,8 @@ from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
-from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.nyaa import nyaa_client
+from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrentio import torrentio_client
 from src.services.zilean import zilean_client
 

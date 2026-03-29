@@ -28,16 +28,13 @@ asyncio_mode = "auto" (configured in pyproject.toml).
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.backfill import (
-    DeduplicateResult,
     DuplicateGroup,
     remove_duplicates,
 )
@@ -50,7 +47,6 @@ from src.core.rd_bridge import (
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,7 +71,7 @@ def _make_item(
         imdb_id=imdb_id,
         media_type=media_type,
         state=QueueState.COMPLETE,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         source=source,
         season=season,
@@ -1103,7 +1099,7 @@ class TestRemoveDuplicatesRdIds:
         # Both items reference the same RD torrent via the same rd_id
         # (shared season pack: register on kept item first, then upsert for deleted item
         #  — in practice both rows would point to the same rd_id)
-        torrent_keep = _make_rd_torrent(
+        _torrent_keep = _make_rd_torrent(
             session,
             media_item_id=item_keep.id,
             rd_id="RD_SHARED_PACK",

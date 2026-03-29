@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +25,6 @@ from src.config import PathsConfig
 from src.core.mount_scanner import MountScanner, ScanResult
 from src.core.symlink_manager import SymlinkCreationError, SymlinkManager
 from src.models.media_item import MediaItem, MediaType, QueueState
-
 
 # ---------------------------------------------------------------------------
 # PathsConfig defaults
@@ -78,8 +76,8 @@ class TestValidateConfiguredPaths:
 
     def _call_validate(self, monkeypatch, paths_config: PathsConfig) -> None:
         """Patch settings.paths and call _validate_configured_paths."""
-        from src.main import _validate_configured_paths
         from src import config as cfg_module
+        from src.main import _validate_configured_paths
 
         real_settings = cfg_module.settings
         monkeypatch.setattr(real_settings, "paths", paths_config)
@@ -174,6 +172,7 @@ class TestMountScannerEmptyPath:
         self, scanner: MountScanner, monkeypatch, caplog
     ) -> None:
         import logging
+
         from src import config as cfg_module
         monkeypatch.setattr(cfg_module.settings.paths, "zurg_mount", "")
         with caplog.at_level(logging.WARNING, logger="src.core.mount_scanner"):

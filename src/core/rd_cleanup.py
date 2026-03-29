@@ -31,11 +31,11 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import enum
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +45,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.rd_bridge import (
-    _ALL_DIR_MARKER,
     _extract_mount_name_any_base,
     _extract_mount_relative_name,
     _normalize_name,
@@ -74,7 +73,7 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # ---------------------------------------------------------------------------
 
 
-class RdTorrentCategory(str, enum.Enum):
+class RdTorrentCategory(StrEnum):
     """Categorization bucket for a single RD account torrent."""
 
     PROTECTED = "protected"
@@ -253,7 +252,7 @@ def _parse_added(added: str | None) -> datetime | None:
     try:
         dt = datetime.fromisoformat(normalised)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except ValueError as exc:
         logger.warning("rd_cleanup: could not parse added=%r: %s", added, exc)
@@ -315,7 +314,7 @@ async def _check_source_paths_exist(
                 return await asyncio.wait_for(
                     asyncio.to_thread(os.path.exists, path), timeout=5.0
                 )
-            except (OSError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, OSError) as exc:
                 logger.debug("rd_cleanup: os.path.exists failed for %r: %s", path, exc)
                 return False
 
@@ -593,7 +592,7 @@ def _categorize_torrent(
     if status in _STALE_STATUSES:
         added_dt = _parse_added(added)
         if added_dt is not None:
-            age = datetime.now(tz=timezone.utc) - added_dt
+            age = datetime.now(tz=UTC) - added_dt
             if age > timedelta(days=_STALE_THRESHOLD_DAYS):
                 return CategorizedTorrent(
                     rd_id=rd_id,
@@ -848,7 +847,7 @@ async def scan_rd_account(session: AsyncSession) -> RdCleanupScan:
     )
 
     summaries = _build_summaries(categorized)
-    scanned_at = datetime.now(tz=timezone.utc).isoformat()
+    scanned_at = datetime.now(tz=UTC).isoformat()
 
     # Sort: actionable categories first (Dead, Stale, Duplicate, Orphaned),
     # Protected last since those are informational only.
@@ -862,7 +861,7 @@ async def scan_rd_account(session: AsyncSession) -> RdCleanupScan:
     categorized.sort(key=lambda t: (_ORDER[t.category], t.filename.lower()))
 
     # Store in module-level cache for reuse by execute_rd_cleanup
-    _last_scan_cache["scanned_at"] = datetime.now(tz=timezone.utc)
+    _last_scan_cache["scanned_at"] = datetime.now(tz=UTC)
     _last_scan_cache["rd_torrents"] = rd_torrents
     _last_scan_cache["category_map"] = category_map
     _last_scan_cache["hash_map"] = hash_map
@@ -935,7 +934,7 @@ async def execute_rd_cleanup(
     # Step 1: Obtain category_map and hash_map (from cache or fresh scan)
     # ------------------------------------------------------------------
     cached_at: datetime | None = _last_scan_cache.get("scanned_at")
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     cache_fresh = (
         cached_at is not None
         and (now - cached_at).total_seconds() < _SCAN_TTL_SECONDS

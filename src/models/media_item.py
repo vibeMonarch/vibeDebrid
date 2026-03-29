@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import enum
 from datetime import date, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Date, DateTime, Enum, Integer, String, Text, func
@@ -17,12 +17,12 @@ if TYPE_CHECKING:
     from src.models.torrent import RdTorrent
 
 
-class MediaType(str, enum.Enum):
+class MediaType(StrEnum):
     MOVIE = "movie"
     SHOW = "show"
 
 
-class QueueState(str, enum.Enum):
+class QueueState(StrEnum):
     UNRELEASED = "unreleased"
     WANTED = "wanted"
     SCRAPING = "scraping"

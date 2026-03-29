@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -42,7 +42,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.anidb import AnidbMapping, AnidbTitle
 from src.services.anidb import AnidbClient
 from src.services.http_client import CircuitBreaker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -192,7 +191,7 @@ async def test_is_data_fresh_empty_db(client: AnidbClient, session: AsyncSession
 @pytest.mark.asyncio
 async def test_is_data_fresh_recent(client: AnidbClient, session: AsyncSession) -> None:
     """A title fetched just now is within the refresh window → True."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbTitle(
         anidb_id=1,
         title="Test Anime",
@@ -214,7 +213,7 @@ async def test_is_data_fresh_recent(client: AnidbClient, session: AsyncSession) 
 @pytest.mark.asyncio
 async def test_is_data_fresh_stale(client: AnidbClient, session: AsyncSession) -> None:
     """A title fetched 200 hours ago is outside the 168h refresh window → False."""
-    stale_time = datetime.now(timezone.utc) - timedelta(hours=200)
+    stale_time = datetime.now(UTC) - timedelta(hours=200)
     session.add(AnidbTitle(
         anidb_id=1,
         title="Test Anime",
@@ -257,7 +256,7 @@ async def test_get_titles_for_tmdb_id_with_titles(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Titles returned in priority order: main=0 < official=1 < syn=2."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     session.add(AnidbMapping(anidb_id=10, tmdb_id=100, tmdb_season=1, fetched_at=now))
     session.add_all([
@@ -285,7 +284,7 @@ async def test_get_titles_for_tmdb_id_deduplication(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Same title in different cases is deduplicated; the first (higher priority) wins."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     session.add(AnidbMapping(anidb_id=20, tmdb_id=200, tmdb_season=1, fetched_at=now))
     session.add_all([
@@ -310,7 +309,7 @@ async def test_get_titles_for_tmdb_id_multiple_anidb(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Two anidb_ids mapped to the same tmdb_id → all their titles are collected."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     session.add_all([
         AnidbMapping(anidb_id=30, tmdb_id=300, tmdb_season=1, fetched_at=now),
@@ -338,7 +337,7 @@ async def test_get_titles_for_tmdb_id_disabled(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """When anidb.enabled=False, returns [] immediately without querying the DB."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbMapping(anidb_id=40, tmdb_id=400, tmdb_season=1, fetched_at=now))
     session.add(AnidbTitle(anidb_id=40, title="Ignored Anime", title_type="main", language="x-jat", fetched_at=now))
     await session.flush()
@@ -357,7 +356,7 @@ async def test_get_titles_for_tmdb_id_language_filter(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """A title with language 'ko' (Korean) is excluded when not in title_languages."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     session.add(AnidbMapping(anidb_id=50, tmdb_id=500, tmdb_season=1, fetched_at=now))
     session.add_all([
@@ -444,7 +443,7 @@ async def test_refresh_data_success(client: AnidbClient, session: AsyncSession) 
         await client.refresh_data(session)
         await session.flush()
 
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
     title_count = (await session.execute(select(func.count()).select_from(AnidbTitle))).scalar()
     mapping_count = (await session.execute(select(func.count()).select_from(AnidbMapping))).scalar()
 
@@ -474,7 +473,7 @@ async def test_refresh_data_disabled(client: AnidbClient, session: AsyncSession)
 
     assert not http_called
 
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
     title_count = (await session.execute(select(func.count()).select_from(AnidbTitle))).scalar()
     assert title_count == 0
 
@@ -505,7 +504,7 @@ async def test_refresh_data_title_dump_failure(
          patch("src.services.anidb.httpx.AsyncClient", return_value=mock_http_client):
         await client.refresh_data(session)  # Must not raise
 
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
     title_count = (await session.execute(select(func.count()).select_from(AnidbTitle))).scalar()
     assert title_count == 0
 
@@ -515,7 +514,7 @@ async def test_refresh_data_replaces_old_data(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Calling refresh_data a second time deletes old rows and inserts fresh ones."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Pre-populate with stale data
     session.add_all([
         AnidbTitle(anidb_id=99, title="Old Title", title_type="main", language="en", fetched_at=now),
@@ -592,7 +591,7 @@ async def test_get_episode_count_for_tmdb_season_cached(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """When episode_count is already populated, returns it without any HTTP call."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbMapping(
         anidb_id=60,
         tmdb_id=600,
@@ -639,7 +638,7 @@ async def test_get_episode_count_for_tmdb_season_api_disabled(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """When api_enabled=False, returns None (cannot fetch uncached data)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbMapping(
         anidb_id=70,
         tmdb_id=700,
@@ -663,7 +662,7 @@ async def test_get_episode_count_for_tmdb_season_api_fetch(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """When api_enabled=True and episode_count is None, fetches from AniDB HTTP API and caches."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbMapping(
         anidb_id=80,
         tmdb_id=800,
@@ -680,7 +679,7 @@ async def test_get_episode_count_for_tmdb_season_api_fetch(
 <anime id="80">
   <episodecount>24</episodecount>
 </anime>"""
-    api_resp = httpx.Response(
+    _api_resp = httpx.Response(
         status_code=200,
         content=api_xml,
         headers={"content-type": "text/xml"},
@@ -714,7 +713,7 @@ async def test_get_episode_count_multiple_entries_sum(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Two mappings for the same tmdb_id/season have their counts summed."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add_all([
         AnidbMapping(anidb_id=90, tmdb_id=900, tmdb_season=1, episode_count=12, fetched_at=now),
         AnidbMapping(anidb_id=91, tmdb_id=900, tmdb_season=1, episode_count=13, fetched_at=now),
@@ -740,7 +739,7 @@ async def test_get_episode_count_disabled(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """When anidb.enabled=False, get_episode_count_for_tmdb_season returns None."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbMapping(
         anidb_id=95,
         tmdb_id=950,
@@ -828,7 +827,7 @@ async def test_refresh_data_mappings_failure(
         await client.refresh_data(session)
 
     # Neither table should have data since mappings failed
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
     title_count = (await session.execute(select(func.count()).select_from(AnidbTitle))).scalar()
     mapping_count = (await session.execute(select(func.count()).select_from(AnidbMapping))).scalar()
 
@@ -869,7 +868,7 @@ async def test_get_titles_priority_order_all_types(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """All four title types are sorted correctly: main(0) < official(1) < syn(2) < short(3)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     session.add(AnidbMapping(anidb_id=100, tmdb_id=1000, tmdb_season=1, fetched_at=now))
     session.add_all([
@@ -898,7 +897,7 @@ async def test_get_episode_count_only_none_counts_no_api(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """When all episode_counts are None and api_enabled=False, returns None (not 0)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(AnidbMapping(
         anidb_id=110,
         tmdb_id=1100,
@@ -927,7 +926,7 @@ async def test_get_episode_counts_up_to_season_multi(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Returns counts for all seasons up to the target, keyed by season number."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add_all([
         AnidbMapping(anidb_id=200, tmdb_id=2000, tmdb_season=1, episode_count=12, fetched_at=now),
         AnidbMapping(anidb_id=201, tmdb_id=2000, tmdb_season=2, episode_count=24, fetched_at=now),
@@ -950,7 +949,7 @@ async def test_get_episode_counts_up_to_season_partial(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Seasons without cached episode_count and no API return partial dict."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add_all([
         AnidbMapping(anidb_id=210, tmdb_id=2100, tmdb_season=1, episode_count=12, fetched_at=now),
         AnidbMapping(anidb_id=211, tmdb_id=2100, tmdb_season=2, episode_count=None, fetched_at=now),
@@ -986,7 +985,7 @@ async def test_get_episode_counts_up_to_season_sums_parts(
     client: AnidbClient, session: AsyncSession
 ) -> None:
     """Multiple AniDB entries for the same season are summed (e.g. Part 1 + Part 2)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add_all([
         AnidbMapping(anidb_id=220, tmdb_id=2200, tmdb_season=1, episode_count=12, fetched_at=now),
         AnidbMapping(anidb_id=221, tmdb_id=2200, tmdb_season=1, episode_count=13, fetched_at=now),

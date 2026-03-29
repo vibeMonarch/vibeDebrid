@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time as _time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import delete, select
@@ -56,7 +56,7 @@ class XemMapper:
             logger.debug("xem_mapper: XEM disabled, skipping cache check")
             return []
 
-        cache_cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.xem.cache_hours)
+        cache_cutoff = datetime.now(UTC) - timedelta(hours=settings.xem.cache_hours)
 
         # Query all cache entries for this show to check freshness.
         result = await session.execute(
@@ -67,7 +67,7 @@ class XemMapper:
         cache_is_fresh = (
             bool(cached_entries)
             and all(
-                e.fetched_at.replace(tzinfo=timezone.utc) >= cache_cutoff
+                e.fetched_at.replace(tzinfo=UTC) >= cache_cutoff
                 if e.fetched_at.tzinfo is None
                 else e.fetched_at >= cache_cutoff
                 for e in cached_entries
@@ -93,7 +93,7 @@ class XemMapper:
         # Fetch from XEM and rebuild cache.
         show_mappings = await xem_client.get_show_mappings(tvdb_id)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         new_entries: list[XemCacheEntry] = []
         for mapping in show_mappings.mappings:
             new_entries.append(

@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
-from src.services.plex import PlexClient, PlexLibrarySection, PlexPinResponse
 from src.services.http_client import CircuitBreaker
-
+from src.services.plex import PlexClient, PlexLibrarySection, PlexPinResponse
 
 # ---------------------------------------------------------------------------
 # Helpers — mock data builders

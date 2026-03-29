@@ -15,7 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,7 +36,6 @@ from src.services.tmdb import (
 )
 from src.services.torrentio import TorrentioClient, TorrentioResult
 from src.services.zilean import ZileanClient, ZileanResult
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -475,7 +474,7 @@ class TestTmdbOriginalLanguageParsing:
         mock_response = _make_response(200, raw_response)
 
         class _FakeTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self_inner, request):
+            async def handle_async_request(self, request):
                 mock_response.request = request
                 return mock_response
 
@@ -526,7 +525,7 @@ class TestTmdbOriginalLanguageParsing:
         mock_response = _make_response(200, raw_response)
 
         class _FakeTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self_inner, request):
+            async def handle_async_request(self, request):
                 mock_response.request = request
                 return mock_response
 
@@ -924,7 +923,7 @@ async def _persist_item(
         year=2001,
         media_type=media_type,
         state=state,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         original_language=original_language,
         metadata_json=metadata_json,
@@ -1037,7 +1036,7 @@ class TestSeasonPackSplitCopiesOriginalLanguage:
             year=2013,
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             is_season_pack=True,
@@ -1077,7 +1076,7 @@ class TestSeasonPackSplitCopiesOriginalLanguage:
         result = await session.execute(
             _select(MediaItem).where(
                 MediaItem.title == "Attack on Titan",
-                MediaItem.is_season_pack == False,
+                MediaItem.is_season_pack == False,  # noqa: E712
                 MediaItem.source == "season_pack_split",
             )
         )
@@ -1103,7 +1102,7 @@ class TestSeasonPackSplitCopiesOriginalLanguage:
             year=2020,
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             is_season_pack=True,

@@ -17,9 +17,9 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import enum
 import logging
 import os
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class SymlinkStatus(str, enum.Enum):
+class SymlinkStatus(StrEnum):
     """Classification of a broken symlink."""
 
     RECOVERABLE = "recoverable"
@@ -209,7 +209,7 @@ async def _find_mount_match(
     Returns:
         The filepath of the first match, or ``None`` when nothing is found.
     """
-    from src.core.mount_scanner import _normalize_title, _is_word_subsequence  # noqa: PLC0415
+    from src.core.mount_scanner import _is_word_subsequence, _normalize_title  # noqa: PLC0415
 
     normalized = _normalize_title(title)
     like_pattern = f"%{normalized}%"
@@ -557,11 +557,11 @@ async def execute_symlink_health(
     Returns:
         A ``SymlinkHealthResult`` with counts for all outcomes.
     """
-    from src.core.queue_manager import QueueManager, ItemNotFoundError  # noqa: PLC0415
+    from src.core.queue_manager import ItemNotFoundError, QueueManager  # noqa: PLC0415
     from src.core.symlink_manager import (  # noqa: PLC0415
-        SymlinkManager,
         SourceNotFoundError,
         SymlinkCreationError,
+        SymlinkManager,
     )
 
     result = SymlinkHealthResult()

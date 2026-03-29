@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import enum
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-class QueueStatusBadge(str, enum.Enum):
+class QueueStatusBadge(StrEnum):
     IN_LIBRARY = "in_library"  # COMPLETE or DONE state
     IN_QUEUE = "in_queue"      # Any other active state
     AVAILABLE = "available"    # Not in queue at all
@@ -521,7 +521,7 @@ async def add_to_queue(
         body.media_type,
     )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # TV shows default to season 1 as a season pack so the scraper starts from
     # the right place. Movies carry no season/episode context.
     if db_media_type == MediaType.SHOW:

@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -32,10 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
 from src.core.migration import (
+    DuplicateMatch,
     FoundItem,
     MigrationPreview,
-    DuplicateMatch,
-    MigrationResult,
     _normalise_title,
     _scan_movie_dir,
     _scan_shows_dir,
@@ -52,14 +51,13 @@ from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _make_media_item(

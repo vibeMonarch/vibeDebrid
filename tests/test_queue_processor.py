@@ -17,20 +17,16 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.main import _job_queue_processor
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
 from src.models.torrent import RdTorrent, TorrentStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,7 +35,7 @@ from src.models.torrent import RdTorrent, TorrentStatus
 
 def _utcnow() -> datetime:
     """Naive UTC — matches what SQLite returns after a round-trip."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 async def _make_media_item(
@@ -359,7 +355,7 @@ class TestStage3CheckingToComplete:
         self, session: AsyncSession, job_patches: dict
     ) -> None:
         """mount_scanner.lookup_multi is called with the item's titles, season, and episode."""
-        item = await _make_media_item(
+        _item = await _make_media_item(
             session,
             state=QueueState.CHECKING,
             title="Breaking Bad",

@@ -15,7 +15,6 @@ The mocking pattern mirrors test_zilean.py exactly:
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -934,7 +933,7 @@ async def test_test_connection_network_error(client: TmdbClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-    transport = _MockTransport([], default_response=None)
+    _transport = _MockTransport([], default_response=None)
 
     fake_http_client = httpx.AsyncClient(
         base_url="https://api.themoviedb.org/3",
@@ -1446,7 +1445,6 @@ async def test_original_title_parsed_show(client: TmdbClient) -> None:
 @pytest.mark.asyncio
 async def test_original_title_parsed_show_none_when_absent(client: TmdbClient) -> None:
     """get_show_details sets original_title to None when 'original_name' is absent."""
-    from src.services.tmdb import TmdbShowDetail  # noqa: PLC0415
 
     raw_response = {
         "id": 456,
@@ -1659,7 +1657,12 @@ class TestTmdbCache:
         """Adding beyond _CACHE_MAX_SIZE evicts the entry with the smallest expire_time."""
         from unittest.mock import patch
 
-        from src.services.tmdb import _CACHE_MAX_SIZE, _CACHE_TTL, _cache_get, _cache_set, _detail_cache
+        from src.services.tmdb import (
+            _CACHE_MAX_SIZE,
+            _cache_get,
+            _cache_set,
+            _detail_cache,
+        )
 
         # Fill cache to exactly max size, each entry at a different monotonic time
         # so the oldest (t=0) has the smallest expire_time.
@@ -1836,7 +1839,7 @@ class TestTmdbCache:
         # First call: server error → get_movie_details_full returns None
         error_resp = _make_response(500, {"status_message": "Internal Server Error"})
         client = TmdbClient()
-        transport = _patch_client(client, [error_resp])
+        _transport = _patch_client(client, [error_resp])
 
         first = await client.get_movie_details_full(404)
         assert first is None

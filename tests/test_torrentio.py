@@ -8,7 +8,7 @@ and are therefore the most thoroughly exercised.
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -257,7 +257,7 @@ async def test_scrape_movie_success(client: TorrentioClient) -> None:
     """scrape_movie returns a non-empty list of TorrentioResult on a 200 response."""
     stream = _make_stream(info_hash="a" * 40, resolution="1080p", size="4.2 GB", seeders=15)
     payload = _make_torrentio_response([stream])
-    transport = _patch_client(client, [_make_response(200, payload)])
+    _transport = _patch_client(client, [_make_response(200, payload)])
 
     results = await client.scrape_movie("tt1234567")
 
@@ -630,7 +630,7 @@ async def test_empty_opts_no_extra_path(client: TorrentioClient) -> None:
 
     await client.scrape_movie("tt7777777")
 
-    url = str(transport.requests_made[0].url)
+    _url = str(transport.requests_made[0].url)
     # The path should go straight from the base to /stream/
     # There must NOT be an opts segment between the host and /stream/
     path = transport.requests_made[0].url.path
@@ -687,7 +687,7 @@ async def test_timeout_returns_empty_list(client: TorrentioClient) -> None:
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise httpx.TimeoutException("timed out", request=request)
 
-    cfg = getattr(client, "_test_cfg", None) or _make_mock_cfg()
+    _cfg = getattr(client, "_test_cfg", None) or _make_mock_cfg()
 
     def _fake_build_client(**kwargs: object) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=_TimeoutTransport())

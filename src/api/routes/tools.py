@@ -3,16 +3,16 @@
 import asyncio
 import logging
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
-
-from src.__version__ import __version__
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.__version__ import __version__
 from src.api.deps import get_db
 from src.core.backfill import (
     BackfillResult,
@@ -23,19 +23,19 @@ from src.core.backfill import (
     find_duplicates,
     remove_duplicates,
 )
-from src.core.migration import (
-    DuplicateMatch,
-    FoundItem,
-    MigrationPreview,
-    execute_migration,
-    preview_migration,
-)
 from src.core.cleanup import (
     CleanupPreview,
     CleanupResult,
     assess_migration_items,
     build_cleanup_preview,
     execute_cleanup,
+)
+from src.core.migration import (
+    DuplicateMatch,
+    FoundItem,
+    MigrationPreview,
+    execute_migration,
+    preview_migration,
 )
 from src.core.rd_bridge import BridgeResult, bridge_rd_torrents
 from src.core.rd_cleanup import (
@@ -944,7 +944,7 @@ async def get_logs(lines: int = 500, level: str = "") -> dict[str, Any]:
     def _read_log(path: str, max_lines: int) -> list[str]:
         """Read the last max_lines from the log file efficiently."""
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 # Read entire file for small files, or seek-based tail for large ones
                 fh.seek(0, 2)  # seek to end
                 file_size = fh.tell()

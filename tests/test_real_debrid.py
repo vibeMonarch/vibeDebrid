@@ -92,7 +92,6 @@ def _patch_client(client: RealDebridClient, responses: list[httpx.Response]):
 
     # Build a mock class for httpx.AsyncClient that behaves as an async context
     # manager and delegates requests to our mock transport.
-    import contextlib
 
     class _FakeAsyncClientCM:
         """Async context manager that wraps the mock transport client."""

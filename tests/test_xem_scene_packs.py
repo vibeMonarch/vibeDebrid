@@ -25,10 +25,10 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -44,7 +44,6 @@ from src.services.tmdb import (
     TmdbShowDetail,
 )
 from src.services.torrentio import TorrentioResult
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -63,8 +62,9 @@ IMDB_ID = "tt9988776"
 
 def _make_test_anime_scene_s1_group():
     """Return a SceneSeasonGroup for Test Anime scene S01 (TMDB S01E01-E28, all aired)."""
-    from src.core.show_manager import SceneEpisodeInfo, SceneSeasonGroup
     from datetime import date
+
+    from src.core.show_manager import SceneEpisodeInfo, SceneSeasonGroup
 
     episodes = [
         SceneEpisodeInfo(
@@ -88,8 +88,9 @@ def _make_test_anime_scene_s1_group():
 
 def _make_test_anime_scene_s2_group_airing():
     """Return a SceneSeasonGroup for Test Anime scene S02 (TMDB S01E29-E35, partially aired)."""
-    from src.core.show_manager import SceneEpisodeInfo, SceneSeasonGroup
     from datetime import date
+
+    from src.core.show_manager import SceneEpisodeInfo, SceneSeasonGroup
 
     # 4 aired + 3 future
     episodes = []
@@ -172,7 +173,7 @@ def _make_season_pack_item(
     state: QueueState = QueueState.SCRAPING,
 ) -> MediaItem:
     """Build an in-memory XEM scene season pack MediaItem (not persisted)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return MediaItem(
         imdb_id=IMDB_ID,
         tmdb_id=TMDB_ID_STR,
@@ -382,7 +383,7 @@ async def _all_pipeline_mocks() -> AsyncGenerator[_PipelineMocks, None]:
 
 def _utcnow_naive() -> datetime:
     """Naive UTC — matches what SQLite returns after a round-trip."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 async def _persist_item(session: AsyncSession, item: MediaItem) -> MediaItem:
@@ -730,7 +731,7 @@ class TestScrapePipelineXemScenePack:
                 "src.services.tmdb.tmdb_client.get_show_details",
                 new_callable=AsyncMock,
                 return_value=None,
-            ) as mock_tmdb_get_show:
+            ) as _mock_tmdb_get_show:
                 result = await pipeline.run(session, item)
 
         # Pipeline should have split into individual items
@@ -764,7 +765,7 @@ class TestScrapePipelineXemScenePack:
             year=2020,
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,
@@ -947,7 +948,7 @@ class TestCheckingStageXemScenePack:
         symlink_calls: list[int] = []
 
         async def _mock_create_symlink(db_session, item_arg, source_path, **kwargs):
-            episode_offset = kwargs.get("episode_offset", 0)
+            _episode_offset = kwargs.get("episode_offset", 0)
             # Track which episode numbers are symlinked (after offset adjustment)
             symlink_calls.append(kwargs.get("episode_override") or 0)
 

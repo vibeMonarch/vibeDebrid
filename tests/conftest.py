@@ -12,23 +12,23 @@ that httpx tries to clean up after the event loop has already shut down.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.database import Base
-from src.models.media_item import MediaItem, MediaType, QueueState
-from src.services.http_client import close_all as _close_all_http_clients
+import src.models.anidb  # noqa: F401
+import src.models.monitored_show  # noqa: F401
+import src.models.mount_index  # noqa: F401
+import src.models.scrape_result  # noqa: F401
+import src.models.symlink  # noqa: F401
 
 # Import all models so their metadata is registered on Base before create_all
 import src.models.torrent  # noqa: F401
-import src.models.scrape_result  # noqa: F401
-import src.models.symlink  # noqa: F401
-import src.models.mount_index  # noqa: F401
-import src.models.monitored_show  # noqa: F401
 import src.models.xem_cache  # noqa: F401
-import src.models.anidb  # noqa: F401
+from src.database import Base
+from src.models.media_item import MediaItem, MediaType, QueueState
+from src.services.http_client import close_all as _close_all_http_clients
 
 
 @pytest.fixture(autouse=True)
@@ -86,7 +86,7 @@ async def wanted_item(session: AsyncSession) -> MediaItem:
         year=2024,
         media_type=MediaType.MOVIE,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
     )
     session.add(item)
@@ -103,7 +103,7 @@ async def unreleased_item(session: AsyncSession) -> MediaItem:
         year=2023,
         media_type=MediaType.MOVIE,
         state=QueueState.UNRELEASED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         air_date=date(2023, 1, 1),  # well in the past
     )
@@ -121,7 +121,7 @@ async def sleeping_item(session: AsyncSession) -> MediaItem:
         year=2024,
         media_type=MediaType.MOVIE,
         state=QueueState.SLEEPING,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=1,
     )
     session.add(item)
@@ -138,7 +138,7 @@ async def dormant_item(session: AsyncSession) -> MediaItem:
         year=2024,
         media_type=MediaType.MOVIE,
         state=QueueState.DORMANT,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=7,
     )
     session.add(item)

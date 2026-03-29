@@ -11,9 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,8 +22,6 @@ import src.models.torrent  # noqa: F401
 from src.database import Base
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
-from src.models.scrape_result import ScrapeLog
-from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ from pydantic import ValidationError
 
 from src.api.routes.settings import SettingsUpdate, _mask_api_keys
 
-
 # ---------------------------------------------------------------------------
 # SettingsUpdate model unit tests
 # ---------------------------------------------------------------------------
@@ -139,6 +138,7 @@ def test_mask_api_keys_does_not_expose_first_chars() -> None:
 async def test_put_settings_unknown_key_returns_422() -> None:
     """PUT /api/settings with an unknown top-level key returns 422."""
     from httpx import ASGITransport, AsyncClient
+
     from src.main import app
 
     transport = ASGITransport(app=app)
@@ -162,6 +162,7 @@ async def test_put_settings_unknown_key_returns_422() -> None:
 async def test_put_settings_error_does_not_echo_api_key() -> None:
     """PUT /api/settings validation error must not echo back submitted API key."""
     from httpx import ASGITransport, AsyncClient
+
     from src.main import app
 
     supersecret_key = "SUPERSECRETAPIKEY12345"
@@ -185,9 +186,11 @@ async def test_put_settings_error_does_not_echo_api_key() -> None:
 async def test_get_settings_masks_api_key() -> None:
     """GET /api/settings returns masked API key (only last 4 chars visible)."""
     from unittest.mock import patch
+
     from httpx import ASGITransport, AsyncClient
-    from src.main import app
+
     from src.config import settings as app_settings
+    from src.main import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

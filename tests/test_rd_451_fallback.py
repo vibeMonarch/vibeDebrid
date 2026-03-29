@@ -12,17 +12,15 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 
 from __future__ import annotations
 
-import json
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.media_item import MediaItem, MediaType, QueueState
-from src.models.torrent import RdTorrent, TorrentStatus
+from src.models.media_item import MediaItem, QueueState
+from src.models.torrent import RdTorrent
 from src.services.real_debrid import (
     CacheCheckResult,
     RealDebridAuthError,
@@ -31,7 +29,6 @@ from src.services.real_debrid import (
     RealDebridRateLimitError,
 )
 from src.services.torrentio import TorrentioResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers shared across sections

@@ -11,10 +11,10 @@ import asyncio
 import gzip
 import json
 import logging
-import defusedxml.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
+import defusedxml.ElementTree as ET
 import httpx
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,8 +60,8 @@ class AnidbClient:
         if oldest is None:
             return False
         if oldest.tzinfo is None:
-            oldest = oldest.replace(tzinfo=timezone.utc)
-        age_hours = (datetime.now(timezone.utc) - oldest).total_seconds() / 3600
+            oldest = oldest.replace(tzinfo=UTC)
+        age_hours = (datetime.now(UTC) - oldest).total_seconds() / 3600
         return age_hours < settings.anidb.refresh_hours
 
     async def refresh_data(self, session: AsyncSession) -> None:
@@ -175,7 +175,7 @@ class AnidbClient:
                 deduped_titles.append(row)
 
         # --- Full-replace both tables in one transaction ---
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         await session.execute(delete(AnidbTitle))
         await session.execute(delete(AnidbMapping))
 

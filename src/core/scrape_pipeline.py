@@ -30,7 +30,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -45,9 +45,9 @@ from src.core.mount_scanner import VIDEO_EXTENSIONS, mount_scanner
 from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
+from src.services.nyaa import NyaaResult, nyaa_client
 from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
 from src.services.torrent_parser import parse_episode_from_filename
-from src.services.nyaa import NyaaResult, nyaa_client
 from src.services.torrentio import TorrentioResult, torrentio_client
 from src.services.zilean import ZileanResult, zilean_client
 
@@ -1883,7 +1883,7 @@ class ScrapePipeline:
                     session, item.id, QueueState.SLEEPING
                 )
                 transitioned.next_retry_at = (
-                    datetime.now(timezone.utc) + timedelta(minutes=5)
+                    datetime.now(UTC) + timedelta(minutes=5)
                 )
                 await session.flush()
                 return PipelineResult(
@@ -2296,7 +2296,7 @@ class ScrapePipeline:
                 if row[0] is not None and row[1] is not None
             }
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             created = 0
             for ep_entry in tmdb_episodes:
                 try:
@@ -2413,7 +2413,7 @@ class ScrapePipeline:
         existing_result = await session.execute(existing_stmt)
         existing_episodes: set[int] = {row[0] for row in existing_result.all()}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         created = 0
         for ep_num in range(1, episode_count + 1):
             if ep_num in existing_episodes:

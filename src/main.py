@@ -7,9 +7,9 @@ import os
 import re
 import sys
 import time
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,15 +21,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.__version__ import __version__
 from src.config import settings
-from src.database import engine, init_db, async_session
+from src.core.mount_scanner import gather_alt_titles, mount_scanner
 from src.core.queue_manager import queue_manager
 from src.core.scrape_pipeline import scrape_pipeline
-from src.core.mount_scanner import mount_scanner, gather_alt_titles
 from src.core.symlink_manager import SourceNotFoundError, symlink_manager
+from src.database import async_session, engine, init_db
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
-from src.services.real_debrid import rd_client, RealDebridError
+from src.services.real_debrid import RealDebridError, rd_client
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,7 @@ async def _find_torrent_for_item(session: AsyncSession, item: MediaItem) -> RdTo
         An active RdTorrent row, or None if not found.
     """
     import json as _json
+
     from src.models.scrape_result import ScrapeLog
 
     # Direct lookup
@@ -292,7 +293,7 @@ async def _job_queue_processor() -> None:
         logger.info("Queue transitions applied: %s", stats)
 
         # --- Stage 0: Recover stuck SCRAPING items ---
-        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        stale_cutoff = datetime.now(UTC) - timedelta(minutes=30)
         result = await session.execute(
             select(MediaItem).where(
                 MediaItem.state == QueueState.SCRAPING,
@@ -372,8 +373,8 @@ async def _job_queue_processor() -> None:
                     # Timeout: transition to SLEEPING if stuck too long
                     sca = item.state_changed_at
                     if sca is not None and sca.tzinfo is None:
-                        sca = sca.replace(tzinfo=timezone.utc)
-                    adding_timeout = datetime.now(timezone.utc) - timedelta(
+                        sca = sca.replace(tzinfo=UTC)
+                    adding_timeout = datetime.now(UTC) - timedelta(
                         minutes=settings.retry.checking_timeout_minutes
                     )
                     if sca and sca <= adding_timeout:
@@ -713,13 +714,13 @@ async def _job_queue_processor() -> None:
                         matches = filtered
 
                     if not matches:
-                        timeout_threshold = datetime.now(timezone.utc) - timedelta(
+                        timeout_threshold = datetime.now(UTC) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
                         )
                         # Normalize: SQLite-loaded datetimes are naive, in-memory ones are tz-aware
                         sca = item.state_changed_at
                         if sca is not None and sca.tzinfo is None:
-                            sca = sca.replace(tzinfo=timezone.utc)
+                            sca = sca.replace(tzinfo=UTC)
                         if sca and sca <= timeout_threshold:
                             # Store failed hash for loop prevention (before transition)
                             _sp_torrent = await _find_torrent_for_item(session, item)
@@ -956,13 +957,13 @@ async def _job_queue_processor() -> None:
                             )
 
                     if not matches:
-                        timeout_threshold = datetime.now(timezone.utc) - timedelta(
+                        timeout_threshold = datetime.now(UTC) - timedelta(
                             minutes=settings.retry.checking_timeout_minutes
                         )
                         # Normalize: SQLite-loaded datetimes are naive, in-memory ones are tz-aware
                         sca = item.state_changed_at
                         if sca is not None and sca.tzinfo is None:
-                            sca = sca.replace(tzinfo=timezone.utc)
+                            sca = sca.replace(tzinfo=UTC)
                         if sca and sca <= timeout_threshold:
                             # Store failed hash BEFORE transitioning (so both happen or neither)
                             if torrent is None:
@@ -1212,7 +1213,7 @@ async def _job_queue_processor() -> None:
                 logger.exception("Jellyfin scan trigger failed (non-fatal)")
 
         # --- Stage 4: COMPLETE (older than 1 hour) → DONE ---
-        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
         result = await session.execute(
             select(MediaItem).where(
                 MediaItem.state == QueueState.COMPLETE,
@@ -1580,6 +1581,7 @@ app = FastAPI(
 )
 
 from src.middleware.csrf import CSRFMiddleware  # noqa: E402
+
 app.add_middleware(CSRFMiddleware)
 
 # Custom validation error handler: strip 'input' from 422 responses so that
@@ -1612,17 +1614,17 @@ if STATIC_DIR.exists():
 
 # --- Register routers ---
 from src.api.routes.dashboard import router as dashboard_router  # noqa: E402
+from src.api.routes.discover import router as discover_router  # noqa: E402
+from src.api.routes.duplicates import router as duplicates_router  # noqa: E402
+from src.api.routes.health import router as health_router  # noqa: E402
+from src.api.routes.movie import router as movie_router  # noqa: E402
+from src.api.routes.omdb import router as omdb_router  # noqa: E402
 from src.api.routes.queue import router as queue_router  # noqa: E402
 from src.api.routes.search import router as search_router  # noqa: E402
 from src.api.routes.settings import router as settings_router  # noqa: E402
-from src.api.routes.duplicates import router as duplicates_router  # noqa: E402
-from src.api.routes.discover import router as discover_router  # noqa: E402
+from src.api.routes.show import router as show_router  # noqa: E402
 from src.api.routes.sse import router as sse_router  # noqa: E402
 from src.api.routes.tools import router as tools_router  # noqa: E402
-from src.api.routes.show import router as show_router  # noqa: E402
-from src.api.routes.health import router as health_router  # noqa: E402
-from src.api.routes.omdb import router as omdb_router  # noqa: E402
-from src.api.routes.movie import router as movie_router  # noqa: E402
 from src.api.routes.webhook import router as webhook_router  # noqa: E402
 
 app.include_router(dashboard_router)

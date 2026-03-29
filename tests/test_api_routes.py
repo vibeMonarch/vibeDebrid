@@ -13,9 +13,9 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -29,7 +29,6 @@ from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.http_client import CircuitOpenError
 from src.services.real_debrid import CacheCheckResult, RealDebridAuthError, RealDebridError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,7 +97,7 @@ async def _make_item(
         year=year,
         media_type=media_type,
         state=state,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=retry_count,
     )
     session.add(item)
@@ -760,7 +759,7 @@ class TestQueueItemDetail:
         assert resp.status_code == 200
         # Both logs present; order depends on scraped_at (server default),
         # so only assert both are present.
-        scrapers = {l["scraper"] for l in resp.json()["scrape_logs"]}
+        scrapers = {entry["scraper"] for entry in resp.json()["scrape_logs"]}
         assert scrapers == {"torrentio", "zilean"}
 
     async def test_get_item_not_found(self, http: AsyncClient) -> None:
@@ -1219,8 +1218,8 @@ class TestSearch:
         self, http_no_db: AsyncClient
     ) -> None:
         """Results from scrapers are filtered and returned as ranked list."""
-        from src.services.torrentio import TorrentioResult
         from src.core.filter_engine import FilteredResult
+        from src.services.torrentio import TorrentioResult
 
         mock_result = TorrentioResult(
             info_hash="a" * 40,
@@ -1277,8 +1276,8 @@ class TestSearch:
         self, http_no_db: AsyncClient
     ) -> None:
         """Search always returns cached=None; cache is checked via /api/check-cached."""
-        from src.services.torrentio import TorrentioResult
         from src.core.filter_engine import FilteredResult
+        from src.services.torrentio import TorrentioResult
 
         mock_result = TorrentioResult(
             info_hash="b" * 40,
@@ -1323,8 +1322,8 @@ class TestSearch:
         self, http_no_db: AsyncClient
     ) -> None:
         """If Torrentio raises, search continues with only Zilean results."""
-        from src.services.zilean import ZileanResult
         from src.core.filter_engine import FilteredResult
+        from src.services.zilean import ZileanResult
 
         zilean_result = ZileanResult(
             info_hash="c" * 40,
@@ -1791,8 +1790,9 @@ class TestSettings:
         self, http_no_db: AsyncClient
     ) -> None:
         """When api_key is non-empty, it must be masked (not returned in plaintext)."""
-        from src.config import settings as app_settings
         from unittest.mock import patch
+
+        from src.config import settings as app_settings
 
         # Patch the global settings singleton to inject a long key
         fake_key = "ABCDEFGHIJKLMNOP"  # 16 chars — long enough to trigger masking

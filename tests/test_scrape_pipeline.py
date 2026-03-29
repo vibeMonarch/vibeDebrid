@@ -17,9 +17,9 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,7 +33,6 @@ from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.torrentio import TorrentioResult
 from src.services.zilean import ZileanResult
-
 
 # ---------------------------------------------------------------------------
 # Test data helpers
@@ -98,7 +97,7 @@ def _make_mount_index_hit(title: str = "Test Movie") -> MountIndex:
         parsed_resolution="1080p",
         parsed_codec="x265",
         filesize=2 * 1024**3,
-        last_seen_at=datetime.now(timezone.utc),
+        last_seen_at=datetime.now(UTC),
     )
     return entry
 
@@ -117,7 +116,7 @@ async def show_item(session: AsyncSession) -> MediaItem:
         year=2023,
         media_type=MediaType.SHOW,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         season=1,
         episode=3,
@@ -1046,7 +1045,7 @@ class TestScrapeLogPersistence:
         )
         assert has_result_log, (
             "Expected a ScrapeLog with selected_result or results_count. "
-            f"Got logs: {[(l.scraper, l.results_count, l.selected_result) for l in logs]}"
+            f"Got logs: {[(log.scraper, log.results_count, log.selected_result) for log in logs]}"
         )
 
 

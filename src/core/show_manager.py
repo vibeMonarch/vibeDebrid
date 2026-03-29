@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import date, datetime, timezone
-from enum import Enum
+from datetime import UTC, date, datetime
+from enum import StrEnum
 
 import httpx
 from pydantic import BaseModel
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class SeasonStatus(str, Enum):
+class SeasonStatus(StrEnum):
     AVAILABLE = "available"
     AIRING = "airing"
     IN_QUEUE = "in_queue"
@@ -214,7 +214,7 @@ class ShowManager:
         # XEM absolute map bridges TMDB continuous numbering to scene seasons.
         # For anime with one TMDB season (S01E01-E38) but two scene seasons,
         # absolute 1→scene S01E01, absolute 29→scene S02E01, etc.
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         groups: dict[int, list[SceneEpisodeInfo]] = {}
 
         # Fetch all season details concurrently (max 5 in-flight) rather than
@@ -363,7 +363,7 @@ class ShowManager:
         monitored = sub_result.scalar_one_or_none()
         is_subscribed = monitored is not None and monitored.enabled
 
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
 
         # Determine the currently airing season number (if any).
         # next_episode_to_air being set means the show is still running and
@@ -556,7 +556,7 @@ class ShowManager:
         )
         existing_items: list[MediaItem] = list(db_result.scalars().all())
 
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
 
         # Check for a season-pack covering this season (scene or TMDB).
         def _season_pack_covers(season_num: int) -> str | None:
@@ -782,7 +782,7 @@ class ShowManager:
             return 0, 0, None
 
         tmdb_id_str = str(request.tmdb_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         today = now.date()
         created_episodes = 0
         created_unreleased = 0
@@ -802,7 +802,7 @@ class ShowManager:
             ):
                 cutoff_dt = existing_item.state_changed_at
                 if cutoff_dt.tzinfo is None:
-                    cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
+                    cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
                 pack_cutoff_date = cutoff_dt.date()
                 logger.info(
                     "show_manager._add_airing_season: completed season pack for S%02d "
@@ -908,7 +908,7 @@ class ShowManager:
             state WANTED, or None if no WANTED episodes were created.
         """
         tmdb_id_str = str(request.tmdb_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         created_episodes = 0
         created_unreleased = 0
         max_aired_episode: int | None = None
@@ -925,7 +925,7 @@ class ShowManager:
             ):
                 cutoff_dt = existing_item.state_changed_at
                 if cutoff_dt.tzinfo is None:
-                    cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
+                    cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
                 pack_cutoff_date = cutoff_dt.date()
                 logger.info(
                     "show_manager._add_xem_airing_season: completed scene season pack for S%02d "
@@ -1034,7 +1034,7 @@ class ShowManager:
             AddSeasonsResult with counts of created items and skipped seasons.
         """
         tmdb_id_str = str(request.tmdb_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         today = now.date()
         created = 0
         created_episodes = 0
@@ -1467,7 +1467,7 @@ class ShowManager:
             if existing.enabled == enabled:
                 return "unchanged"
             existing.enabled = enabled
-            existing.updated_at = datetime.now(timezone.utc)
+            existing.updated_at = datetime.now(UTC)
             if quality_profile:
                 existing.quality_profile = quality_profile
             logger.info(
@@ -1486,8 +1486,8 @@ class ShowManager:
             year=year,
             quality_profile=quality_profile,
             enabled=True,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         session.add(monitored)
         logger.info(
@@ -1562,8 +1562,8 @@ class ShowManager:
             )
             return 0
 
-        now = datetime.now(timezone.utc)
-        today = datetime.now(timezone.utc).date()
+        now = datetime.now(UTC)
+        today = datetime.now(UTC).date()
         tmdb_id_str = str(show.tmdb_id)
         tvdb_id: int | None = tmdb_show.tvdb_id
         new_items = 0

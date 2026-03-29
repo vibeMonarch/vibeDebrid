@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from fastapi import APIRouter
 from starlette.responses import StreamingResponse
 
-from src.core.event_bus import event_bus, QueueEvent
+from src.core.event_bus import QueueEvent, event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ async def _event_generator(
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=30.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send heartbeat comment to keep connection alive
                 yield ": heartbeat\n\n"
                 continue

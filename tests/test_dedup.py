@@ -22,14 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.dedup import (
     DedupEngine,
-    DuplicateEntry,
-    DuplicateGroup,
     _normalize_title,
     dedup_engine,
 )
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.torrent import RdTorrent, TorrentStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers

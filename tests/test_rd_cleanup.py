@@ -49,19 +49,16 @@ asyncio_mode = "auto" (configured in pyproject.toml).
 
 from __future__ import annotations
 
-import importlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import src.core.rd_cleanup as rd_cleanup_module
 from src.core.rd_bridge import _extract_mount_name_any_base
 from src.core.rd_cleanup import (
     CategorizedTorrent,
-    RdCleanupExecuteRequest,
     RdTorrentCategory,
     _build_ptn_groups,
     _build_summaries,
@@ -74,10 +71,8 @@ from src.core.rd_cleanup import (
     execute_rd_cleanup,
     scan_rd_account,
 )
-from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
-
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -85,7 +80,7 @@ from src.models.torrent import RdTorrent, TorrentStatus
 
 ZURG_MOUNT = "/mnt/zurg/__all__"
 
-_NOW = datetime.now(tz=timezone.utc)
+_NOW = datetime.now(tz=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +268,7 @@ class TestParseAdded:
         # Construct a string that fromisoformat parses as naive
         dt = _parse_added("2024-01-15T10:30:00")
         assert dt is not None
-        assert dt.tzinfo == timezone.utc
+        assert dt.tzinfo == UTC
 
     def test_result_is_utc_aware(self):
         dt = _parse_added("2024-03-01T00:00:00.000Z")
@@ -653,7 +648,7 @@ class TestScanRdAccount:
 
     async def test_mixed_categories_with_db_fixtures(self, session: AsyncSession):
         # Create an active RdTorrent so its hash is protected
-        torrent_rec = _make_active_rd_torrent(
+        _torrent_rec = _make_active_rd_torrent(
             session, rd_id="PROT_RDID", info_hash="a" * 40
         )
         await session.flush()
@@ -752,7 +747,7 @@ def _seed_cache(
     age_seconds: int = 10,
 ) -> None:
     """Populate _last_scan_cache as if scan_rd_account just ran."""
-    _last_scan_cache["scanned_at"] = datetime.now(tz=timezone.utc) - timedelta(seconds=age_seconds)
+    _last_scan_cache["scanned_at"] = datetime.now(tz=UTC) - timedelta(seconds=age_seconds)
     _last_scan_cache["category_map"] = category_map
     _last_scan_cache["hash_map"] = hash_map or {}
     # rd_torrents only needed for cache-miss path
@@ -916,12 +911,12 @@ class TestExecuteRdCleanup:
 
     async def test_cache_expired_triggers_fresh_list(self, session: AsyncSession):
         # Seed cache with expired timestamp (400 seconds old, TTL is 300)
-        _last_scan_cache["scanned_at"] = datetime.now(tz=timezone.utc) - timedelta(seconds=400)
+        _last_scan_cache["scanned_at"] = datetime.now(tz=UTC) - timedelta(seconds=400)
         _last_scan_cache["category_map"] = None  # expired — missing category_map
         _last_scan_cache["hash_map"] = {}
         _last_scan_cache["rd_torrents"] = []
 
-        fresh_category_map = {"DEAD1": RdTorrentCategory.DEAD}
+        _fresh_category_map = {"DEAD1": RdTorrentCategory.DEAD}
 
         with patch("src.services.real_debrid.RealDebridClient") as MockRd:
             mock_client = AsyncMock()
@@ -936,7 +931,7 @@ class TestExecuteRdCleanup:
                 mock_prot.return_value = (set(), set(), set(), set())
                 with patch("src.core.dedup.dedup_engine") as mock_dedup:
                     mock_dedup.mark_torrent_removed = AsyncMock()
-                    result = await execute_rd_cleanup(session, ["DEAD1"])
+                    _result = await execute_rd_cleanup(session, ["DEAD1"])
 
         mock_client.list_all_torrents.assert_called_once()
 

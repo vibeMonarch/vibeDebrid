@@ -25,7 +25,7 @@ import os
 import re
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import PTN
@@ -323,7 +323,7 @@ class MountScanner:
             errors encountered.
         """
         start_time = time.monotonic()
-        scan_started_at = datetime.now(timezone.utc)
+        scan_started_at = datetime.now(UTC)
 
         if not await self.is_mount_available():
             logger.error(
@@ -816,7 +816,7 @@ class MountScanner:
             )
             dir_path = matched_path
 
-        scan_timestamp = datetime.now(timezone.utc)
+        scan_timestamp = datetime.now(UTC)
 
         try:
             # Targeted scan covers at most ~20 files — stat overhead is negligible,
@@ -1063,7 +1063,7 @@ class MountScanner:
             filesize=filesize,
             parent_dir=os.path.dirname(file_path),
         )
-        scan_timestamp = datetime.now(timezone.utc)
+        scan_timestamp = datetime.now(UTC)
         upsert = await self._upsert_records(
             session, [walk_entry], scan_timestamp, root_dir=settings.paths.zurg_mount
         )
@@ -1637,7 +1637,7 @@ def _parse_filename(filename: str, parent_dir: str | None = None) -> dict[str, A
 
 async def gather_alt_titles(
     session: AsyncSession,
-    item: "MediaItem",
+    item: MediaItem,
     tmdb_original_title: str | None = None,
     torrent_filename: str | None = None,
 ) -> list[str]:

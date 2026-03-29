@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import enum
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from src.models.media_item import MediaItem
 
 
-class TorrentStatus(str, enum.Enum):
+class TorrentStatus(StrEnum):
     ACTIVE = "active"
     REMOVED = "removed"
     REPLACED = "replaced"

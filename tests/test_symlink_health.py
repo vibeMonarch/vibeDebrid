@@ -36,10 +36,9 @@ asyncio_mode = "auto" (configured in pyproject.toml).
 
 from __future__ import annotations
 
-import asyncio
 import os
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -47,7 +46,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db
 from src.core.symlink_health import (
-    BrokenSymlinkItem,
     SymlinkHealthExecuteRequest,
     SymlinkHealthResult,
     SymlinkHealthScan,
@@ -62,7 +60,6 @@ from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
 from src.models.symlink import Symlink
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -90,7 +87,7 @@ def _make_item(
         imdb_id=imdb_id,
         media_type=media_type,
         state=state,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         year=year,
         season=season,

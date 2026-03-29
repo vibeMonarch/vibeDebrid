@@ -16,8 +16,6 @@ Groups:
 
 from __future__ import annotations
 
-import pytest
-
 from src.services.torrent_parser import (
     ANIME_BARE_DASH_EP_RE,
     ANIME_BATCH_RE,
@@ -40,7 +38,6 @@ from src.services.torrent_parser import (
     parse_episode_from_filename,
     parse_languages,
 )
-
 
 # ---------------------------------------------------------------------------
 # parse_languages

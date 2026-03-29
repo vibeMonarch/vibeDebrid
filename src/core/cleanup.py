@@ -33,10 +33,10 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import enum
 import logging
 import os
 import re
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -53,7 +53,7 @@ _BATCH_SIZE = 50
 # ---------------------------------------------------------------------------
 
 
-class ItemLiveness(str, enum.Enum):
+class ItemLiveness(StrEnum):
     """Filesystem + RD presence classification for a MediaItem."""
 
     LIVE = "live"

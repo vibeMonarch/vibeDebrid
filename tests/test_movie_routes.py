@@ -25,7 +25,6 @@ from src.config import settings as app_settings
 from src.main import app
 from src.services.tmdb import TmdbMovieDetail
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

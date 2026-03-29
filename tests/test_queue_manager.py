@@ -15,7 +15,7 @@ Covers:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,14 +29,13 @@ from src.core.queue_manager import (
 )
 from src.models.media_item import MediaItem, MediaType, QueueState
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _make_item(
@@ -169,7 +168,7 @@ class TestValidTransitions:
         # state_changed_at must be after the original timestamp
         changed_at = result.state_changed_at
         if changed_at.tzinfo is None:
-            changed_at = changed_at.replace(tzinfo=timezone.utc)
+            changed_at = changed_at.replace(tzinfo=UTC)
         assert changed_at > original_ts
 
     async def test_state_matches_expected_new_state(self, session: AsyncSession) -> None:
@@ -298,12 +297,12 @@ class TestSleepingRetryLogic:
         qm = QueueManager()
         before = _utcnow()
         result = await qm.transition(session, item.id, QueueState.SLEEPING)
-        after = _utcnow()
+        _after = _utcnow()
 
         assert result.next_retry_at is not None
         nra = result.next_retry_at
         if nra.tzinfo is None:
-            nra = nra.replace(tzinfo=timezone.utc)
+            nra = nra.replace(tzinfo=UTC)
         assert nra > before
         # next_retry_at must be at least 29 minutes from now (schedule[0] = 30 min)
         assert nra > before + timedelta(minutes=29)
@@ -329,7 +328,7 @@ class TestSleepingRetryLogic:
 
         nra = result.next_retry_at
         if nra.tzinfo is None:
-            nra = nra.replace(tzinfo=timezone.utc)
+            nra = nra.replace(tzinfo=UTC)
         # Should be ~30 minutes from before; we check >= 29 to allow for execution time
         assert nra >= before + timedelta(minutes=29)
         assert nra <= before + timedelta(minutes=31)
@@ -355,7 +354,7 @@ class TestSleepingRetryLogic:
 
         nra = result.next_retry_at
         if nra.tzinfo is None:
-            nra = nra.replace(tzinfo=timezone.utc)
+            nra = nra.replace(tzinfo=UTC)
         # retry_count was 1, incremented to 2, index = 2-1 = 1 => 60 minutes
         assert nra >= before + timedelta(minutes=59)
         assert nra <= before + timedelta(minutes=61)
@@ -389,7 +388,7 @@ class TestSleepingRetryLogic:
                 result = await qm.transition(session, item.id, QueueState.SLEEPING)
             nra = result.next_retry_at
             if nra.tzinfo is None:
-                nra = nra.replace(tzinfo=timezone.utc)
+                nra = nra.replace(tzinfo=UTC)
             delays.append((nra - before).total_seconds())
 
         # Each delay must be greater than or equal to the previous delay
@@ -491,7 +490,7 @@ class TestDormantLogic:
 
         nra = result.next_retry_at
         if nra.tzinfo is None:
-            nra = nra.replace(tzinfo=timezone.utc)
+            nra = nra.replace(tzinfo=UTC)
         assert nra >= before + timedelta(days=7)
         assert nra <= before + timedelta(days=7, minutes=1)
 
@@ -516,7 +515,7 @@ class TestDormantLogic:
 
         nra = result.next_retry_at
         if nra.tzinfo is None:
-            nra = nra.replace(tzinfo=timezone.utc)
+            nra = nra.replace(tzinfo=UTC)
         assert nra >= before + timedelta(days=14)
 
     async def test_scraping_from_dormant_clears_next_retry_at(
@@ -557,7 +556,7 @@ class TestDormantLogic:
         assert result.next_retry_at is not None
         nra = result.next_retry_at
         if nra.tzinfo is None:
-            nra = nra.replace(tzinfo=timezone.utc)
+            nra = nra.replace(tzinfo=UTC)
         assert nra >= before + timedelta(days=7)
 
 
@@ -631,7 +630,7 @@ class TestForceTransition:
 
         changed_at = result.state_changed_at
         if changed_at.tzinfo is None:
-            changed_at = changed_at.replace(tzinfo=timezone.utc)
+            changed_at = changed_at.replace(tzinfo=UTC)
         assert changed_at > old_ts
 
     async def test_force_transition_logs_warning(
@@ -1073,7 +1072,7 @@ class TestEdgeCases:
             result = QueueManager.calculate_next_retry(0)
 
         if result.tzinfo is None:
-            result = result.replace(tzinfo=timezone.utc)
+            result = result.replace(tzinfo=UTC)
         assert result >= before + timedelta(minutes=29)
         assert result <= before + timedelta(minutes=31)
 
@@ -1091,7 +1090,7 @@ class TestEdgeCases:
             result = QueueManager.calculate_next_retry(100)
 
         if result.tzinfo is None:
-            result = result.replace(tzinfo=timezone.utc)
+            result = result.replace(tzinfo=UTC)
         # Should use 120 minutes (the last entry), not crash or use a wrong index
         assert result >= before + timedelta(minutes=119)
         assert result <= before + timedelta(minutes=121)
@@ -1109,7 +1108,7 @@ class TestEdgeCases:
             result = QueueManager.calculate_next_retry(1)
 
         if result.tzinfo is None:
-            result = result.replace(tzinfo=timezone.utc)
+            result = result.replace(tzinfo=UTC)
         assert result >= before + timedelta(minutes=59)
         assert result <= before + timedelta(minutes=61)
 

@@ -14,21 +14,18 @@ asyncio_mode = "auto" is set in pyproject.toml so no @pytest.mark.asyncio needed
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import select
-
 from src.api.deps import get_db
 from src.api.routes.search import AddRequest, SearchResultItem
 from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.services.torrentio import TorrentioResult
-
 
 # ---------------------------------------------------------------------------
 # Fixtures (local — shared fixtures come from conftest.py)
@@ -93,7 +90,7 @@ class TestMediaItemSeasonPackField:
             title="Test Show",
             media_type=MediaType.SHOW,
             state=QueueState.WANTED,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
         )
         session.add(item)
@@ -107,7 +104,7 @@ class TestMediaItemSeasonPackField:
             title="Test Show",
             media_type=MediaType.SHOW,
             state=QueueState.WANTED,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             is_season_pack=False,
         )
@@ -122,7 +119,7 @@ class TestMediaItemSeasonPackField:
             title="Breaking Bad Season 1",
             media_type=MediaType.SHOW,
             state=QueueState.WANTED,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             episode=None,
@@ -139,7 +136,7 @@ class TestMediaItemSeasonPackField:
             title="The Wire Season 2",
             media_type=MediaType.SHOW,
             state=QueueState.WANTED,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,
@@ -158,7 +155,7 @@ class TestMediaItemSeasonPackField:
             title="The Wire",
             media_type=MediaType.SHOW,
             state=QueueState.WANTED,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=3,
@@ -521,7 +518,7 @@ class TestScrapePipelineSeasonPack:
             title="Breaking Bad",
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,  # season pack
@@ -594,7 +591,7 @@ class TestScrapePipelineSeasonPack:
             title="Breaking Bad",
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=7,
@@ -645,7 +642,7 @@ class TestScrapePipelineSeasonPack:
             title="Breaking Bad",
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=None,
             episode=None,
@@ -693,7 +690,7 @@ class TestScrapePipelineSeasonPack:
             title="The Sopranos",
             media_type=MediaType.SHOW,
             state=QueueState.SCRAPING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=4,
             episode=None,
@@ -812,7 +809,7 @@ class TestSeasonPackCheckingDedup:
             title="Breaking Bad",
             media_type=MediaType.SHOW,
             state=QueueState.CHECKING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=1,
             episode=None,
@@ -879,7 +876,7 @@ class TestSeasonPackCheckingDedup:
             title="The Wire",
             media_type=MediaType.SHOW,
             state=QueueState.CHECKING,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,

@@ -18,7 +18,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,8 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.show_manager import (
     AddSeasonsRequest,
     AddSeasonsResult,
-    SceneEpisodeInfo,
-    SceneSeasonGroup,
     SeasonStatus,
     ShowManager,
 )
@@ -100,7 +98,7 @@ async def _make_show_item(
     is_season_pack: bool = True,
 ) -> MediaItem:
     """Persist a show MediaItem and return it."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     item = MediaItem(
         title=title,
         year=2020,
@@ -131,7 +129,7 @@ async def _make_monitored_show(
     title: str = "Test Show",
 ) -> MonitoredShow:
     """Persist a MonitoredShow and return it."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     show = MonitoredShow(
         tmdb_id=tmdb_id,
         imdb_id="tt9999001",
@@ -956,7 +954,7 @@ class TestCheckMonitoredShows:
         """check_monitored_shows adds individual episode items for new eps in the tracked season."""
         from sqlalchemy import select
 
-        show = await _make_monitored_show(session, last_season=1, last_episode=2)
+        _show = await _make_monitored_show(session, last_season=1, last_episode=2)
 
         mock_show = _make_show_detail(
             seasons=[
@@ -1238,7 +1236,7 @@ class TestCheckMonitoredShows:
                 return_value=mock_season,
             ),
         ):
-            result = await sm.check_monitored_shows(session)
+            _result = await sm.check_monitored_shows(session)
 
         rows = list((await session.execute(
             select(MediaItem).where(MediaItem.tmdb_id == TMDB_ID_STR)
@@ -1273,7 +1271,7 @@ class TestCheckMonitoredShows:
         """Existing (season, episode) keys prevent duplicate episode item creation."""
         from sqlalchemy import select
 
-        show = await _make_monitored_show(session, last_season=1, last_episode=0)
+        _show = await _make_monitored_show(session, last_season=1, last_episode=0)
         # Pre-create episode 1 directly
         await _make_show_item(session, season=1, episode=1, is_season_pack=False)
 
@@ -1979,8 +1977,8 @@ class TestAddAiringSeasonPackCutoff:
         from sqlalchemy import select
 
         # Season pack COMPLETE, completed 2024-03-22
-        pack_completed_at = datetime(2024, 3, 22, 12, 0, 0, tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+        pack_completed_at = datetime(2024, 3, 22, 12, 0, 0, tzinfo=UTC)
+        _now = datetime.now(UTC)
         pack = MediaItem(
             title="Test Anime",
             year=2023,
@@ -2055,10 +2053,9 @@ class TestAddAiringSeasonPackCutoff:
 
         All episodes without existing individual-episode keys are eligible for creation.
         """
-        from sqlalchemy import select
 
         # Season pack WANTED (not yet complete)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         pack = MediaItem(
             title="Test Anime",
             year=2023,
@@ -2123,7 +2120,7 @@ class TestAddAiringSeasonPackCutoff:
         """Episodes whose air_date equals the pack cutoff date are skipped (inclusive boundary)."""
         from sqlalchemy import select
 
-        cutoff = datetime(2024, 3, 22, 0, 0, 0, tzinfo=timezone.utc)
+        cutoff = datetime(2024, 3, 22, 0, 0, 0, tzinfo=UTC)
         pack = MediaItem(
             title="Test Show",
             year=2020,
@@ -2527,8 +2524,8 @@ def _make_test_anime_season_detail() -> TmdbSeasonDetail:
     Episodes 29-32 have past air dates (aired, belong to scene S02).
     Episodes 33-35 have future air dates (not yet aired, belong to scene S02).
     """
-    today_str = "2024-01-15"  # fixed reference point inside tests
-    past_dates = {
+    _today_str = "2024-01-15"  # fixed reference point inside tests
+    _past_dates = {
         ep: f"2023-{9 + (ep - 1) // 4:02d}-{29 + ((ep - 1) % 4) * 7:02d}"
         for ep in range(1, 33)
     }

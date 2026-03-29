@@ -22,10 +22,9 @@ from unittest.mock import patch
 import pytest
 
 from src.config import FiltersConfig, QualityConfig, QualityProfile
-from src.core.filter_engine import FilterEngine, FilteredResult, filter_engine
+from src.core.filter_engine import FilterEngine, filter_engine
 from src.services.torrentio import TorrentioResult
 from src.services.zilean import ZileanResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1871,7 +1870,7 @@ class TestTier1SeasonPackCompleteness:
 
     def _run_hard(
         self,
-        result: "TorrentioResult",
+        result: TorrentioResult,
         *,
         expected_episode_count: int | None = None,
         min_mb_per_episode: int = 100,

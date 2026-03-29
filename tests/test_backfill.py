@@ -43,7 +43,7 @@ asyncio_mode = "auto" (configured in pyproject.toml).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,8 +52,6 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.backfill import (
-    BackfillResult,
-    DeduplicateResult,
     DuplicateGroup,
     backfill_tmdb_ids,
     find_duplicates,
@@ -62,7 +60,6 @@ from src.core.backfill import (
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.monitored_show import MonitoredShow
 from src.models.symlink import Symlink
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,7 +86,7 @@ def _make_item(
         tvdb_id=tvdb_id,
         media_type=media_type,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         source=source,
         season=season,

@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,7 +47,6 @@ from src.core.mount_scanner import (
     MountScanner,
     ScanDirectoryResult,
     ScanResult,
-    UpsertResult,
     WalkEntry,
     _extract_season_from_path,
     _has_meaningful_title,
@@ -56,7 +55,6 @@ from src.core.mount_scanner import (
     gather_alt_titles,
     mount_scanner,
 )
-from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.mount_index import MountIndex
 
 # ---------------------------------------------------------------------------
@@ -65,7 +63,7 @@ from src.models.mount_index import MountIndex
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _insert_entry(
@@ -2006,9 +2004,9 @@ class TestLookupByPathPrefix:
         self, session: AsyncSession
     ) -> None:
         """Results are ordered newest-first by last_seen_at."""
-        older_ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        newer_ts = datetime(2024, 6, 1, tzinfo=timezone.utc)
-        newest_ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        older_ts = datetime(2024, 1, 1, tzinfo=UTC)
+        newer_ts = datetime(2024, 6, 1, tzinfo=UTC)
+        newest_ts = datetime(2025, 1, 1, tzinfo=UTC)
 
         prefix = "/mnt/Show.2024"
         await _insert_entry(
@@ -2837,7 +2835,7 @@ class TestUpsertRecordsUniqueConstraint:
         entries for the same file (e.g. via a symlink loop).
         """
         scanner = MountScanner()
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         entry = self._make_entry()
 
         # Supply the same filepath twice — before the fix this would cause
@@ -2865,7 +2863,7 @@ class TestUpsertRecordsUniqueConstraint:
         filenames are deduplicated (last entry wins) without raising.
         """
         scanner = MountScanner()
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         entry_a = self._make_entry(filename="Movie.2024.OLD.mkv")
         entry_b = self._make_entry(filename="Movie.2024.mkv")
 
@@ -2897,7 +2895,7 @@ class TestUpsertRecordsUniqueConstraint:
         existing_map at query time, and both attempt to INSERT.
         """
         scanner = MountScanner()
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         entry = self._make_entry()
 
         # First call: inserts the row.
@@ -2936,7 +2934,7 @@ class TestUpsertRecordsUniqueConstraint:
         ignoring the conflict.
         """
         scanner = MountScanner()
-        ts1 = datetime.now(timezone.utc)
+        ts1 = datetime.now(UTC)
         entry_v1 = self._make_entry(
             filename="Movie.2024.1080p.mkv",
             filesize=1_000_000,
@@ -2947,7 +2945,7 @@ class TestUpsertRecordsUniqueConstraint:
         session.expire_all()
 
         # Simulate concurrent insert of the same filepath with updated metadata.
-        ts2 = datetime.now(timezone.utc)
+        ts2 = datetime.now(UTC)
         entry_v2 = self._make_entry(
             filename="Movie.2024.2160p.mkv",
             filesize=4_000_000,
@@ -2970,7 +2968,7 @@ class TestUpsertRecordsUniqueConstraint:
         is processed without errors (tests batch boundary dedup behaviour).
         """
         scanner = MountScanner()
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
 
         # Build 600 unique entries (exceeds _BATCH_SIZE=500) plus 3 duplicates.
         entries: list[WalkEntry] = []
@@ -2994,7 +2992,8 @@ class TestUpsertRecordsUniqueConstraint:
         assert result.added == 600
         assert result.errors == 0
 
-        from sqlalchemy import select as sa_select, func as sa_func
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
 
         count = (
             await session.execute(sa_select(sa_func.count(MountIndex.id)))

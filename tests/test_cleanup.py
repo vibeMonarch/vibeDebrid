@@ -57,18 +57,15 @@ asyncio_mode = "auto" (configured in pyproject.toml).
 
 from __future__ import annotations
 
-import os
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
 
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.cleanup import (
     AssessedItem,
     CleanupPreview,
-    CleanupResult,
     ItemLiveness,
     SmartDuplicateGroup,
     _batch_check_paths,
@@ -82,7 +79,6 @@ from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
-
 
 # ---------------------------------------------------------------------------
 # Shared test helpers
@@ -108,7 +104,7 @@ def _make_item(
         imdb_id=imdb_id,
         media_type=media_type,
         state=state,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         source=source,
         season=season,
@@ -412,7 +408,7 @@ class TestAssessMigrationItems:
     ) -> None:
         """Items whose symlink source_path exists on disk are classified as LIVE."""
         item_a = _make_item(session, imdb_id="tt2020202", source="migration")
-        item_b = _make_item(session, imdb_id="tt2020202", source="migration")
+        _item_b = _make_item(session, imdb_id="tt2020202", source="migration")
         await _flush(session)
 
         source_path = f"{ZURG_MOUNT}/Movie.2024.1080p/Movie.2024.1080p.mkv"
@@ -442,7 +438,7 @@ class TestAssessMigrationItems:
     ) -> None:
         """Item with an RdTorrent FK but no symlink source_path → BRIDGED."""
         item_a = _make_item(session, imdb_id="tt3030303", source="migration")
-        item_b = _make_item(session, imdb_id="tt3030303", source="migration")
+        _item_b = _make_item(session, imdb_id="tt3030303", source="migration")
         await _flush(session)
 
         _make_rd_torrent(
@@ -466,8 +462,8 @@ class TestAssessMigrationItems:
         self, session: AsyncSession
     ) -> None:
         """Item with no symlink and no RdTorrent → DEAD."""
-        item_a = _make_item(session, imdb_id="tt4040404", source="migration")
-        item_b = _make_item(session, imdb_id="tt4040404", source="migration")
+        _item_a = _make_item(session, imdb_id="tt4040404", source="migration")
+        _item_b = _make_item(session, imdb_id="tt4040404", source="migration")
         await _flush(session)
 
         with (
@@ -526,7 +522,7 @@ class TestAssessMigrationItems:
         # An RdTorrent exists on another item (item_a) with a matching filename.
         # info_hash must be unique across the whole test db — use a value
         # that cannot collide with other tests in this file.
-        rd = _make_rd_torrent(
+        _rd = _make_rd_torrent(
             session,
             media_item_id=item_a.id,
             rd_id="RDINDIRECT",
@@ -756,7 +752,7 @@ class TestBuildCleanupPreview:
         that build_cleanup_preview uses for its protection queries, injecting
         the controlled results that would represent the shared-hash state.
         """
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         # Two assessed items: keeper and removed, same group.
         item_keep_id = 100

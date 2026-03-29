@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -24,13 +24,12 @@ from src.api.deps import get_db
 from src.api.routes.tools import _migration_lock, _try_acquire
 from src.config import settings
 from src.core.show_manager import ShowManager
-from src.core.symlink_manager import SymlinkManager, VerifyResult
+from src.core.symlink_manager import SymlinkManager
 from src.main import app
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.symlink import Symlink
 from src.models.torrent import RdTorrent, TorrentStatus
 from src.services.tmdb import TmdbEpisodeInfo, TmdbSeasonDetail, TmdbSeasonInfo
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -64,7 +63,7 @@ async def _make_item(session: AsyncSession, *, imdb_id: str = "tt1111111") -> Me
         year=2024,
         media_type=MediaType.MOVIE,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
     )
     session.add(item)
@@ -580,6 +579,7 @@ class TestMountScannerRowcount:
         """
         import os as _os
         import tempfile as _tempfile
+
         from src.core.mount_scanner import MountScanner
 
         scanner = MountScanner()
@@ -622,7 +622,7 @@ class TestMountScannerRowcount:
                 filepath=f"/mnt/zurg/clear{i}.mkv",
                 filename=f"clear{i}.mkv",
                 parsed_title=f"clear {i}",
-                last_seen_at=datetime.now(timezone.utc),
+                last_seen_at=datetime.now(UTC),
             )
             session.add(entry)
         await session.flush()

@@ -42,9 +42,10 @@ asyncio_mode = "auto" (set in pyproject.toml), so no @pytest.mark.asyncio needed
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncGenerator
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -55,8 +56,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.xem_cache import XemCacheEntry
 from src.services.http_client import CircuitBreaker
-from src.services.xem import XemClient, XemMapping, XemShowMappings
 from src.services.tmdb import TmdbExternalIds
+from src.services.xem import XemClient, XemMapping, XemShowMappings
 
 
 def _make_noop_breaker() -> CircuitBreaker:
@@ -506,7 +507,7 @@ def _make_cache_entry(
     age_hours: float = 0.0,
 ) -> XemCacheEntry:
     """Build an XemCacheEntry with fetched_at set relative to now."""
-    fetched_at = datetime.now(timezone.utc) - timedelta(hours=age_hours)
+    fetched_at = datetime.now(UTC) - timedelta(hours=age_hours)
     return XemCacheEntry(
         tvdb_id=tvdb_id,
         tvdb_season=tvdb_season,
@@ -954,7 +955,7 @@ def _make_show_item_in_db() -> MediaItem:
         year=2020,
         media_type=MediaType.SHOW,
         state=QueueState.WANTED,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
         season=1,
         episode=29,
@@ -1123,7 +1124,7 @@ class TestScrapePipelineXem:
             year=2020,
             media_type=MediaType.SHOW,
             state=QueueState.WANTED,
-            state_changed_at=datetime.now(timezone.utc),
+            state_changed_at=datetime.now(UTC),
             retry_count=0,
             season=2,
             episode=None,  # season pack

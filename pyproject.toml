@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeDebrid"
-version = "0.2.0"
+version = "0.3.2"
 description = "Self-hosted Real-Debrid media automation: scrape, filter, download, and organize media into a Plex-ready symlink library"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -59,3 +59,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "E501",   # line-too-long — formatter handles this better
+    "N806",   # uppercase var in function — idiomatic for SQLAlchemy aliases (S, E, Q)
+    "N802",   # uppercase function name — used for test helpers
+    "N817",   # camelcase imported as acronym
+]

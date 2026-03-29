@@ -32,21 +32,28 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+import httpx
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-import httpx
-
 from src.config import settings
 from src.core.mount_scanner import mount_scanner
 from src.models.media_item import MediaItem, MediaType
 from src.models.symlink import Symlink
-from src.services.tmdb import TmdbClient, TmdbEpisodeInfo, TmdbMovieDetail, TmdbSeasonDetail, TmdbShowDetail
-from src.services.torrent_parser import parse_episode_from_filename as _parse_episode_from_filename_impl
+from src.services.tmdb import (
+    TmdbClient,
+    TmdbEpisodeInfo,
+    TmdbMovieDetail,
+    TmdbSeasonDetail,
+    TmdbShowDetail,
+)
+from src.services.torrent_parser import (
+    parse_episode_from_filename as _parse_episode_from_filename_impl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -572,7 +579,7 @@ class SymlinkManager:
         Returns:
             A ``VerifyResult`` summarising the outcome of the health check.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Pre-flight: verify the Zurg mount root is accessible.  A transient
         # mount outage makes every symlink destination appear missing; deleting

@@ -41,18 +41,18 @@ sync_watchlist() mocks are applied via patch() at the module import path.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.services.plex import PlexClient, WatchlistItem
-
 
 # ---------------------------------------------------------------------------
 # Part 1 helpers — get_watchlist() HTTP-level tests
@@ -684,7 +684,7 @@ async def test_sync_skips_item_in_any_state(
     session: AsyncSession, state: QueueState
 ) -> None:
     """sync_watchlist skips watchlist items that already exist regardless of state."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     existing = MediaItem(
         title="Already Queued",
@@ -693,7 +693,7 @@ async def test_sync_skips_item_in_any_state(
         tmdb_id="200200",
         imdb_id=f"tt{state.value[:6].ljust(7, '0')}",
         state=state,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
     )
     session.add(existing)
@@ -836,7 +836,7 @@ async def test_sync_integrity_error_skips_item_continues(session: AsyncSession) 
 
 async def test_sync_multiple_items_mixed(session: AsyncSession) -> None:
     """sync_watchlist processes multiple items, correctly counting new vs existing."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # Pre-insert one movie
     existing = MediaItem(
@@ -846,7 +846,7 @@ async def test_sync_multiple_items_mixed(session: AsyncSession) -> None:
         tmdb_id="300300",
         imdb_id="tt3003001",
         state=QueueState.COMPLETE,
-        state_changed_at=datetime.now(timezone.utc),
+        state_changed_at=datetime.now(UTC),
         retry_count=0,
     )
     session.add(existing)
@@ -1158,7 +1158,6 @@ async def test_sync_returns_correct_total_count(session: AsyncSession) -> None:
 
 async def test_sync_movie_added_at_and_state_changed_at_set(session: AsyncSession) -> None:
     """MediaItems created by sync_watchlist have both added_at and state_changed_at populated."""
-    from datetime import datetime, timezone
 
     movie = _make_watchlist_item(title="Timestamped Movie", tmdb_id="606060", imdb_id="tt6060601")
 
