@@ -19,6 +19,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import UTC, datetime
@@ -1437,3 +1438,465 @@ class TestToolsAPIRoutes:
         for key in ("title", "year", "media_type", "season", "episode",
                     "imdb_id", "source_path", "target_path", "is_symlink", "resolution"):
             assert key in item, f"Key {key!r} missing from found_item response"
+
+
+# ---------------------------------------------------------------------------
+# Group 11: Two-phase filesystem operations (savepoint isolation)
+# ---------------------------------------------------------------------------
+
+
+class TestTwoPhaseFilesystemOps:
+    """Verify filesystem ops are isolated from DB savepoint rollbacks.
+
+    These tests cover the core contract of the two-phase refactor:
+    - Phase 1 (savepoint): only DB operations; filesystem ops are collected.
+    - Phase 2 (post-commit): filesystem ops execute after savepoint succeeds.
+    - If savepoint rolls back, no filesystem ops execute (collected list unused).
+    - If Phase 2 fails, DB state is preserved and the error is logged/collected.
+    """
+
+    async def test_step2_fs_ops_not_executed_when_savepoint_rolls_back(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Step 2: if savepoint rolls back, os.unlink is never called."""
+        # Create a symlink on disk.
+        source = tmp_path / "source.mkv"
+        source.write_text("video")
+        symlink_path = tmp_path / "old_library" / "Movie" / "movie.mkv"
+        symlink_path.parent.mkdir(parents=True)
+        os.symlink(str(source), str(symlink_path))
+
+        existing_item = await _make_media_item(session, title="Test Movie", year=2020)
+        await _make_symlink(
+            session,
+            media_item_id=existing_item.id,
+            source_path=str(source),
+            target_path=str(symlink_path),
+        )
+
+        found_item = FoundItem(
+            title="Test Movie",
+            year=2020,
+            media_type="movie",
+            season=None,
+            episode=None,
+            imdb_id=None,
+            source_path=str(source),
+            target_path=str(tmp_path / "new_library" / "Test Movie (2020)" / "movie.mkv"),
+            is_symlink=True,
+            resolution=None,
+        )
+        dup = DuplicateMatch(
+            found_item=found_item,
+            existing_id=existing_item.id,
+            existing_title="Test Movie",
+            match_reason="same_source_path",
+        )
+        preview = MigrationPreview(
+            found_items=[found_item],
+            duplicates=[dup],
+            to_move=[],
+            errors=[],
+            summary={},
+        )
+
+        # Force the DB flush to raise — savepoint rolls back.
+        original_flush = session.flush
+        flush_calls = 0
+
+        async def _failing_flush(*args, **kwargs):
+            nonlocal flush_calls
+            flush_calls += 1
+            # Fail on first Step 2 flush (after delete operations).
+            if flush_calls >= 1:
+                raise OSError("simulated DB failure")
+            return await original_flush(*args, **kwargs)
+
+        session.flush = _failing_flush  # type: ignore[method-assign]
+
+        with patch("src.core.migration.CONFIG_FILE") as mock_cfg:
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(tmp_path / "new_library"), str(tmp_path / "shows")
+                )
+
+        # The symlink on disk must NOT have been removed — savepoint rolled back.
+        assert symlink_path.is_symlink(), (
+            "Symlink was deleted even though the DB savepoint rolled back"
+        )
+        # Migration recorded an error, didn't crash.
+        assert len(result.errors) >= 1
+
+    async def test_step2_fs_ops_execute_after_successful_savepoint(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Step 2: os.unlink is called after a successful savepoint commit."""
+        source = tmp_path / "source.mkv"
+        source.write_text("video")
+        symlink_path = tmp_path / "old_library" / "Show" / "show.mkv"
+        symlink_path.parent.mkdir(parents=True)
+        os.symlink(str(source), str(symlink_path))
+
+        assert symlink_path.is_symlink()
+
+        existing_item = await _make_media_item(session, title="Test Show", year=2021)
+        await _make_symlink(
+            session,
+            media_item_id=existing_item.id,
+            source_path=str(source),
+            target_path=str(symlink_path),
+        )
+
+        found_item = FoundItem(
+            title="Test Show",
+            year=2021,
+            media_type="movie",
+            season=None,
+            episode=None,
+            imdb_id=None,
+            source_path=str(source),
+            target_path=str(tmp_path / "new_library" / "Test Show (2021)" / "show.mkv"),
+            is_symlink=True,
+            resolution=None,
+        )
+        dup = DuplicateMatch(
+            found_item=found_item,
+            existing_id=existing_item.id,
+            existing_title="Test Show",
+            match_reason="same_source_path",
+        )
+        preview = MigrationPreview(
+            found_items=[found_item],
+            duplicates=[dup],
+            to_move=[],
+            errors=[],
+            summary={},
+        )
+
+        with patch("src.core.migration.CONFIG_FILE") as mock_cfg:
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(tmp_path / "new_library"), str(tmp_path / "shows")
+                )
+
+        # Symlink must be removed after successful commit.
+        assert not symlink_path.exists(), "Symlink was NOT removed after successful DB commit"
+        assert result.duplicates_removed == 1
+        assert result.errors == []
+
+    async def test_step2_phase2_fs_failure_logged_not_crashed(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Step 2: an os.unlink failure in Phase 2 is logged, migration continues."""
+        source = tmp_path / "source.mkv"
+        source.write_text("video")
+        symlink_path = tmp_path / "old_library" / "Movie2" / "movie2.mkv"
+        symlink_path.parent.mkdir(parents=True)
+        os.symlink(str(source), str(symlink_path))
+
+        existing_item = await _make_media_item(session, title="Test Film", year=2019)
+        await _make_symlink(
+            session,
+            media_item_id=existing_item.id,
+            source_path=str(source),
+            target_path=str(symlink_path),
+        )
+
+        found_item = FoundItem(
+            title="Test Film",
+            year=2019,
+            media_type="movie",
+            season=None,
+            episode=None,
+            imdb_id=None,
+            source_path=str(source),
+            target_path=str(tmp_path / "new_library" / "Test Film (2019)" / "movie2.mkv"),
+            is_symlink=True,
+            resolution=None,
+        )
+        dup = DuplicateMatch(
+            found_item=found_item,
+            existing_id=existing_item.id,
+            existing_title="Test Film",
+            match_reason="same_source_path",
+        )
+        preview = MigrationPreview(
+            found_items=[found_item],
+            duplicates=[dup],
+            to_move=[],
+            errors=[],
+            summary={},
+        )
+
+        unlink_calls: list[str] = []
+
+        async def _failing_unlink(path: str) -> None:
+            unlink_calls.append(path)
+            raise OSError("permission denied")
+
+        with (
+            patch("src.core.migration.CONFIG_FILE") as mock_cfg,
+            patch("asyncio.to_thread") as mock_to_thread,
+        ):
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+
+            # Route all asyncio.to_thread calls; only intercept os.unlink.
+            async def _to_thread_router(fn, *args, **kwargs):
+                if fn is os.unlink:
+                    return await _failing_unlink(*args, **kwargs)
+                import asyncio as _asyncio
+                loop = _asyncio.get_event_loop()
+                return await loop.run_in_executor(None, fn, *args, **kwargs)
+
+            mock_to_thread.side_effect = _to_thread_router
+
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(tmp_path / "new_library"), str(tmp_path / "shows")
+                )
+
+        # Migration did not crash; duplicate was removed from DB.
+        assert result.duplicates_removed == 1
+        # os.unlink was attempted (Phase 2 ran).
+        assert len(unlink_calls) >= 1
+
+    async def test_step3_fs_ops_not_executed_when_savepoint_rolls_back(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Step 3: if savepoint rolls back, makedirs/symlink/unlink are not called."""
+        source = tmp_path / "source.mkv"
+        source.write_text("video")
+
+        old_lib = tmp_path / "old_lib"
+        new_lib = tmp_path / "new_lib"
+        old_lib.mkdir()
+        new_lib.mkdir()
+
+        old_symlink = old_lib / "movie.mkv"
+        os.symlink(str(source), str(old_symlink))
+
+        existing_item = await _make_media_item(
+            session, title="Test Picture", year=2018, media_type=MediaType.MOVIE
+        )
+        await _make_symlink(
+            session,
+            media_item_id=existing_item.id,
+            source_path=str(source),
+            target_path=str(old_symlink),
+        )
+
+        preview = MigrationPreview(
+            found_items=[],
+            duplicates=[],
+            to_move=[
+                {
+                    "id": existing_item.id,
+                    "title": "Test Picture",
+                    "year": 2018,
+                    "media_type": "movie",
+                    "season": None,
+                    "episode": None,
+                    "state": "complete",
+                }
+            ],
+            errors=[],
+            summary={},
+        )
+
+        new_target_dir = str(new_lib / "Test Picture (2018)")
+
+        # Track whether any mutating filesystem calls are made.
+        fs_calls: list[str] = []
+
+        # Force the DB flush inside the savepoint to fail.
+        original_flush = session.flush
+        flush_called = False
+
+        async def _failing_flush(*args, **kwargs):
+            nonlocal flush_called
+            if not flush_called:
+                flush_called = True
+                raise OSError("simulated flush failure")
+            return await original_flush(*args, **kwargs)
+
+        session.flush = _failing_flush  # type: ignore[method-assign]
+
+        # Spy on asyncio.to_thread to detect mutating ops but let them pass through.
+        original_to_thread = asyncio.to_thread
+
+        async def _spy_to_thread(fn, *args, **kwargs):
+            if fn in (os.makedirs, os.symlink, os.unlink):
+                fs_calls.append(fn.__name__)
+            return await original_to_thread(fn, *args, **kwargs)
+
+        with (
+            patch("src.core.migration.asyncio.to_thread", side_effect=_spy_to_thread),
+            patch("src.core.symlink_manager.build_movie_dir", return_value=new_target_dir),
+            patch("src.core.migration.CONFIG_FILE") as mock_cfg,
+        ):
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(new_lib), str(tmp_path / "shows")
+                )
+
+        # No mutating filesystem ops should have run (savepoint rolled back).
+        mutating_calls = [c for c in fs_calls if c in ("makedirs", "symlink", "unlink")]
+        assert mutating_calls == [], (
+            f"Filesystem ops ran despite savepoint rollback: {mutating_calls}"
+        )
+        assert len(result.errors) >= 1
+        # Old symlink must still be on disk.
+        assert old_symlink.is_symlink()
+
+    async def test_step3_fs_ops_execute_after_successful_savepoint(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Step 3: makedirs, symlink creation, and old unlink run after commit."""
+        source = tmp_path / "source.mkv"
+        source.write_text("video")
+
+        old_lib = tmp_path / "old_lib"
+        new_lib = tmp_path / "new_lib"
+        old_lib.mkdir()
+        new_lib.mkdir()
+
+        old_symlink = old_lib / "movie.mkv"
+        os.symlink(str(source), str(old_symlink))
+
+        existing_item = await _make_media_item(
+            session, title="Test Picture", year=2018, media_type=MediaType.MOVIE
+        )
+        await _make_symlink(
+            session,
+            media_item_id=existing_item.id,
+            source_path=str(source),
+            target_path=str(old_symlink),
+        )
+
+        preview = MigrationPreview(
+            found_items=[],
+            duplicates=[],
+            to_move=[
+                {
+                    "id": existing_item.id,
+                    "title": "Test Picture",
+                    "year": 2018,
+                    "media_type": "movie",
+                    "season": None,
+                    "episode": None,
+                    "state": "complete",
+                }
+            ],
+            errors=[],
+            summary={},
+        )
+
+        new_target_dir = str(new_lib / "Test Picture (2018)")
+
+        with (
+            patch("src.core.symlink_manager.build_movie_dir", return_value=new_target_dir),
+            patch("src.core.migration.CONFIG_FILE") as mock_cfg,
+        ):
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(new_lib), str(tmp_path / "shows")
+                )
+
+        assert result.moved == 1
+        # Old symlink removed.
+        assert not old_symlink.is_symlink(), "Old symlink was not removed after successful commit"
+        # New symlink created in new location.
+        new_symlink = Path(new_target_dir) / "movie.mkv"
+        assert new_symlink.is_symlink(), "New symlink was not created in new location"
+        # DB record updated to new path.
+        from sqlalchemy import select as sa_select
+        symlinks = (await session.execute(sa_select(Symlink))).scalars().all()
+        assert len(symlinks) == 1
+        assert symlinks[0].target_path == str(new_symlink)
+
+    async def test_step3_phase2_fs_failure_logged_not_crashed(
+        self, session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Step 3: a makedirs failure in Phase 2 is logged; migration does not crash."""
+        source = tmp_path / "source.mkv"
+        source.write_text("video")
+
+        old_lib = tmp_path / "old_lib"
+        new_lib = tmp_path / "new_lib"
+        old_lib.mkdir()
+        new_lib.mkdir()
+
+        old_symlink = old_lib / "movie.mkv"
+        os.symlink(str(source), str(old_symlink))
+
+        existing_item = await _make_media_item(
+            session, title="Test Film Two", year=2017, media_type=MediaType.MOVIE
+        )
+        await _make_symlink(
+            session,
+            media_item_id=existing_item.id,
+            source_path=str(source),
+            target_path=str(old_symlink),
+        )
+
+        preview = MigrationPreview(
+            found_items=[],
+            duplicates=[],
+            to_move=[
+                {
+                    "id": existing_item.id,
+                    "title": "Test Film Two",
+                    "year": 2017,
+                    "media_type": "movie",
+                    "season": None,
+                    "episode": None,
+                    "state": "complete",
+                }
+            ],
+            errors=[],
+            summary={},
+        )
+
+        new_target_dir = str(new_lib / "Test Film Two (2017)")
+        makedirs_calls: list[str] = []
+        original_to_thread = asyncio.to_thread
+
+        async def _makedirs_fails(fn, *args, **kwargs):
+            if fn is os.makedirs:
+                makedirs_calls.append(str(args))
+                raise OSError("no space left on device")
+            return await original_to_thread(fn, *args, **kwargs)
+
+        with (
+            patch("src.core.symlink_manager.build_movie_dir", return_value=new_target_dir),
+            patch("src.core.migration.asyncio.to_thread", side_effect=_makedirs_fails),
+            patch("src.core.migration.CONFIG_FILE") as mock_cfg,
+        ):
+            mock_cfg.exists.return_value = False
+            mock_cfg.write_text = MagicMock()
+            with patch("src.core.migration.Settings.load") as mock_load:
+                mock_load.return_value = MagicMock(model_fields={})
+                result = await execute_migration(
+                    session, preview, str(new_lib), str(tmp_path / "shows")
+                )
+
+        # makedirs was attempted (Phase 2 ran).
+        assert len(makedirs_calls) >= 1
+        # Error logged in result — did not raise.
+        assert any("Could not create dir" in e for e in result.errors)
+        # DB was committed (moved counter was still incremented).
+        assert result.moved == 1
