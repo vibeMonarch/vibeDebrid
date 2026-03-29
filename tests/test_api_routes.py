@@ -904,6 +904,100 @@ class TestQueueStateChange:
         resp = await http.post("/api/queue/1/state", content="")
         assert resp.status_code == 422
 
+    async def test_change_state_to_unreleased(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Force-changing state to UNRELEASED is allowed and persists."""
+        item = await _make_item(session, state=QueueState.SLEEPING, imdb_id="tt3333010")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "unreleased"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "unreleased"
+
+    async def test_change_state_to_complete(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Force-changing state to COMPLETE is allowed and persists."""
+        item = await _make_item(session, state=QueueState.SLEEPING, imdb_id="tt3333011")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "complete"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "complete"
+
+    async def test_change_state_disallows_scraping(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Transitioning to SCRAPING via change_state is rejected with 400."""
+        item = await _make_item(session, state=QueueState.WANTED, imdb_id="tt3333012")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "scraping"},
+        )
+        assert resp.status_code == 400
+        assert "not allowed" in resp.json()["detail"]
+
+    async def test_change_state_disallows_adding(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Transitioning to ADDING via change_state is rejected with 400."""
+        item = await _make_item(session, state=QueueState.WANTED, imdb_id="tt3333013")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "adding"},
+        )
+        assert resp.status_code == 400
+        assert "not allowed" in resp.json()["detail"]
+
+    async def test_change_state_disallows_checking(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Transitioning to CHECKING via change_state is rejected with 400."""
+        item = await _make_item(session, state=QueueState.WANTED, imdb_id="tt3333014")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "checking"},
+        )
+        assert resp.status_code == 400
+        assert "not allowed" in resp.json()["detail"]
+
+    async def test_change_state_disallows_done(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Transitioning to DONE via change_state is rejected with 400."""
+        item = await _make_item(session, state=QueueState.COMPLETE, imdb_id="tt3333015")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "done"},
+        )
+        assert resp.status_code == 400
+        assert "not allowed" in resp.json()["detail"]
+
+    async def test_change_state_unreleased_error_message_lists_allowed(
+        self, http: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Error response for disallowed state includes the list of allowed states."""
+        item = await _make_item(session, state=QueueState.WANTED, imdb_id="tt3333016")
+
+        resp = await http.post(
+            f"/api/queue/{item.id}/state",
+            json={"state": "done"},
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        # All five allowed states should appear in the error message
+        for allowed in ("complete", "dormant", "sleeping", "unreleased", "wanted"):
+            assert allowed in detail
+
 
 # ===========================================================================
 # Queue delete — DELETE /api/queue/{id}

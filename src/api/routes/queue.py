@@ -510,7 +510,13 @@ async def retry_item(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-_MANUAL_TRANSITION_ALLOWED = {QueueState.WANTED, QueueState.SLEEPING, QueueState.DORMANT}
+_MANUAL_TRANSITION_ALLOWED = {
+    QueueState.UNRELEASED,
+    QueueState.WANTED,
+    QueueState.SLEEPING,
+    QueueState.DORMANT,
+    QueueState.COMPLETE,
+}
 
 
 @router.post("/{item_id}/state")
