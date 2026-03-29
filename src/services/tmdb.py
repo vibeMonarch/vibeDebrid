@@ -68,6 +68,7 @@ def _cache_set(key: tuple, value: Any) -> None:
 
 
 ISO_639_1_TO_LANGUAGE: dict[str, str] = {
+    # Most common languages appearing in TMDB data and torrent releases
     "en": "English",
     "ja": "Japanese",
     "ko": "Korean",
@@ -79,14 +80,93 @@ ISO_639_1_TO_LANGUAGE: dict[str, str] = {
     "it": "Italian",
     "nl": "Dutch",
     "ru": "Russian",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "th": "Thai",
+    "tr": "Turkish",
+    "pl": "Polish",
+    "sv": "Swedish",
+    "da": "Danish",
+    "fi": "Finnish",
+    "cs": "Czech",
+    "hu": "Hungarian",
+    "ro": "Romanian",
+    "el": "Greek",
+    "he": "Hebrew",
+    "id": "Indonesian",
+    "ms": "Malay",
+    "vi": "Vietnamese",
+    "tl": "Tagalog",
+    "uk": "Ukrainian",
+    "bg": "Bulgarian",
+    "hr": "Croatian",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sr": "Serbian",
+    "lt": "Lithuanian",
+    "lv": "Latvian",
+    "et": "Estonian",
+    "fa": "Persian",
+    "ur": "Urdu",
+    "bn": "Bengali",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "ml": "Malayalam",
+    "ca": "Catalan",
+    "no": "Norwegian",
+    "mn": "Mongolian",
+    "is": "Icelandic",
+    "eu": "Basque",
+    "gl": "Galician",
+    "af": "Afrikaans",
+    "sq": "Albanian",
+    "hy": "Armenian",
+    "az": "Azerbaijani",
+    "bs": "Bosnian",
+    "mk": "Macedonian",
+    "ka": "Georgian",
+    "kk": "Kazakh",
+    "uz": "Uzbek",
+    "sw": "Swahili",
+    "zu": "Zulu",
+    "cy": "Welsh",
+}
+
+# Reverse map: lowercase language name → ISO 639-1 code.
+# Built once at module load time from ISO_639_1_TO_LANGUAGE.
+_LANGUAGE_NAME_TO_ISO: dict[str, str] = {
+    name.lower(): code for code, name in ISO_639_1_TO_LANGUAGE.items()
 }
 
 
 def iso_to_language_name(code: str | None) -> str | None:
-    """Convert ISO 639-1 code to the language name used in torrent parsing."""
+    """Convert an ISO 639-1 code to the language name used in torrent parsing.
+
+    Args:
+        code: Two-letter ISO 639-1 language code (e.g. ``"ja"``), or None.
+
+    Returns:
+        The canonical language name (e.g. ``"Japanese"``), or None when the
+        code is unknown or None.
+    """
     if code is None:
         return None
     return ISO_639_1_TO_LANGUAGE.get(code.lower())
+
+
+def language_name_to_iso(name: str | None) -> str | None:
+    """Convert a language name to its ISO 639-1 code.
+
+    Args:
+        name: Full language name (e.g. ``"Japanese"``), case-insensitive.
+
+    Returns:
+        The two-letter ISO 639-1 code (e.g. ``"ja"``), or None when the name
+        is not in the known map or the input is None/empty.
+    """
+    if not name:
+        return None
+    return _LANGUAGE_NAME_TO_ISO.get(name.lower())
 
 
 class TmdbItem(BaseModel):

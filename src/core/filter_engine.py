@@ -31,6 +31,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from src.config import QualityProfile, settings
+from src.services.tmdb import iso_to_language_name, language_name_to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -950,10 +951,20 @@ class FilterEngine:
         ``original_language`` is not None and not English.  Penalises dubs
         and rewards dual-audio or original-language releases.
 
+        The ``original_language`` parameter accepts either an ISO 639-1 code
+        (e.g. ``"ja"``) or a full language name (e.g. ``"Japanese"``); both
+        forms are normalised internally before comparison so the result is
+        identical regardless of which format the caller provides.
+
+        The "dubbed" penalty and the "no language tags" penalty are mutually
+        exclusive: if a dubbed tag was already detected and penalised, the
+        no-tags penalty is not additionally applied.  This prevents a result
+        from being double-penalised for the same underlying condition.
+
         Args:
             languages: Language tags detected from the torrent title.
-            original_language: The content's original language (ISO 639-1
-                code or full language name), or None when unknown.
+            original_language: The content's original language as an ISO 639-1
+                code or full language name, or None when unknown.
 
         Returns:
             A float score delta (can be negative for dubs).  0.0 when the
@@ -964,27 +975,49 @@ class FilterEngine:
         if original_language is None or original_language.lower() in ("en", "english"):
             return 0.0
 
+        # Normalise original_language to a canonical lowercase name for
+        # comparison against parsed language tags (which are always full names).
+        # Accept both ISO codes ("ja") and full names ("Japanese").
+        ol_lower = original_language.lower()
+        # If it looks like a 2-char ISO code, convert to full name.
+        if len(ol_lower) == 2:
+            resolved = iso_to_language_name(ol_lower)
+            orig_name_lower = resolved.lower() if resolved else ol_lower
+        else:
+            # May be a full name — also try the reverse map to canonicalise
+            # casing (e.g. "japanese" → "Japanese" → "japanese").
+            iso = language_name_to_iso(ol_lower)
+            if iso:
+                resolved = iso_to_language_name(iso)
+                orig_name_lower = resolved.lower() if resolved else ol_lower
+            else:
+                orig_name_lower = ol_lower
+
         score = 0.0
         effective_langs = {lang.lower() for lang in languages}
-        orig_lower = original_language.lower()
+        dub_penalty_applied = False
 
         # Penalise detected dubs
         if "dubbed" in effective_langs:
             # Don't penalise if dubbed INTO the original language (edge case)
-            if orig_lower not in effective_langs:
+            if orig_name_lower not in effective_langs:
                 score -= settings.filters.dub_penalty
+                dub_penalty_applied = True
 
         # Bonus for dual audio
         if "dual audio" in effective_langs:
             score += settings.filters.dual_audio_bonus
 
         # Bonus for original language match
-        if orig_lower in effective_langs:
+        if orig_name_lower in effective_langs:
             score += 15.0
         elif not effective_langs - {"dubbed", "dual audio"}:
-            # No language tags at all (assumed English) — moderate penalty
+            # No meaningful language tags (assumed English) — moderate penalty
             # for non-English content whose language is undetected.
-            score -= settings.filters.dub_penalty / 2
+            # Only apply when the dubbed penalty was NOT already applied, to
+            # avoid double-penalising a result for the same condition.
+            if not dub_penalty_applied:
+                score -= settings.filters.dub_penalty / 2
 
         return score
 

@@ -33,6 +33,7 @@ from src.services.tmdb import (
     ISO_639_1_TO_LANGUAGE,
     TmdbClient,
     iso_to_language_name,
+    language_name_to_iso,
 )
 from src.services.torrentio import TorrentioClient, TorrentioResult
 from src.services.zilean import ZileanClient, ZileanResult
@@ -610,18 +611,15 @@ class TestScoreOriginalLanguage:
         assert score == expected
 
     def test_japanese_original_with_dubbed_penalty(self) -> None:
-        """Japanese original + Dubbed tag (no JP) → dub_penalty + half_penalty.
+        """Japanese original + Dubbed tag (no JP) → dub_penalty only.
 
-        "Dubbed" alone triggers both the explicit dub penalty AND the
-        assumed-English half-penalty, because after removing 'dubbed' from
-        the effective set the remainder is empty.
+        The "dubbed" explicit penalty and the "no language tags" half-penalty
+        are mutually exclusive.  Once the dub penalty fires, the no-tags
+        penalty is not additionally applied.
         """
         with _patch_filter_settings(_ORIG_LANG_FILTERS):
             score = ENGINE._score_original_language(["Dubbed"], "Japanese")
-        expected = -(
-            _ORIG_LANG_FILTERS.dub_penalty
-            + _ORIG_LANG_FILTERS.dub_penalty / 2
-        )
+        expected = -_ORIG_LANG_FILTERS.dub_penalty
         assert score == expected
 
     def test_japanese_original_no_tags_half_penalty(self) -> None:
@@ -657,13 +655,13 @@ class TestScoreOriginalLanguage:
         assert score == 15.0
 
     def test_korean_original_with_dubbed_penalty(self) -> None:
-        """Korean original + Dubbed (no Korean) → dub_penalty + half_penalty."""
+        """Korean original + Dubbed (no Korean) → dub_penalty only.
+
+        Dub penalty and no-tags half-penalty are mutually exclusive.
+        """
         with _patch_filter_settings(_ORIG_LANG_FILTERS):
             score = ENGINE._score_original_language(["Dubbed"], "Korean")
-        expected = -(
-            _ORIG_LANG_FILTERS.dub_penalty
-            + _ORIG_LANG_FILTERS.dub_penalty / 2
-        )
+        expected = -_ORIG_LANG_FILTERS.dub_penalty
         assert score == expected
 
     def test_korean_original_no_tags_half_penalty(self) -> None:
@@ -681,7 +679,8 @@ class TestScoreOriginalLanguage:
     def test_custom_dub_penalty_applied(self) -> None:
         """Custom dub_penalty value is respected.
 
-        With Dubbed + empty remainder: -dub_penalty - dub_penalty/2.
+        With Dubbed + empty remainder: only the explicit dub_penalty fires.
+        The no-tags half-penalty is suppressed because dub_penalty_applied=True.
         """
         custom_filters = FiltersConfig(
             prefer_original_language=True,
@@ -690,8 +689,8 @@ class TestScoreOriginalLanguage:
         )
         with _patch_filter_settings(custom_filters):
             score = ENGINE._score_original_language(["Dubbed"], "Japanese")
-        # -30 (dub) - 15 (half of 30) = -45
-        assert score == -(30 + 30 / 2)
+        # -30 (dub only — no double penalty)
+        assert score == -30.0
 
     def test_custom_dual_audio_bonus_applied(self) -> None:
         """Custom dual_audio_bonus value is respected.
@@ -707,6 +706,217 @@ class TestScoreOriginalLanguage:
             score = ENGINE._score_original_language(["Dual Audio"], "Japanese")
         # +15 (dual audio bonus) - 10 (half of dub_penalty=20) = 5
         assert score == 15 - 20 / 2
+
+
+# ===========================================================================
+# Section 4b: language_name_to_iso() reverse lookup
+# ===========================================================================
+
+
+class TestLanguageNameToIso:
+    """Test language_name_to_iso() for full language name → ISO code mapping."""
+
+    def test_japanese_name(self) -> None:
+        assert language_name_to_iso("Japanese") == "ja"
+
+    def test_korean_name(self) -> None:
+        assert language_name_to_iso("Korean") == "ko"
+
+    def test_english_name(self) -> None:
+        assert language_name_to_iso("English") == "en"
+
+    def test_arabic_name(self) -> None:
+        assert language_name_to_iso("Arabic") == "ar"
+
+    def test_hindi_name(self) -> None:
+        assert language_name_to_iso("Hindi") == "hi"
+
+    def test_case_insensitive_lowercase(self) -> None:
+        assert language_name_to_iso("japanese") == "ja"
+
+    def test_case_insensitive_uppercase(self) -> None:
+        assert language_name_to_iso("JAPANESE") == "ja"
+
+    def test_none_input_returns_none(self) -> None:
+        assert language_name_to_iso(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert language_name_to_iso("") is None
+
+    def test_unknown_name_returns_none(self) -> None:
+        assert language_name_to_iso("Klingon") is None
+
+    def test_round_trip_iso_to_name_to_iso(self) -> None:
+        """Every ISO code in the map survives a round-trip via the language name."""
+        for code in ISO_639_1_TO_LANGUAGE:
+            name = iso_to_language_name(code)
+            assert name is not None, f"iso_to_language_name({code!r}) returned None"
+            assert language_name_to_iso(name) == code, (
+                f"Round-trip failed: {code!r} → {name!r} → {language_name_to_iso(name)!r}"
+            )
+
+
+class TestExpandedLanguageMap:
+    """Test that ISO_639_1_TO_LANGUAGE covers the expected set of languages."""
+
+    def test_arabic_present(self) -> None:
+        assert iso_to_language_name("ar") == "Arabic"
+
+    def test_hindi_present(self) -> None:
+        assert iso_to_language_name("hi") == "Hindi"
+
+    def test_thai_present(self) -> None:
+        assert iso_to_language_name("th") == "Thai"
+
+    def test_turkish_present(self) -> None:
+        assert iso_to_language_name("tr") == "Turkish"
+
+    def test_polish_present(self) -> None:
+        assert iso_to_language_name("pl") == "Polish"
+
+    def test_swedish_present(self) -> None:
+        assert iso_to_language_name("sv") == "Swedish"
+
+    def test_danish_present(self) -> None:
+        assert iso_to_language_name("da") == "Danish"
+
+    def test_norwegian_no_present(self) -> None:
+        assert iso_to_language_name("no") == "Norwegian"
+
+    def test_finnish_present(self) -> None:
+        assert iso_to_language_name("fi") == "Finnish"
+
+    def test_czech_present(self) -> None:
+        assert iso_to_language_name("cs") == "Czech"
+
+    def test_hungarian_present(self) -> None:
+        assert iso_to_language_name("hu") == "Hungarian"
+
+    def test_romanian_present(self) -> None:
+        assert iso_to_language_name("ro") == "Romanian"
+
+    def test_greek_present(self) -> None:
+        assert iso_to_language_name("el") == "Greek"
+
+    def test_hebrew_present(self) -> None:
+        assert iso_to_language_name("he") == "Hebrew"
+
+    def test_indonesian_present(self) -> None:
+        assert iso_to_language_name("id") == "Indonesian"
+
+    def test_vietnamese_present(self) -> None:
+        assert iso_to_language_name("vi") == "Vietnamese"
+
+    def test_ukrainian_present(self) -> None:
+        assert iso_to_language_name("uk") == "Ukrainian"
+
+    def test_persian_present(self) -> None:
+        assert iso_to_language_name("fa") == "Persian"
+
+    def test_map_has_at_least_forty_entries(self) -> None:
+        """The map must cover at least 40 languages."""
+        assert len(ISO_639_1_TO_LANGUAGE) >= 40
+
+
+# ===========================================================================
+# Section 4c: ISO/name normalisation in _score_original_language
+# ===========================================================================
+
+
+class TestScoreOriginalLanguageNormalisation:
+    """Test that _score_original_language accepts both ISO codes and full names."""
+
+    def test_iso_code_matches_language_tag(self) -> None:
+        """ISO code 'ja' matches a result tagged 'Japanese'."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Japanese"], "ja")
+        assert score == 15.0
+
+    def test_full_name_matches_language_tag(self) -> None:
+        """Full name 'Japanese' matches a result tagged 'Japanese'."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Japanese"], "Japanese")
+        assert score == 15.0
+
+    def test_iso_code_ko_matches_korean_tag(self) -> None:
+        """ISO code 'ko' matches a result tagged 'Korean'."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Korean"], "ko")
+        assert score == 15.0
+
+    def test_iso_code_applies_dub_penalty(self) -> None:
+        """ISO code 'ja' triggers dub penalty when only 'Dubbed' is tagged."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Dubbed"], "ja")
+        assert score == -_ORIG_LANG_FILTERS.dub_penalty
+
+    def test_iso_code_no_tags_applies_half_penalty(self) -> None:
+        """ISO code 'ja' with no language tags applies only the half-penalty."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language([], "ja")
+        assert score == -(_ORIG_LANG_FILTERS.dub_penalty / 2)
+
+    def test_iso_en_returns_zero(self) -> None:
+        """ISO 'en' is still treated as English (disabled)."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Japanese"], "en")
+        assert score == 0.0
+
+    def test_unknown_iso_code_falls_back_gracefully(self) -> None:
+        """An unknown ISO-like code (2 chars) falls back to raw lowercase comparison."""
+        # "zz" is not in the map; effective_langs won't contain it,
+        # so the result should get the half-penalty (no tags match).
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language([], "zz")
+        assert score == -(_ORIG_LANG_FILTERS.dub_penalty / 2)
+
+    def test_case_insensitive_full_name(self) -> None:
+        """'japanese' (lowercase) matches a 'Japanese' tag just like 'Japanese'."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Japanese"], "japanese")
+        assert score == 15.0
+
+
+# ===========================================================================
+# Section 4d: double-penalty regression tests
+# ===========================================================================
+
+
+class TestScoreOriginalLanguageNoPenaltyStack:
+    """Verify that the dub penalty and no-tags penalty never stack."""
+
+    def test_dubbed_only_single_penalty(self) -> None:
+        """A result with only 'Dubbed' tag gets exactly -dub_penalty (not 1.5x)."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Dubbed"], "Japanese")
+        assert score == -_ORIG_LANG_FILTERS.dub_penalty
+
+    def test_dubbed_only_not_double_penalised(self) -> None:
+        """Score must NOT equal -(dub_penalty + dub_penalty/2) for Dubbed-only."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Dubbed"], "Japanese")
+        double = -(_ORIG_LANG_FILTERS.dub_penalty + _ORIG_LANG_FILTERS.dub_penalty / 2)
+        assert score != double
+
+    def test_no_tags_gets_half_penalty_only(self) -> None:
+        """A result with no tags gets exactly -dub_penalty/2 (not more)."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language([], "Japanese")
+        assert score == -(_ORIG_LANG_FILTERS.dub_penalty / 2)
+
+    def test_dubbed_penalty_larger_than_no_tags_penalty(self) -> None:
+        """Dubbed result is penalised more than a no-tags result."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            dubbed_score = ENGINE._score_original_language(["Dubbed"], "Japanese")
+            no_tags_score = ENGINE._score_original_language([], "Japanese")
+        assert dubbed_score < no_tags_score
+
+    def test_dubbed_into_original_no_penalty_no_half_penalty(self) -> None:
+        """'Japanese Dubbed' — original lang IS in tags — no penalty at all."""
+        with _patch_filter_settings(_ORIG_LANG_FILTERS):
+            score = ENGINE._score_original_language(["Japanese", "Dubbed"], "Japanese")
+        # +15 for JP match, no dub penalty (orig lang in tags), no half-penalty
+        assert score == 15.0
 
 
 # ===========================================================================
