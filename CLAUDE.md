@@ -59,6 +59,14 @@ tests/                 → pytest tests, one file per core module
 - When adding a new page: create a matching `.js` file, never put substantial JS inline in the template.
 - Cache busting: `{{ js_version }}` is a Jinja2 global set in `main.py`.
 
+## Linting
+
+- Linter: **Ruff** (configured in `pyproject.toml`)
+- Run: `.venv/bin/ruff check src/ tests/`
+- Auto-fix: `.venv/bin/ruff check src/ tests/ --fix`
+- **Run lint after any code changes** (implementation, refactoring, bug fixes). Fix all errors before committing.
+- Current state: zero errors. Keep it that way.
+
 ## Working Patterns
 
 When implementing a new module:

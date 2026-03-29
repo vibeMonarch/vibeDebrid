@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeDebrid"
-version = "0.3.2"
+version = "0.3.3"
 description = "Self-hosted Real-Debrid media automation: scrape, filter, download, and organize media into a Plex-ready symlink library"
 readme = "README.md"
 license = { text = "Apache-2.0" }
