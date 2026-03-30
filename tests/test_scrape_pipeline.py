@@ -2573,3 +2573,169 @@ class TestCheckingFailedHashDedup:
             if QueueState.SLEEPING in call_args.args or QueueState.SLEEPING in call_args.kwargs.values()
         ]
         assert len(sleeping_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Group 9: _filter_year_mismatches unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestFilterYearMismatches:
+    """Unit tests for the module-level _filter_year_mismatches helper."""
+
+    def _make_entry(self, parsed_year: int | None) -> MountIndex:
+        """Build a minimal MountIndex entry with the given parsed_year."""
+        entry = MountIndex(
+            filepath=f"/mnt/zurg/__all__/show.{parsed_year}.mkv",
+            filename=f"show.{parsed_year}.mkv",
+            parsed_year=parsed_year,
+        )
+        return entry
+
+    def test_no_item_year_returns_all(self) -> None:
+        """When item_year is None all matches are returned unmodified."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entries = [self._make_entry(2020), self._make_entry(1986), self._make_entry(None)]
+        result = _filter_year_mismatches(entries, item_year=None)
+        assert result is entries  # exact same list object, not a copy
+
+    def test_exact_year_match_kept(self) -> None:
+        """An entry whose parsed_year exactly equals item_year is kept."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entry = self._make_entry(2024)
+        result = _filter_year_mismatches([entry], item_year=2024)
+        assert result == [entry]
+
+    def test_off_by_one_kept_lower(self) -> None:
+        """parsed_year one year below item_year is within tolerance — kept."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entry = self._make_entry(2023)
+        result = _filter_year_mismatches([entry], item_year=2024)
+        assert result == [entry]
+
+    def test_off_by_one_kept_upper(self) -> None:
+        """parsed_year one year above item_year is within tolerance — kept."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entry = self._make_entry(2025)
+        result = _filter_year_mismatches([entry], item_year=2024)
+        assert result == [entry]
+
+    def test_year_mismatch_beyond_tolerance_filtered(self) -> None:
+        """parsed_year more than 1 year away from item_year is removed."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entry = self._make_entry(1986)
+        result = _filter_year_mismatches([entry], item_year=1989)
+        assert result == []
+
+    def test_match_without_parsed_year_kept(self) -> None:
+        """An entry with parsed_year=None is kept regardless of item_year."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entry = self._make_entry(None)
+        result = _filter_year_mismatches([entry], item_year=2024)
+        assert result == [entry]
+
+    def test_mixed_matches_partial_filter(self) -> None:
+        """Mixed list: correct year + None year kept, wrong year discarded."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        correct = self._make_entry(2024)
+        no_year = self._make_entry(None)
+        wrong = self._make_entry(1986)
+
+        result = _filter_year_mismatches([correct, no_year, wrong], item_year=2024)
+        assert result == [correct, no_year]
+
+    def test_all_matches_wrong_year_returns_empty(self) -> None:
+        """When every entry's parsed_year is out of range, empty list returned."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        entries = [self._make_entry(1980), self._make_entry(2000)]
+        result = _filter_year_mismatches(entries, item_year=2024)
+        assert result == []
+
+    def test_empty_input_returns_empty(self) -> None:
+        """Empty input produces empty output regardless of item_year."""
+        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+
+        result = _filter_year_mismatches([], item_year=2024)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Group 10: Year-mismatch filter integration with _step_mount_check
+# ---------------------------------------------------------------------------
+
+
+class TestMountCheckYearFilter:
+    """Integration tests verifying year filtering inside _step_mount_check."""
+
+    async def test_mount_hit_with_wrong_year_continues_pipeline(
+        self, session: AsyncSession, wanted_item: MediaItem, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Mount index returns a hit with wrong year → pipeline continues (returns None).
+
+        wanted_item has year=2024. The mount entry has parsed_year=1986 — well outside
+        the ±1 tolerance — so the match must be discarded and the pipeline must continue
+        to the scraper stage, not return a mount_hit result.
+        """
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        # Build a mount entry whose year is far outside tolerance.
+        wrong_year_hit = MountIndex(
+            filepath="/mnt/zurg/__all__/Generic Show 1986.mkv",
+            filename="Generic Show 1986.mkv",
+            parsed_title="generic show",
+            parsed_year=1986,
+            parsed_season=None,
+            parsed_episode=None,
+        )
+
+        with caplog.at_level(logging.INFO):
+            async with _all_mocks() as m:
+                m.mount_scanner_lookup.return_value = [wrong_year_hit]
+                pipeline = ScrapePipeline()
+                result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        # The year-mismatch filter discarded all matches, so the pipeline must not
+        # short-circuit and must reach the scraper stage.
+        assert result.action != "mount_hit"
+        # Dedup was invoked — pipeline continued past mount check.
+        m.dedup_check.assert_called_once()
+        # Info log must mention year mismatch.
+        assert any("year mismatch" in record.message for record in caplog.records)
+
+    async def test_mount_hit_with_matching_year_proceeds(
+        self, session: AsyncSession, wanted_item: MediaItem
+    ) -> None:
+        """Mount index returns a hit with matching year → PipelineResult(action='mount_hit').
+
+        wanted_item has year=2024. The mount entry has parsed_year=2024 (exact match),
+        within tolerance, so the pipeline must short-circuit with mount_hit.
+        """
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        correct_year_hit = MountIndex(
+            filepath="/mnt/zurg/__all__/Generic Show 2024.mkv",
+            filename="Generic Show 2024.mkv",
+            parsed_title="generic show",
+            parsed_year=2024,
+            parsed_season=None,
+            parsed_episode=None,
+        )
+
+        async with _all_mocks() as m:
+            m.mount_scanner_lookup.return_value = [correct_year_hit]
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, wanted_item)
+
+        assert result.action == "mount_hit"
+        assert result.mount_path == correct_year_hit.filepath
+        # Scrapers must not have been invoked.
+        m.zilean_search.assert_not_called()
+        m.torrentio_movie.assert_not_called()

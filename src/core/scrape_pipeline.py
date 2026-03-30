@@ -44,6 +44,7 @@ from src.core.filter_engine import FilteredResult, filter_engine
 from src.core.mount_scanner import VIDEO_EXTENSIONS, mount_scanner
 from src.core.queue_manager import queue_manager
 from src.models.media_item import MediaItem, MediaType, QueueState
+from src.models.mount_index import MountIndex
 from src.models.scrape_result import ScrapeLog
 from src.services.nyaa import NyaaResult, nyaa_client
 from src.services.real_debrid import RealDebridError, RealDebridRateLimitError, rd_client
@@ -89,6 +90,41 @@ class PipelineResult(BaseModel):
     rd_torrent_id: str | None = None
     scrape_results_count: int = 0
     filtered_results_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _filter_year_mismatches(
+    matches: list[MountIndex],
+    item_year: int | None,
+) -> list[MountIndex]:
+    """Remove mount index entries whose parsed_year diverges from the item's year.
+
+    Tolerance is ±1 year to handle air-year vs. release-year discrepancies
+    (e.g. a show that premiered in December is often listed under the following
+    calendar year in some databases).
+
+    Entries without a ``parsed_year`` are always kept — the absence of year
+    metadata is not evidence of a mismatch.  If ``item_year`` is ``None`` the
+    function returns all matches unmodified.
+
+    Args:
+        matches: Raw results from ``mount_scanner.lookup_multi``.
+        item_year: The canonical release year from the MediaItem, or None.
+
+    Returns:
+        Filtered list containing only entries that pass the year check.
+    """
+    if item_year is None:
+        return matches
+    return [
+        m
+        for m in matches
+        if m.parsed_year is None or abs(m.parsed_year - item_year) <= 1
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +868,21 @@ class ScrapePipeline:
             )
             return None
 
+        # Year-mismatch post-filter: discard entries whose parsed_year diverges
+        # from the item's year by more than ±1 (keeps None-year entries).
+        original_matches = matches
+        pre_filter_count = len(matches)
+        matches = _filter_year_mismatches(matches, item.year)
+        if pre_filter_count > 0 and not matches:
+            logger.info(
+                "scrape_pipeline: mount matches for item id=%d title=%r filtered out "
+                "by year mismatch (item_year=%s, match_years=%s)",
+                item.id,
+                item.title,
+                item.year,
+                list({m.parsed_year for m in original_matches if m.parsed_year}),
+            )
+
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         query_params = json.dumps(
@@ -868,8 +919,6 @@ class ScrapePipeline:
                 item.title,
                 best_match.filepath,
             )
-            from src.models.mount_index import MountIndex
-
             await session.execute(
                 delete(MountIndex).where(
                     MountIndex.filepath == best_match.filepath
