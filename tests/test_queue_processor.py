@@ -89,6 +89,7 @@ def _make_mount_match(filepath: str = "/mnt/zurg/movies/Test Movie (2024)/movie.
     """Return a mock MountIndex-like object with a filepath attribute."""
     match = MagicMock(spec=MountIndex)
     match.filepath = filepath
+    match.parsed_year = None  # absence of year metadata → never filtered by year mismatch
     return match
 
 

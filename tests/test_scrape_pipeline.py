@@ -2576,12 +2576,12 @@ class TestCheckingFailedHashDedup:
 
 
 # ---------------------------------------------------------------------------
-# Group 9: _filter_year_mismatches unit tests
+# Group 9: filter_year_mismatches unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestFilterYearMismatches:
-    """Unit tests for the module-level _filter_year_mismatches helper."""
+    """Unit tests for the module-level filter_year_mismatches helper."""
 
     def _make_entry(self, parsed_year: int | None) -> MountIndex:
         """Build a minimal MountIndex entry with the given parsed_year."""
@@ -2594,76 +2594,76 @@ class TestFilterYearMismatches:
 
     def test_no_item_year_returns_all(self) -> None:
         """When item_year is None all matches are returned unmodified."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entries = [self._make_entry(2020), self._make_entry(1986), self._make_entry(None)]
-        result = _filter_year_mismatches(entries, item_year=None)
+        result = filter_year_mismatches(entries, item_year=None)
         assert result is entries  # exact same list object, not a copy
 
     def test_exact_year_match_kept(self) -> None:
         """An entry whose parsed_year exactly equals item_year is kept."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entry = self._make_entry(2024)
-        result = _filter_year_mismatches([entry], item_year=2024)
+        result = filter_year_mismatches([entry], item_year=2024)
         assert result == [entry]
 
     def test_off_by_one_kept_lower(self) -> None:
         """parsed_year one year below item_year is within tolerance — kept."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entry = self._make_entry(2023)
-        result = _filter_year_mismatches([entry], item_year=2024)
+        result = filter_year_mismatches([entry], item_year=2024)
         assert result == [entry]
 
     def test_off_by_one_kept_upper(self) -> None:
         """parsed_year one year above item_year is within tolerance — kept."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entry = self._make_entry(2025)
-        result = _filter_year_mismatches([entry], item_year=2024)
+        result = filter_year_mismatches([entry], item_year=2024)
         assert result == [entry]
 
     def test_year_mismatch_beyond_tolerance_filtered(self) -> None:
         """parsed_year more than 1 year away from item_year is removed."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entry = self._make_entry(1986)
-        result = _filter_year_mismatches([entry], item_year=1989)
+        result = filter_year_mismatches([entry], item_year=1989)
         assert result == []
 
     def test_match_without_parsed_year_kept(self) -> None:
         """An entry with parsed_year=None is kept regardless of item_year."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entry = self._make_entry(None)
-        result = _filter_year_mismatches([entry], item_year=2024)
+        result = filter_year_mismatches([entry], item_year=2024)
         assert result == [entry]
 
     def test_mixed_matches_partial_filter(self) -> None:
         """Mixed list: correct year + None year kept, wrong year discarded."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         correct = self._make_entry(2024)
         no_year = self._make_entry(None)
         wrong = self._make_entry(1986)
 
-        result = _filter_year_mismatches([correct, no_year, wrong], item_year=2024)
+        result = filter_year_mismatches([correct, no_year, wrong], item_year=2024)
         assert result == [correct, no_year]
 
     def test_all_matches_wrong_year_returns_empty(self) -> None:
         """When every entry's parsed_year is out of range, empty list returned."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
         entries = [self._make_entry(1980), self._make_entry(2000)]
-        result = _filter_year_mismatches(entries, item_year=2024)
+        result = filter_year_mismatches(entries, item_year=2024)
         assert result == []
 
     def test_empty_input_returns_empty(self) -> None:
         """Empty input produces empty output regardless of item_year."""
-        from src.core.scrape_pipeline import _filter_year_mismatches  # noqa: PLC0415
+        from src.core.scrape_pipeline import filter_year_mismatches  # noqa: PLC0415
 
-        result = _filter_year_mismatches([], item_year=2024)
+        result = filter_year_mismatches([], item_year=2024)
         assert result == []
 
 

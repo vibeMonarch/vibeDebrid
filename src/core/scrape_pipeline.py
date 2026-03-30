@@ -97,7 +97,7 @@ class PipelineResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _filter_year_mismatches(
+def filter_year_mismatches(
     matches: list[MountIndex],
     item_year: int | None,
 ) -> list[MountIndex]:
@@ -872,7 +872,7 @@ class ScrapePipeline:
         # from the item's year by more than ±1 (keeps None-year entries).
         original_matches = matches
         pre_filter_count = len(matches)
-        matches = _filter_year_mismatches(matches, item.year)
+        matches = filter_year_mismatches(matches, item.year)
         if pre_filter_count > 0 and not matches:
             logger.info(
                 "scrape_pipeline: mount matches for item id=%d title=%r filtered out "

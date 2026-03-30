@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.core.mount_scanner import gather_alt_titles, mount_scanner
 from src.core.queue_manager import queue_manager
-from src.core.scrape_pipeline import scrape_pipeline
+from src.core.scrape_pipeline import filter_year_mismatches, scrape_pipeline
 from src.core.symlink_manager import SourceNotFoundError, symlink_manager
 from src.database import async_session
 from src.models.media_item import MediaItem, MediaType, QueueState
@@ -399,6 +399,14 @@ async def _job_queue_processor() -> None:
                         season=item.season,
                         episode=None,
                     )
+                    _pre_year_count = len(matches)
+                    matches = filter_year_mismatches(matches, item.year)
+                    if _pre_year_count > 0 and not matches:
+                        logger.info(
+                            "CHECKING season pack id=%d title=%r: %d mount match(es) "
+                            "filtered out by year mismatch (item_year=%s)",
+                            item.id, item.title, _pre_year_count, item.year,
+                        )
                     if not matches:
                         # Targeted scan: check if the RD torrent directory exists on mount
                         torrent = await _find_torrent_for_item(session, item)
@@ -411,6 +419,7 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=None,
                                 )
+                                matches = filter_year_mismatches(matches, item.year)
                             # RD filename refresh: torrent.filename may be stale (e.g.
                             # stored as item title instead of actual RD torrent name).
                             # Re-fetch from RD API and retry scan+lookup if it differs.
@@ -432,6 +441,7 @@ async def _job_queue_processor() -> None:
                                                 season=item.season,
                                                 episode=None,
                                             )
+                                            matches = filter_year_mismatches(matches, item.year)
                                 except Exception:
                                     logger.warning(
                                         "CHECKING season pack id=%d: RD filename refresh failed",
@@ -455,6 +465,7 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=None,
                                 )
+                                matches = filter_year_mismatches(matches, item.year)
                             # Absolute episode fallback: complete collections with flat structure
                             # (no season markers in filenames). Use TMDB episode counts to
                             # calculate which absolute episodes belong to the target season.
@@ -468,6 +479,7 @@ async def _job_queue_processor() -> None:
                                         season=None,
                                         episode=None,
                                     )
+                                    all_files = filter_year_mismatches(all_files, item.year)
                                     if all_files:
                                         abs_range = await _get_absolute_episode_range(item.tmdb_id, item.season)
                                         if abs_range:
@@ -517,6 +529,7 @@ async def _job_queue_processor() -> None:
                                     season=None,
                                     episode=None,
                                 )
+                                unfiltered = filter_year_mismatches(unfiltered, item.year)
                                 if unfiltered and item.season is not None:
                                     distinct_seasons = {
                                         f.parsed_season for f in unfiltered
@@ -571,6 +584,7 @@ async def _job_queue_processor() -> None:
                                         season=int(_anchor_season),
                                         episode=None,
                                     )
+                                    xem_matches = filter_year_mismatches(xem_matches, item.year)
                                     if not xem_matches and scan_result and scan_result.matched_dir_path:
                                         xem_matches = await mount_scanner.lookup_by_path_prefix(
                                             session,
@@ -578,6 +592,7 @@ async def _job_queue_processor() -> None:
                                             season=int(_anchor_season),
                                             episode=None,
                                         )
+                                        xem_matches = filter_year_mismatches(xem_matches, item.year)
                                     if xem_matches and _anchor_ep is not None and _end_ep is not None:
                                         # Filter to only the TMDB episode range for this scene season.
                                         xem_matches = [
@@ -639,6 +654,7 @@ async def _job_queue_processor() -> None:
                                         season=item.season,
                                         episode=None,
                                     )
+                                    matches = filter_year_mismatches(matches, item.year)
                                     filtered = [
                                         m for m in matches
                                         if m.parsed_episode is not None
@@ -742,6 +758,14 @@ async def _job_queue_processor() -> None:
                         season=item.season,
                         episode=item.episode,
                     )
+                    _pre_year_count = len(matches)
+                    matches = filter_year_mismatches(matches, item.year)
+                    if _pre_year_count > 0 and not matches:
+                        logger.info(
+                            "CHECKING item id=%d title=%r: %d mount match(es) "
+                            "filtered out by year mismatch (item_year=%s)",
+                            item.id, item.title, _pre_year_count, item.year,
+                        )
                     scan_result = None
                     if not matches:
                         # Targeted scan: check if the RD torrent directory exists on mount
@@ -759,6 +783,7 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=item.episode,
                                 )
+                                matches = filter_year_mismatches(matches, item.year)
                             # Save matched_dir_path before RD refresh may overwrite scan_result
                             first_matched_dir_path = scan_result.matched_dir_path if scan_result else None
                             # RD filename refresh: torrent.filename may be stale (e.g.
@@ -785,6 +810,7 @@ async def _job_queue_processor() -> None:
                                                 season=item.season,
                                                 episode=item.episode,
                                             )
+                                            matches = filter_year_mismatches(matches, item.year)
                                 except Exception:
                                     logger.warning(
                                         "CHECKING item id=%d: RD filename refresh failed",
@@ -812,6 +838,7 @@ async def _job_queue_processor() -> None:
                                     season=item.season,
                                     episode=item.episode,
                                 )
+                                matches = filter_year_mismatches(matches, item.year)
                                 # Relax season filter: anime files often lack season
                                 # markers (e.g. "[Group] Show - 01.mkv").  The path
                                 # prefix already constrains to the exact torrent
@@ -823,6 +850,7 @@ async def _job_queue_processor() -> None:
                                         season=None,
                                         episode=item.episode,
                                     )
+                                    matches = filter_year_mismatches(matches, item.year)
                                 # Last resort: single-file torrent directories contain
                                 # exactly one file.  Skip episode filter entirely.
                                 if not matches:
@@ -832,6 +860,7 @@ async def _job_queue_processor() -> None:
                                         season=None,
                                         episode=None,
                                     )
+                                    matches = filter_year_mismatches(matches, item.year)
                                     if matches:
                                         logger.info(
                                             "CHECKING item id=%d: no-filter fallback found %d file(s) "
@@ -873,6 +902,7 @@ async def _job_queue_processor() -> None:
                                     season=scene_season,
                                     episode=scene_episode,
                                 )
+                                matches = filter_year_mismatches(matches, item.year)
                                 if not matches and scan_result and scan_result.matched_dir_path:
                                     matches = await mount_scanner.lookup_by_path_prefix(
                                         session,
@@ -880,6 +910,7 @@ async def _job_queue_processor() -> None:
                                         season=scene_season,
                                         episode=scene_episode,
                                     )
+                                    matches = filter_year_mismatches(matches, item.year)
                         except Exception:
                             logger.debug(
                                 "CHECKING item id=%d: XEM lookup failed, using original numbering",

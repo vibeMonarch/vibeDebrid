@@ -263,6 +263,7 @@ def _make_mount_file(
     m.parsed_episode = parsed_episode
     m.parsed_resolution = parsed_resolution
     m.filesize = 500 * 1024 * 1024
+    m.parsed_year = None  # absence of year metadata → never filtered by year mismatch
     return m
 
 

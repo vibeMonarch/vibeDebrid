@@ -117,6 +117,7 @@ def _make_mount_match(
     parsed_resolution: str | None = "1080p",
     filesize: int | None = None,
     filename: str | None = None,
+    parsed_year: int | None = None,
 ) -> MagicMock:
     """Return a mock MountIndex-like object."""
     match = MagicMock(spec=MountIndex)
@@ -126,6 +127,7 @@ def _make_mount_match(
     match.parsed_resolution = parsed_resolution
     match.filesize = filesize
     match.filename = filename or filepath.split("/")[-1]
+    match.parsed_year = parsed_year
     return match
 
 
@@ -2445,3 +2447,359 @@ class TestCheckingSeasonPack:
         assert item.state == QueueState.COMPLETE
         # Verify the XEM anchor season (1) was used for lookup
         assert any(s == 1 for kind, s, _ in lookup_calls if kind == "single")
+
+
+# ---------------------------------------------------------------------------
+# Group: Year-mismatch filter in CHECKING stage
+# ---------------------------------------------------------------------------
+
+
+class TestCheckingYearMismatchFilter:
+    """filter_year_mismatches is applied to every mount lookup in CHECKING.
+
+    When lookup_multi returns entries whose parsed_year diverges from the
+    item's year by more than ±1, those entries must be discarded and the
+    item must NOT transition to COMPLETE (it stays CHECKING / times out).
+    """
+
+    async def test_checking_season_pack_wrong_year_filtered(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Season pack CHECKING: lookup_multi returns wrong-year matches → filtered out → no COMPLETE."""
+        # Item is from 2024; mount files are labelled 2020 (>±1 → mismatch)
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            is_season_pack=True,
+            season=1,
+            state_changed_at=_utcnow(),  # fresh — not timed out yet
+        )
+        item.year = 2024
+        await session.flush()
+
+        wrong_year_matches = [
+            _make_mount_match(
+                f"/mnt/zurg/Old Show (2020)/S01E{ep:02d}.mkv",
+                parsed_episode=ep,
+                parsed_season=1,
+                parsed_year=2020,
+            )
+            for ep in range(1, 4)
+        ]
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=wrong_year_matches,
+            ),
+            # No torrent → targeted scan fallbacks are skipped
+            patch(
+                "src.core.queue_processor.mount_scanner.scan_directory",
+                new_callable=AsyncMock,
+                return_value=_empty_scan_result(),
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+            ) as mock_symlink,
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        # Year filter removed all matches → item waits for next cycle (not COMPLETE)
+        assert item.state == QueueState.CHECKING
+        mock_symlink.assert_not_awaited()
+
+    async def test_checking_single_episode_wrong_year_filtered(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Single-episode CHECKING: lookup_multi returns wrong-year match → filtered → no COMPLETE."""
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=1,
+            state_changed_at=_utcnow(),
+        )
+        item.year = 2024
+        await session.flush()
+
+        # Mount file is from 2020 — a different show with the same title
+        wrong_year_match = _make_mount_match(
+            "/mnt/zurg/Test Show (2020)/S01E01.mkv",
+            parsed_episode=1,
+            parsed_season=1,
+            parsed_year=2020,
+        )
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[wrong_year_match],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.scan_directory",
+                new_callable=AsyncMock,
+                return_value=_empty_scan_result(),
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+            ) as mock_symlink,
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.CHECKING
+        mock_symlink.assert_not_awaited()
+
+    async def test_checking_correct_year_proceeds_normally(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Season pack CHECKING: lookup_multi returns matching year → proceeds to COMPLETE."""
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            is_season_pack=True,
+            season=1,
+        )
+        item.year = 2024
+        await session.flush()
+
+        correct_year_matches = [
+            _make_mount_match(
+                f"/mnt/zurg/Test Show (2024)/S01E{ep:02d}.mkv",
+                parsed_episode=ep,
+                parsed_season=1,
+                parsed_year=2024,
+            )
+            for ep in range(1, 4)
+        ]
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=correct_year_matches,
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                return_value=_make_symlink(),
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.COMPLETE
+
+    async def test_checking_within_tolerance_proceeds_normally(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Year ±1 tolerance: item year 2024, file year 2023 → kept → COMPLETE."""
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=1,
+        )
+        item.year = 2024
+        await session.flush()
+
+        # 2023 is within ±1 of 2024 → should not be filtered
+        tolerance_match = _make_mount_match(
+            "/mnt/zurg/Test Show (2023)/S01E01.mkv",
+            parsed_episode=1,
+            parsed_season=1,
+            parsed_year=2023,
+        )
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[tolerance_match],
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                return_value=_make_symlink(),
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.COMPLETE
+
+    async def test_checking_no_parsed_year_not_filtered(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Matches with no parsed_year are always kept regardless of item year."""
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=2,
+        )
+        item.year = 2024
+        await session.flush()
+
+        # parsed_year=None means year metadata is absent → should never be filtered
+        no_year_match = _make_mount_match(
+            "/mnt/zurg/Test Show/S01E02.mkv",
+            parsed_episode=2,
+            parsed_season=1,
+            parsed_year=None,
+        )
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[no_year_match],
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                return_value=_make_symlink(),
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.COMPLETE
+
+    async def test_checking_item_no_year_skips_filter(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """When item.year is None, no year filtering is applied — all matches kept."""
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=1,
+        )
+        # Explicitly clear item year
+        item.year = None
+        await session.flush()
+
+        # File has some year — should NOT be filtered because item.year is None
+        match_with_year = _make_mount_match(
+            "/mnt/zurg/Test Show (2020)/S01E01.mkv",
+            parsed_episode=1,
+            parsed_season=1,
+            parsed_year=2020,
+        )
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[match_with_year],
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                return_value=_make_symlink(),
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        assert item.state == QueueState.COMPLETE
+
+    async def test_checking_path_prefix_fallback_wrong_year_filtered(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Year filter also applies to lookup_by_path_prefix fallback results."""
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=3,
+            state_changed_at=_utcnow(),
+        )
+        item.year = 2024
+        await session.flush()
+
+        await _make_rd_torrent(
+            session,
+            media_item_id=item.id,
+            filename="Old.Title.S01.BluRay",
+        )
+        # Wrong year match returned by path prefix fallback
+        wrong_year_match = _make_mount_match(
+            "/mnt/zurg/Old.Title.S01.BluRay/Episode3.mkv",
+            parsed_episode=3,
+            parsed_season=1,
+            parsed_year=2015,
+        )
+        scan_res = _scan_result(files_indexed=1, matched_dir_path="/mnt/zurg/Old.Title.S01.BluRay")
+
+        async def _fake_prefix_lookup(sess, path, *, season, episode):
+            return [wrong_year_match]
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[],  # title lookup fails
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.scan_directory",
+                new_callable=AsyncMock,
+                return_value=scan_res,
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_by_path_prefix",
+                new_callable=AsyncMock,
+                side_effect=_fake_prefix_lookup,
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+            ) as mock_symlink,
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        # Year filter applied to path prefix result → no match → stays CHECKING
+        assert item.state == QueueState.CHECKING
+        mock_symlink.assert_not_awaited()
