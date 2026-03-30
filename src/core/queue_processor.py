@@ -391,27 +391,62 @@ async def _job_queue_processor() -> None:
                     # that symlink_manager can remap absolute numbers to per-season numbers.
                     _season_pack_episode_offset: int = 0
                     scan_result = None
-                    # Season packs: look up ALL episodes (episode=None) and symlink each match
-                    _sp_alt_titles = await gather_alt_titles(session, item)
-                    matches = await mount_scanner.lookup_multi(
-                        session,
-                        _sp_alt_titles,
-                        season=item.season,
-                        episode=None,
-                    )
-                    _pre_year_count = len(matches)
-                    matches = filter_year_mismatches(matches, item.year)
-                    if _pre_year_count > 0 and not matches:
-                        logger.info(
-                            "CHECKING season pack id=%d title=%r: %d mount match(es) "
-                            "filtered out by year mismatch (item_year=%s)",
-                            item.id, item.title, _pre_year_count, item.year,
-                        )
+                    # Primary path: torrent-scoped lookup using the RD torrent's directory
+                    # name.  This ensures we use files from the specific torrent that was
+                    # added, not files from a different torrent of the same show that may
+                    # already be present on the mount.
+                    torrent = await _find_torrent_for_item(session, item)
+                    if torrent and torrent.filename:
+                        scan_result = await mount_scanner.scan_directory(session, torrent.filename)
+                        if scan_result.matched_dir_path:
+                            matches = await mount_scanner.lookup_by_path_prefix(
+                                session,
+                                scan_result.matched_dir_path,
+                                season=item.season,
+                                episode=None,
+                            )
+                            matches = filter_year_mismatches(matches, item.year)
+                            if matches:
+                                logger.info(
+                                    "CHECKING season pack id=%d title=%r: torrent-scoped lookup "
+                                    "found %d file(s) under %r",
+                                    item.id, item.title, len(matches), scan_result.matched_dir_path,
+                                )
+                            else:
+                                matches = []
+                        else:
+                            matches = []
+                    else:
+                        matches = []
+                    # Secondary path: broad title search across all mount entries.
+                    # Used when no torrent is associated (e.g. mount-scan shortcut items)
+                    # or when the torrent directory was not found on the mount.
                     if not matches:
-                        # Targeted scan: check if the RD torrent directory exists on mount
-                        torrent = await _find_torrent_for_item(session, item)
+                        _sp_alt_titles = await gather_alt_titles(session, item)
+                        _title_matches = await mount_scanner.lookup_multi(
+                            session,
+                            _sp_alt_titles,
+                            season=item.season,
+                            episode=None,
+                        )
+                        _pre_year_count = len(_title_matches)
+                        _title_matches = filter_year_mismatches(_title_matches, item.year)
+                        if _pre_year_count > 0 and not _title_matches:
+                            logger.info(
+                                "CHECKING season pack id=%d title=%r: %d mount match(es) "
+                                "filtered out by year mismatch (item_year=%s)",
+                                item.id, item.title, _pre_year_count, item.year,
+                            )
+                        matches = _title_matches
+                    if not matches:
+                        # Deep fallbacks: only run when both primary and secondary paths
+                        # returned nothing.  scan_result may already be set from the primary
+                        # path above; skip re-scanning if so.
+                        if torrent is None:
+                            torrent = await _find_torrent_for_item(session, item)
                         if torrent and torrent.filename:
-                            scan_result = await mount_scanner.scan_directory(session, torrent.filename)
+                            if scan_result is None:
+                                scan_result = await mount_scanner.scan_directory(session, torrent.filename)
                             if scan_result.files_indexed > 0:
                                 matches = await mount_scanner.lookup(
                                     session,
@@ -644,16 +679,24 @@ async def _job_queue_processor() -> None:
                                 "have parsed_episode, triggering re-scan",
                                 item.id, len(matches),
                             )
-                            torrent = await _find_torrent_for_item(session, item)
+                            if torrent is None:
+                                torrent = await _find_torrent_for_item(session, item)
                             if torrent and torrent.filename:
                                 rescan = await mount_scanner.scan_directory(session, torrent.filename)
                                 if rescan.files_indexed > 0:
-                                    matches = await mount_scanner.lookup(
-                                        session,
-                                        title=item.title,
-                                        season=item.season,
-                                        episode=None,
-                                    )
+                                    # Prefer torrent-scoped lookup if we have a directory path
+                                    if rescan.matched_dir_path:
+                                        matches = await mount_scanner.lookup_by_path_prefix(
+                                            session, rescan.matched_dir_path,
+                                            season=item.season, episode=None,
+                                        )
+                                    else:
+                                        matches = await mount_scanner.lookup(
+                                            session,
+                                            title=item.title,
+                                            season=item.season,
+                                            episode=None,
+                                        )
                                     matches = filter_year_mismatches(matches, item.year)
                                     filtered = [
                                         m for m in matches
@@ -750,28 +793,59 @@ async def _job_queue_processor() -> None:
                         continue
                 else:
                     # Single episode/movie: use the first (most recent) match
-                    torrent = None
-                    _se_alt_titles = await gather_alt_titles(session, item)
-                    matches = await mount_scanner.lookup_multi(
-                        session,
-                        _se_alt_titles,
-                        season=item.season,
-                        episode=item.episode,
-                    )
-                    _pre_year_count = len(matches)
-                    matches = filter_year_mismatches(matches, item.year)
-                    if _pre_year_count > 0 and not matches:
-                        logger.info(
-                            "CHECKING item id=%d title=%r: %d mount match(es) "
-                            "filtered out by year mismatch (item_year=%s)",
-                            item.id, item.title, _pre_year_count, item.year,
-                        )
+                    # Primary path: torrent-scoped lookup using the RD torrent's directory
+                    # name.  This ensures we use files from the specific torrent that was
+                    # added, not files from a different torrent of the same show.
+                    torrent = await _find_torrent_for_item(session, item)
                     scan_result = None
+                    if torrent and torrent.filename:
+                        scan_result = await mount_scanner.scan_directory(session, torrent.filename)
+                        if scan_result.matched_dir_path:
+                            matches = await mount_scanner.lookup_by_path_prefix(
+                                session,
+                                scan_result.matched_dir_path,
+                                season=item.season,
+                                episode=item.episode,
+                            )
+                            matches = filter_year_mismatches(matches, item.year)
+                            if matches:
+                                logger.info(
+                                    "CHECKING item id=%d title=%r: torrent-scoped lookup "
+                                    "found %d file(s) under %r",
+                                    item.id, item.title, len(matches), scan_result.matched_dir_path,
+                                )
+                            else:
+                                matches = []
+                        else:
+                            matches = []
+                    else:
+                        matches = []
+                    # Secondary path: broad title search across all mount entries.
+                    # Used when no torrent is associated or directory not found on mount.
                     if not matches:
-                        # Targeted scan: check if the RD torrent directory exists on mount
-                        torrent = await _find_torrent_for_item(session, item)
+                        _se_alt_titles = await gather_alt_titles(session, item)
+                        _se_title_matches = await mount_scanner.lookup_multi(
+                            session,
+                            _se_alt_titles,
+                            season=item.season,
+                            episode=item.episode,
+                        )
+                        _pre_year_count = len(_se_title_matches)
+                        _se_title_matches = filter_year_mismatches(_se_title_matches, item.year)
+                        if _pre_year_count > 0 and not _se_title_matches:
+                            logger.info(
+                                "CHECKING item id=%d title=%r: %d mount match(es) "
+                                "filtered out by year mismatch (item_year=%s)",
+                                item.id, item.title, _pre_year_count, item.year,
+                            )
+                        matches = _se_title_matches
+                    if not matches:
+                        # Deep fallbacks: only run when both primary and secondary paths
+                        # returned nothing.  scan_result may already be set from the primary
+                        # path above; skip re-scanning if so.
                         if torrent and torrent.filename:
-                            scan_result = await mount_scanner.scan_directory(session, torrent.filename)
+                            if scan_result is None:
+                                scan_result = await mount_scanner.scan_directory(session, torrent.filename)
                             if scan_result.files_indexed > 0:
                                 _post_scan_titles = await gather_alt_titles(
                                     session, item,

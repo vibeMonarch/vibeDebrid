@@ -2803,3 +2803,234 @@ class TestCheckingYearMismatchFilter:
         # Year filter applied to path prefix result → no match → stays CHECKING
         assert item.state == QueueState.CHECKING
         mock_symlink.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Group: Torrent-scoped primary lookup
+# ---------------------------------------------------------------------------
+
+
+class TestCheckingTorrentScopedLookup:
+    """CHECKING stage prefers torrent-directory-scoped lookup before broad title search."""
+
+    async def test_checking_prefers_torrent_directory_over_title_match(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Two sets of files exist for the same show title (different torrents).
+
+        The item has an associated RD torrent with a specific directory name.
+        CHECKING must use files from THAT directory, not files from the other
+        torrent that happens to match the same title.
+        """
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=2,
+            title="Test Show",
+        )
+        item.year = 2024
+        await session.flush()
+
+        # The torrent that was actually added for this item
+        await _make_rd_torrent(
+            session,
+            media_item_id=item.id,
+            filename="Test.Show.S01.BrRip",
+        )
+
+        # File from the CORRECT torrent directory
+        correct_file = _make_mount_match(
+            "/mnt/zurg/__all__/Test.Show.S01.BrRip/Test.Show.S01E02.mkv",
+            parsed_episode=2,
+            parsed_season=1,
+        )
+        # File from a DIFFERENT torrent of the same show
+        wrong_file = _make_mount_match(
+            "/mnt/zurg/__all__/Alt.Release.Test.Show.S01/Test.Show.S01E02.mkv",
+            parsed_episode=2,
+            parsed_season=1,
+        )
+
+        scan_res = _scan_result(
+            files_indexed=1,
+            matched_dir_path="/mnt/zurg/__all__/Test.Show.S01.BrRip",
+        )
+
+        async def _fake_prefix_lookup(sess, path, *, season, episode):
+            # Only return the correct file when the path prefix matches the torrent dir
+            if "BrRip" in path:
+                return [correct_file]
+            return [wrong_file]
+
+        symlinked_paths: list[str] = []
+
+        async def _fake_symlink(sess, item_arg, filepath, **kwargs):
+            symlinked_paths.append(filepath)
+            return _make_symlink(source_path=filepath)
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.scan_directory",
+                new_callable=AsyncMock,
+                return_value=scan_res,
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_by_path_prefix",
+                new_callable=AsyncMock,
+                side_effect=_fake_prefix_lookup,
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[wrong_file],  # would return wrong file if reached
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                side_effect=_fake_symlink,
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        # Must reach COMPLETE using the correct torrent's file
+        assert item.state == QueueState.COMPLETE
+        assert len(symlinked_paths) == 1
+        assert "BrRip" in symlinked_paths[0]
+        assert "Alt.Release" not in symlinked_paths[0]
+
+    async def test_checking_falls_back_to_title_when_torrent_dir_not_found(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """Torrent filename does not match any mount directory.
+
+        The primary torrent-scoped path returns nothing (scan_directory finds no
+        directory).  The CHECKING stage must fall through to the existing broad
+        title search via lookup_multi.
+        """
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=2,
+            episode=5,
+            title="Test Show",
+        )
+        item.year = 2023
+        await session.flush()
+
+        # Torrent exists but its directory isn't on the mount yet
+        await _make_rd_torrent(
+            session,
+            media_item_id=item.id,
+            filename="Test.Show.S02.WEB-DL",
+        )
+
+        title_match = _make_mount_match(
+            "/mnt/zurg/__all__/Test.Show.Season2/S02E05.mkv",
+            parsed_episode=5,
+            parsed_season=2,
+        )
+
+        # scan_directory: directory not found → matched_dir_path=None, files_indexed=0
+        empty_scan = ScanDirectoryResult(files_indexed=0, matched_dir_path=None)
+
+        symlinked_paths: list[str] = []
+
+        async def _fake_symlink(sess, item_arg, filepath, **kwargs):
+            symlinked_paths.append(filepath)
+            return _make_symlink(source_path=filepath)
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.scan_directory",
+                new_callable=AsyncMock,
+                return_value=empty_scan,
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[title_match],
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                side_effect=_fake_symlink,
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        # Falls through to title-based lookup_multi → succeeds
+        assert item.state == QueueState.COMPLETE
+        assert len(symlinked_paths) == 1
+
+    async def test_checking_falls_back_when_no_torrent(
+        self, session: AsyncSession, job_patches: dict
+    ) -> None:
+        """No RD torrent is associated with the item (e.g. mount-scan shortcut).
+
+        The primary torrent-scoped path is skipped entirely.  The CHECKING stage
+        falls through to the existing broad title search via lookup_multi.
+        """
+        item = await _make_media_item(
+            session,
+            state=QueueState.CHECKING,
+            season=1,
+            episode=1,
+            title="Test Show",
+        )
+        # No RdTorrent created — simulates a mount-scan shortcut item
+
+        title_match = _make_mount_match(
+            "/mnt/zurg/__all__/Test.Show.S01/S01E01.mkv",
+            parsed_episode=1,
+            parsed_season=1,
+        )
+
+        mock_scan = AsyncMock()
+        symlinked_paths: list[str] = []
+
+        async def _fake_symlink(sess, item_arg, filepath, **kwargs):
+            symlinked_paths.append(filepath)
+            return _make_symlink(source_path=filepath)
+
+        with (
+            patch(
+                "src.core.queue_processor.gather_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Test Show"],
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.scan_directory",
+                mock_scan,
+            ),
+            patch(
+                "src.core.queue_processor.mount_scanner.lookup_multi",
+                new_callable=AsyncMock,
+                return_value=[title_match],
+            ),
+            patch(
+                "src.core.queue_processor.symlink_manager.create_symlink",
+                new_callable=AsyncMock,
+                side_effect=_fake_symlink,
+            ),
+        ):
+            await _job_queue_processor()
+
+        await session.refresh(item)
+        # No torrent → primary path skipped → title lookup_multi succeeds
+        assert item.state == QueueState.COMPLETE
+        assert len(symlinked_paths) == 1
+        # scan_directory must NOT be called when there is no torrent
+        mock_scan.assert_not_called()
