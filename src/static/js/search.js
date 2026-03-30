@@ -90,6 +90,8 @@ window.handleSearch = async function(event) {
   const discoverTmdbId = window._discoverTmdbId;
   window._discoverTmdbId = null;
 
+  const preferOrigLang = document.getElementById('prefer_original_language').checked;
+
   const payload = {
     query:           query,
     imdb_id:         imdbId || null,
@@ -98,6 +100,7 @@ window.handleSearch = async function(event) {
     season:          season  ? parseInt(season,  10) : null,
     episode:         episode ? parseInt(episode, 10) : null,
     quality_profile: document.getElementById('quality_profile').value,
+    _prefer_original_language: preferOrigLang,
   };
 
   // Auto-resolve IMDB ID from TMDB if not provided
@@ -132,12 +135,15 @@ window.handleSearch = async function(event) {
               bestMatch = item;
             }
           }
-          // Store tmdb_id, year, canonical title, and original_language from the best match
+          // Store tmdb_id, year, canonical title from the best match
           payload.tmdb_id = bestMatch.tmdb_id || null;
           const rawDate = bestMatch.release_date || bestMatch.first_air_date || '';
           payload.year = rawDate.length >= 4 ? parseInt(rawDate.substring(0, 4), 10) : null;
           payload.tmdb_title = bestMatch.title || bestMatch.name || null;
-          payload.original_language = bestMatch.original_language || null;
+          // Only send original_language when the user opted in via checkbox
+          if (payload._prefer_original_language && bestMatch.original_language) {
+            payload.original_language = bestMatch.original_language;
+          }
 
           const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(bestMatch.tmdb_id));
           if (resolveResp.ok) {
@@ -158,6 +164,7 @@ window.handleSearch = async function(event) {
     }
   }
 
+  delete payload._prefer_original_language;  // internal flag, don't send to API
   _lastSearchPayload = payload;
   setSearchLoading(true);
 
