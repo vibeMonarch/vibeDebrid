@@ -47,6 +47,7 @@ class SearchRequest(BaseModel):
     season: int | None = None
     episode: int | None = None
     quality_profile: str | None = None
+    original_language: str | None = None
     scrapers: list[Literal["torrentio", "zilean", "nyaa"]] | None = None
 
 
@@ -303,6 +304,7 @@ async def search(body: SearchRequest) -> SearchResponse:
         combined,  # type: ignore[arg-type]
         profile_name=body.quality_profile,
         cached_hashes=set(),
+        original_language=body.original_language,
     )
     total_filtered = len(ranked)
 

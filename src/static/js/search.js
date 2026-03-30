@@ -132,11 +132,12 @@ window.handleSearch = async function(event) {
               bestMatch = item;
             }
           }
-          // Store tmdb_id, year, and canonical title from the best match
+          // Store tmdb_id, year, canonical title, and original_language from the best match
           payload.tmdb_id = bestMatch.tmdb_id || null;
           const rawDate = bestMatch.release_date || bestMatch.first_air_date || '';
           payload.year = rawDate.length >= 4 ? parseInt(rawDate.substring(0, 4), 10) : null;
           payload.tmdb_title = bestMatch.title || bestMatch.name || null;
+          payload.original_language = bestMatch.original_language || null;
 
           const resolveResp = await fetch('/api/discover/resolve/' + encodeURIComponent(tmdbMediaType) + '/' + encodeURIComponent(bestMatch.tmdb_id));
           if (resolveResp.ok) {
