@@ -37,8 +37,8 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 - Anime batch detection: recognizes `[BATCH]`, episode ranges (`01~13`), and `Season N` keywords as season packs
 - Season pack auto-split into individual episodes when no packs are available
 - Zilean title-only fallback: retries without IMDB/season/episode filters when strict query returns 0
-- Alternative title fallback: retries Zilean with TMDB original/alternative titles when English title returns 0 (critical for anime)
-- AniDB title enrichment (opt-in): injects romaji/synonym/official titles from AniDB's 60k+ title database into Zilean alt-title search — zero-latency SQLite lookups, no API calls during scraping
+- Always-on alternative title scraping: queries Zilean and Nyaa with romaji/original titles concurrently alongside the English title, merges and deduplicates results by info_hash. Live testing showed 12-17x more results for anime (e.g., romaji title found 200+ unique hashes vs 17 from English alone). CJK-script titles are auto-filtered (return 0 from all scrapers). Sources: TMDB original title, AniDB romaji/synonyms, TMDB alternative titles.
+- AniDB title enrichment (opt-in): injects romaji/synonym/official titles from AniDB's 60k+ title database into alt-title scraping — zero-latency SQLite lookups, no API calls during scraping
 - Nyaa.si RSS scraper (opt-in): direct anime torrent search with multi-level query fallback (SxxExx → bare episode → season → title), trusted uploader filtering, AniDB alt-title search. Complements Torrentio's Nyaa indexing with real-time results and broader title matching.
 - Sequential RD cache checking: checks top result first, stops on cache hit (2-3 API calls vs 12)
 - Rate-limit aware: stays in SCRAPING on RD 429 for quick retry instead of exponential backoff
@@ -115,7 +115,7 @@ vibeDebrid manages a queue of wanted media. For each item, it scrapes torrent me
 
 **Multi-season torrent file mapping**: When adding a multi-season torrent (e.g., S01-S04 complete) for a specific season, vibeDebrid maps absolute episode numbers to season-relative numbers using TMDB episode counts. This works well for standard numbering but may produce incorrect mappings for torrents with non-standard file naming or bonus content mixed in.
 
-**Alternative title matching**: When the TMDB English title differs from how release groups name torrents (common for anime), the alternative title fallback tries TMDB's original title and localized alternative titles automatically. This resolves most cases (e.g., "Saiunkoku Monogatari" found via alt-title when "The Story of Saiunkoku" returns 0). Enabling AniDB integration significantly improves anime coverage by adding romaji/synonym titles (e.g., "Shingeki no Kyojin" for "Attack on Titan") from a local database — no API calls needed during scraping. Title similarity scoring further protects against wrong-IMDB mappings by comparing scraper results against all known title variants and deprioritizing or rejecting mismatches. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
+**Alternative title matching**: Zilean and Nyaa are always queried with romaji/original titles concurrently alongside the English title, with results merged and deduplicated. This dramatically improves anime coverage — romaji titles often return 12-17x more unique results than English alone, because release groups typically use the original-language title. AniDB integration (opt-in) adds romaji/synonym titles from a local database with zero-latency SQLite lookups. CJK-script titles (kanji, hangul) are auto-filtered since they return 0 from all scrapers. Title similarity scoring further protects against wrong-IMDB mappings. However, if no title variant matches what release groups use, manual search with the correct title is still needed.
 
 ## Plex Best Practices (Real-Debrid bandwidth)
 

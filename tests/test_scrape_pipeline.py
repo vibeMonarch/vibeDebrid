@@ -1661,10 +1661,14 @@ class TestZileanAltTitleRetry:
       4. Stop at first title that returns results
     """
 
-    async def test_step_zilean_no_retry_when_primary_succeeds(
+    async def test_step_zilean_always_queries_alts_with_primary(
         self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When primary title returns results, get_alternative_titles is never called."""
+        """Alt titles are always queried concurrently with the primary title.
+
+        Even when the primary returns results, alt titles are still fetched and
+        queried so their unique hashes are merged into the result set.
+        """
         ScrapePipeline, PipelineResult = _import_pipeline()
 
         # Enable TMDB in settings so the alt-title path is active
@@ -1679,27 +1683,27 @@ class TestZileanAltTitleRetry:
         zilean_result = _make_zilean_result()
 
         async with _all_mocks_with_tmdb() as m:
-            # Primary title returns results immediately
+            # Primary title returns results; TMDB also provides one alt title
             m.zilean_search.return_value = [zilean_result]
             m.filter_rank.return_value = [_make_filtered_result(zilean_result)]
+            m.tmdb_get_alt_titles.return_value = ["Alt Title One"]
 
             item = _make_item_with_tmdb_id(session, tmdb_id="123")
-            # Give item a DB id by inserting it
             session.add(item)
             await session.flush()
 
             pipeline = ScrapePipeline()
-            await pipeline.run(session, item)
+            result = await pipeline.run(session, item)
 
-        # Zilean called exactly once (primary title)
-        assert m.zilean_search.call_count == 1
-        # get_alternative_titles never needed
-        m.tmdb_get_alt_titles.assert_not_called()
+        # Zilean called for primary + 1 alt title = 2 total
+        assert m.zilean_search.call_count == 2
+        # Pipeline still produces a result (merged from both queries)
+        assert result.action != "error"
 
     async def test_step_zilean_retries_with_original_title(
         self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Primary returns [], original_title from TMDB detail returns results on retry."""
+        """Primary returns [], original_title from TMDB detail is queried concurrently and returns results."""
         ScrapePipeline, PipelineResult = _import_pipeline()
 
         mock_settings = MagicMock()
@@ -1966,7 +1970,7 @@ class TestZileanAltTitleRetry:
     async def test_step_zilean_original_title_same_as_primary_not_retried(
         self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When TMDB original_title equals item.title (case-insensitive), no retry is made."""
+        """When TMDB original_title equals item.title (case-insensitive), it is excluded from alt titles and only one query is made."""
         ScrapePipeline, PipelineResult = _import_pipeline()
 
         mock_settings = MagicMock()
@@ -2319,10 +2323,10 @@ class TestZileanAltTitleRetry:
         # "Sen to Chihiro" appears once in candidates (deduped), so 3 calls total
         assert m.zilean_search.call_count == 3
 
-    async def test_step_zilean_alt_title_hit_logged_with_primary_query(
+    async def test_step_zilean_alt_title_hit_logged_with_merged_counts(
         self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When an alt title wins, the ScrapeLog query_params includes 'primary_query'."""
+        """ScrapeLog records the primary query plus per-title result counts."""
         ScrapePipeline, PipelineResult = _import_pipeline()
         import json as _json  # noqa: PLC0415
 
@@ -2360,7 +2364,7 @@ class TestZileanAltTitleRetry:
             await pipeline.run(session, item)
             await session.flush()
 
-        # Check the ScrapeLog for the zilean row that corresponds to the alt-title hit
+        # Check the ScrapeLog for the zilean row
         from sqlalchemy import select as _select  # noqa: PLC0415
 
         logs_result = await session.execute(
@@ -2374,11 +2378,959 @@ class TestZileanAltTitleRetry:
             f"Expected exactly one zilean ScrapeLog; got {len(zilean_logs)}"
         )
         params = _json.loads(zilean_logs[0].query_params)
-        assert "primary_query" in params, (
-            f"Expected 'primary_query' key in query_params when alt title wins; got {params}"
+        # New format: primary query in "query", alt titles in "alt_titles", counts in
+        # "per_title_counts"
+        assert params["query"] == "English Title"
+        assert "alt_titles" in params
+        assert "per_title_counts" in params
+        assert "Winning Alt Title" in params["alt_titles"]
+
+
+# ---------------------------------------------------------------------------
+# Group 11: _is_latin_script() unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsLatinScript:
+    """Unit tests for the _is_latin_script() helper.
+
+    The function returns True when the majority (>50%) of non-whitespace
+    characters are Basic Latin or Latin Extended (U+0000–U+024F).
+    """
+
+    def test_pure_latin_returns_true(self) -> None:
+        """ASCII-only title returns True."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        assert _is_latin_script("Test Anime Show") is True
+
+    def test_romaji_with_spaces_returns_true(self) -> None:
+        """Space-separated romaji title returns True."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        assert _is_latin_script("Sousou no Frieren") is True
+
+    def test_pure_cjk_returns_false(self) -> None:
+        """Title composed entirely of CJK ideographs returns False."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        assert _is_latin_script("葬送のフリーレン") is False
+
+    def test_mixed_majority_latin_returns_true(self) -> None:
+        """Mixed text where Latin characters outnumber non-Latin returns True."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        # 10 Latin chars + 3 CJK ideographs → Latin majority
+        assert _is_latin_script("LatinTitle 剣聖") is True
+
+    def test_mixed_majority_cjk_returns_false(self) -> None:
+        """Mixed text where CJK characters outnumber Latin returns False."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        # 1 Latin char + many CJK — non-Latin majority
+        assert _is_latin_script("X東京葛飾区の冒険世界") is False
+
+    def test_romaji_with_macron_accents_returns_true(self) -> None:
+        """Romanised title with extended-Latin accents (macrons) returns True."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        # ō is U+014D (Latin Extended-B), within U+024F threshold
+        assert _is_latin_script("Doragon B\u014dru Zetto") is True
+
+    def test_empty_string_returns_true(self) -> None:
+        """Empty string returns True (no non-Latin chars → treated as Latin)."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        assert _is_latin_script("") is True
+
+    def test_whitespace_only_returns_true(self) -> None:
+        """String of whitespace only returns True (whitespace excluded from count)."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        assert _is_latin_script("   ") is True
+
+    def test_arabic_script_returns_false(self) -> None:
+        """Arabic-script title (well beyond U+024F) returns False."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        # Arabic characters are U+0600+
+        assert _is_latin_script("عربي") is False
+
+    def test_exactly_50_percent_latin_returns_false(self) -> None:
+        """Exactly half Latin, half non-Latin → threshold is strictly >50% → False."""
+        from src.core.scrape_pipeline import _is_latin_script  # noqa: PLC0415
+
+        # 'AB' (2 Latin) + '葬送' (2 CJK) = 50% Latin, must return False
+        assert _is_latin_script("AB葬送") is False
+
+
+# ---------------------------------------------------------------------------
+# Group 12: collect_alt_titles() unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestCollectAltTitles:
+    """Unit tests for the collect_alt_titles() function.
+
+    The function gathers Latin-script alt titles from three sources:
+      1. tmdb_original_title (in-memory)
+      2. AniDB SQLite cache
+      3. TMDB /alternative_titles API
+    """
+
+    async def test_returns_empty_list_when_tmdb_id_is_none(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When tmdb_id is None the function short-circuits to [] with no I/O."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        result = await collect_alt_titles(
+            session, tmdb_id=None, primary_title="Test Anime", media_type=MediaType.SHOW
         )
-        assert params["query"] == "Winning Alt Title"
-        assert params["primary_query"] == "English Title"
+        assert result == []
+
+    async def test_tmdb_original_title_included_when_different(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tmdb_original_title is returned when it differs from the primary title."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = False
+        mock_settings.tmdb.enabled = False
+        mock_settings.tmdb.api_key = ""
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=1,
+            primary_title="Spirited Away",
+            media_type=MediaType.MOVIE,
+            tmdb_original_title="Sen to Chihiro no Kamikakushi",
+        )
+        assert "Sen to Chihiro no Kamikakushi" in result
+
+    async def test_tmdb_original_title_deduplicated_against_primary(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tmdb_original_title equal to primary_title (case-insensitive) is not returned."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = False
+        mock_settings.tmdb.enabled = False
+        mock_settings.tmdb.api_key = ""
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=1,
+            primary_title="Spirited Away",
+            media_type=MediaType.MOVIE,
+            tmdb_original_title="SPIRITED AWAY",  # same, different case
+        )
+        assert result == []
+
+    async def test_cjk_titles_filtered_out(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CJK titles from AniDB are excluded (they produce 0 scraper results)."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = False
+        mock_settings.tmdb.api_key = ""
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(
+            return_value=["葬送のフリーレン", "Test Anime Alt"]
+        )
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Anime",
+            media_type=MediaType.SHOW,
+        )
+        assert "葬送のフリーレン" not in result
+        assert "Test Anime Alt" in result
+
+    async def test_deduplication_case_insensitive_across_sources(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Titles already seen (different casing) are not added again."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        # AniDB returns a title that is the same as primary in different case
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=["TEST ANIME", "Alt Title"])
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        mock_tmdb = AsyncMock()
+        mock_tmdb.get_alternative_titles = AsyncMock(return_value=["ALT TITLE", "Unique Alt"])
+        monkeypatch.setattr("src.services.tmdb.tmdb_client", mock_tmdb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Anime",
+            media_type=MediaType.SHOW,
+            max_titles=5,
+        )
+        # "TEST ANIME" duplicates primary; "ALT TITLE" duplicates "Alt Title"
+        assert "TEST ANIME" not in result
+        assert "ALT TITLE" not in result
+        # Unique entries are present
+        assert "Alt Title" in result
+        assert "Unique Alt" in result
+
+    async def test_respects_max_titles_cap(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No more than max_titles alternative titles are returned."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(
+            return_value=["Title One", "Title Two", "Title Three", "Title Four", "Title Five"]
+        )
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Anime",
+            media_type=MediaType.SHOW,
+            max_titles=2,
+        )
+        assert len(result) <= 2
+
+    async def test_anidb_disabled_skips_anidb_lookup(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When settings.anidb.enabled is False, AniDB is not called."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = False
+        mock_settings.tmdb.enabled = False
+        mock_settings.tmdb.api_key = ""
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=["Should Not Appear"])
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Show",
+            media_type=MediaType.SHOW,
+        )
+        mock_anidb.get_titles_for_tmdb_id.assert_not_called()
+        assert result == []
+
+    async def test_falls_back_to_tmdb_when_anidb_gives_fewer_than_max(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When AniDB provides fewer titles than max_titles, TMDB is also queried."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        # Only 1 AniDB title, but max_titles=3 → still need more
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=["Anidb Alt"])
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        mock_tmdb = AsyncMock()
+        mock_tmdb.get_alternative_titles = AsyncMock(return_value=["Tmdb Alt One", "Tmdb Alt Two"])
+        monkeypatch.setattr("src.services.tmdb.tmdb_client", mock_tmdb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Show",
+            media_type=MediaType.SHOW,
+            max_titles=3,
+        )
+        assert "Anidb Alt" in result
+        assert "Tmdb Alt One" in result
+        mock_tmdb.get_alternative_titles.assert_called_once()
+
+    async def test_anidb_exception_returns_partial_results(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AniDB raising does not crash collect_alt_titles; returns partial results."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(
+            side_effect=OSError("anidb db read error")
+        )
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        mock_tmdb = AsyncMock()
+        mock_tmdb.get_alternative_titles = AsyncMock(return_value=["Tmdb Fallback"])
+        monkeypatch.setattr("src.services.tmdb.tmdb_client", mock_tmdb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Movie",
+            media_type=MediaType.MOVIE,
+        )
+        # AniDB failed → TMDB filled in
+        assert "Tmdb Fallback" in result
+
+    async def test_tmdb_exception_returns_partial_results(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TMDB raising does not crash collect_alt_titles; returns partial results."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=["Anidb Good"])
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        mock_tmdb = AsyncMock()
+        mock_tmdb.get_alternative_titles = AsyncMock(
+            side_effect=RuntimeError("tmdb timeout")
+        )
+        monkeypatch.setattr("src.services.tmdb.tmdb_client", mock_tmdb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Movie",
+            media_type=MediaType.MOVIE,
+            max_titles=3,
+        )
+        # AniDB result still present despite TMDB failure
+        assert "Anidb Good" in result
+
+    async def test_includes_tmdb_original_title_before_anidb(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tmdb_original_title (Source 1) is processed before AniDB (Source 2)."""
+        from src.core.scrape_pipeline import collect_alt_titles  # noqa: PLC0415
+
+        mock_settings = MagicMock()
+        mock_settings.anidb.enabled = True
+        mock_settings.tmdb.enabled = False
+        mock_settings.tmdb.api_key = ""
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        mock_anidb = AsyncMock()
+        mock_anidb.get_titles_for_tmdb_id = AsyncMock(return_value=["Anidb Title"])
+        monkeypatch.setattr("src.services.anidb.anidb_client", mock_anidb)
+
+        result = await collect_alt_titles(
+            session,
+            tmdb_id=100,
+            primary_title="Test Show",
+            media_type=MediaType.SHOW,
+            tmdb_original_title="TMDB Original Title",
+            max_titles=2,
+        )
+        # TMDB original should appear first
+        assert result[0] == "TMDB Original Title"
+        assert "Anidb Title" in result
+
+
+# ---------------------------------------------------------------------------
+# Group 13: _step_zilean() always-query (concurrent alt titles) tests
+# ---------------------------------------------------------------------------
+
+# Extended patch targets that include nyaa_client.search (needed for Nyaa tests)
+_PATCH_TARGETS_WITH_TMDB_AND_NYAA = {
+    **_PATCH_TARGETS_WITH_TMDB,
+    "nyaa_search": "src.core.scrape_pipeline.nyaa_client.search",
+    "anidb_get_titles": "src.services.anidb.anidb_client.get_titles_for_tmdb_id",
+}
+
+
+class _MocksWithTmdbAndNyaa(_MocksWithTmdb):
+    nyaa_search: AsyncMock
+    anidb_get_titles: AsyncMock
+
+
+@asynccontextmanager
+async def _all_mocks_with_nyaa(
+    mock_rd_torrent: RdTorrent | None = None,
+) -> AsyncGenerator[_MocksWithTmdbAndNyaa, None]:
+    """Like _all_mocks_with_tmdb but also patches nyaa_client.search and anidb."""
+    mocks = _MocksWithTmdbAndNyaa()
+    patchers = {
+        name: patch(target)
+        for name, target in _PATCH_TARGETS_WITH_TMDB_AND_NYAA.items()
+    }
+
+    started: dict[str, MagicMock] = {}
+    try:
+        for name, patcher in patchers.items():
+            started[name] = patcher.start()
+    except Exception:
+        for p in patchers.values():
+            try:
+                p.stop()
+            except RuntimeError:
+                pass
+        raise
+
+    # Re-use same defaults as _all_mocks_with_tmdb
+    mocks.mount_scanner_available = started["mount_scanner_available"]
+    mocks.mount_scanner_available.return_value = True
+    mocks.mount_scanner_lookup = started["mount_scanner_lookup"]
+    mocks.mount_scanner_lookup.return_value = []
+    mocks.dedup_check = started["dedup_check"]
+    mocks.dedup_check.return_value = None
+    mocks.dedup_register = started["dedup_register"]
+    mocks.dedup_register.return_value = mock_rd_torrent or MagicMock(spec=RdTorrent)
+    mocks.zilean_search = started["zilean_search"]
+    mocks.zilean_search.return_value = []
+    mocks.torrentio_movie = started["torrentio_movie"]
+    mocks.torrentio_movie.return_value = []
+    mocks.torrentio_episode = started["torrentio_episode"]
+    mocks.torrentio_episode.return_value = []
+    mocks.rd_add = started["rd_add"]
+    mocks.rd_add.return_value = {"id": "RD123", "uri": "magnet:?xt=urn:btih:" + "a" * 40}
+    mocks.rd_select = started["rd_select"]
+    mocks.rd_select.return_value = None
+    mocks.rd_get_torrent_info = started["rd_get_torrent_info"]
+    mocks.rd_get_torrent_info.return_value = {"id": "RD123", "status": "magnet_conversion", "files": []}
+    mocks.rd_delete = started["rd_delete"]
+    mocks.rd_delete.return_value = None
+    mocks.filter_rank = started["filter_rank"]
+    mocks.filter_rank.return_value = []
+    mocks.queue_transition = started["queue_transition"]
+    mocks.queue_transition.side_effect = None
+    mocks.queue_transition.return_value = MagicMock(spec=MediaItem)
+    mocks.os_path_exists = started["os_path_exists"]
+    mocks.os_path_exists.return_value = True
+
+    _mock_detail = MagicMock()
+    _mock_detail.original_language = None
+    _mock_detail.original_title = None
+    mocks.tmdb_get_movie_details = started["tmdb_get_movie_details"]
+    mocks.tmdb_get_movie_details.return_value = _mock_detail
+    mocks.tmdb_get_show_details = started["tmdb_get_show_details"]
+    mocks.tmdb_get_show_details.return_value = _mock_detail
+    mocks.tmdb_get_alt_titles = started["tmdb_get_alt_titles"]
+    mocks.tmdb_get_alt_titles.return_value = []
+
+    mocks.nyaa_search = started["nyaa_search"]
+    mocks.nyaa_search.return_value = []
+    mocks.anidb_get_titles = started["anidb_get_titles"]
+    mocks.anidb_get_titles.return_value = []
+
+    try:
+        yield mocks
+    finally:
+        for p in patchers.values():
+            p.stop()
+
+
+def _make_nyaa_result(**overrides: object) -> object:
+    """Build a NyaaResult with sensible defaults."""
+    from src.services.nyaa import NyaaResult  # noqa: PLC0415
+
+    defaults: dict[str, object] = {
+        "info_hash": "c" * 40,
+        "title": "Test Anime S01E01 1080p WEB-DL",
+        "resolution": "1080p",
+        "codec": None,
+        "quality": "WEB-DL",
+        "size_bytes": 500 * 1024**2,
+        "seeders": 50,
+        "source_tracker": "Nyaa",
+        "season": 1,
+        "episode": 1,
+        "is_season_pack": False,
+        "languages": [],
+    }
+    defaults.update(overrides)
+    return NyaaResult(**defaults)
+
+
+def _make_show_item_with_tmdb(
+    *,
+    tmdb_id: str = "999",
+    title: str = "Test Anime Show",
+    season: int = 1,
+    episode: int = 1,
+) -> MediaItem:
+    """Build an in-memory SHOW MediaItem with tmdb_id set."""
+    return MediaItem(
+        imdb_id="tt7777777",
+        tmdb_id=tmdb_id,
+        title=title,
+        year=2022,
+        media_type=MediaType.SHOW,
+        season=season,
+        episode=episode,
+        state=QueueState.WANTED,
+        state_changed_at=None,
+        retry_count=0,
+    )
+
+
+class TestStepZileanAlwaysQueryAltTitles:
+    """_step_zilean() queries primary + alt titles concurrently.
+
+    The new behaviour (always-query) differs from the old sequential retry:
+    all titles are dispatched simultaneously via asyncio.gather so that results
+    from every title are merged into one deduplicated list.
+    """
+
+    async def test_primary_and_alt_results_merged(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Primary returns 17 unique results; alt returns 200 with different hashes → all merged."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = False
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        # 17 unique hashes for primary
+        primary_results = [
+            _make_zilean_result(info_hash=f"p{i:039d}") for i in range(17)
+        ]
+        # 200 unique hashes for alt title
+        alt_results = [
+            _make_zilean_result(info_hash=f"a{i:039d}") for i in range(200)
+        ]
+
+        async with _all_mocks_with_tmdb() as m:
+            m.tmdb_get_movie_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt Title One"]
+            # first call (primary) returns 17; second call (alt) returns 200
+            m.zilean_search.side_effect = [primary_results, alt_results]
+            # filter_rank gets all 217 merged unique results
+            m.filter_rank.return_value = []
+
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="42",
+                title="Main Title",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # Both primary and alt were queried concurrently
+        assert m.zilean_search.call_count == 2
+        # filter_engine received the merged 217-item list
+        call_args = m.filter_rank.call_args[0][0]
+        assert len(call_args) == 217
+
+    async def test_overlapping_hashes_deduplicated(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Primary and alt return overlapping hashes → properly deduplicated."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = False
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        shared_hash = "s" * 40
+        primary_results = [
+            _make_zilean_result(info_hash=shared_hash),
+            _make_zilean_result(info_hash="p" * 40),
+        ]
+        # Alt returns the shared hash again + one unique
+        alt_results = [
+            _make_zilean_result(info_hash=shared_hash),
+            _make_zilean_result(info_hash="q" * 40),
+        ]
+
+        async with _all_mocks_with_tmdb() as m:
+            m.tmdb_get_movie_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt Title"]
+            m.zilean_search.side_effect = [primary_results, alt_results]
+            m.filter_rank.return_value = []
+
+            item = _make_item_with_tmdb_id(
+                session, tmdb_id="55", title="Test Movie", media_type=MediaType.MOVIE
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # 3 unique hashes: shared + "p" + "q"
+        call_args = m.filter_rank.call_args[0][0]
+        assert len(call_args) == 3
+
+    async def test_alt_title_exception_primary_results_still_returned(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Alt title query raises an exception → primary results are still used."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = False
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        primary_result = _make_zilean_result(info_hash="g" * 40)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.tmdb_get_movie_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt That Fails"]
+            # primary succeeds; alt raises
+            m.zilean_search.side_effect = [
+                [primary_result],
+                RuntimeError("zilean timeout"),
+            ]
+            m.filter_rank.return_value = [_make_filtered_result(primary_result)]
+
+            item = _make_item_with_tmdb_id(
+                session, tmdb_id="77", title="Good Movie", media_type=MediaType.MOVIE
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Pipeline didn't crash and used the primary result
+        assert result.action != "error"
+        # filter_rank got the 1 primary result
+        call_args = m.filter_rank.call_args[0][0]
+        assert len(call_args) == 1
+
+    async def test_no_alt_titles_single_query_only(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no alt titles exist, exactly one Zilean query is made."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = False
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.tmdb_get_movie_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = []
+            m.zilean_search.return_value = []
+
+            item = _make_item_with_tmdb_id(
+                session, tmdb_id="88", title="No Alt Title Movie", media_type=MediaType.MOVIE
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        assert m.zilean_search.call_count == 1
+
+    async def test_gather_used_concurrently(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With 3 alt titles, Zilean is called 4 times total (primary + 3 alts)."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = False
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_tmdb() as m:
+            m.tmdb_get_movie_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt One", "Alt Two", "Alt Three"]
+            m.zilean_search.return_value = []
+
+            item = _make_item_with_tmdb_id(
+                session, tmdb_id="99", title="Multi Alt Movie", media_type=MediaType.MOVIE
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # 1 primary + 3 alt titles = 4 total concurrent calls
+        assert m.zilean_search.call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# Group 14: _step_nyaa() always-query (concurrent alt titles) tests
+# ---------------------------------------------------------------------------
+
+
+class TestStepNyaaAlwaysQueryAltTitles:
+    """_step_nyaa() queries primary + alt titles concurrently and merges results.
+
+    All titles are dispatched via asyncio.gather through the same fallback
+    chain, and results are merged + deduplicated by info_hash.
+    """
+
+    async def test_nyaa_primary_and_alt_results_merged(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Primary returns 5 results; alt returns 10 new → merged to 15."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = True
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        primary_nyaa = [
+            _make_nyaa_result(info_hash=f"n{i:039d}") for i in range(5)
+        ]
+        alt_nyaa = [
+            _make_nyaa_result(info_hash=f"m{i:039d}") for i in range(10)
+        ]
+
+        async with _all_mocks_with_nyaa() as m:
+            m.tmdb_get_show_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt Anime Title"]
+            # nyaa_search is called via the fallback chain inside _try_queries:
+            # first call from primary chain returns primary_nyaa (stops fallback);
+            # second call from alt chain returns alt_nyaa.
+            m.nyaa_search.side_effect = [primary_nyaa, alt_nyaa]
+            m.filter_rank.return_value = []
+
+            item = _make_show_item_with_tmdb(tmdb_id="300", title="Test Anime Show")
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # filter_rank received 15 unique results (5 primary + 10 alt)
+        call_args = m.filter_rank.call_args[0][0]
+        assert len(call_args) == 15
+
+    async def test_nyaa_alt_exception_handled_gracefully(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exception from alt-title Nyaa chain does not crash the pipeline."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = True
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        primary_nyaa = [_make_nyaa_result(info_hash="h" * 40)]
+
+        async with _all_mocks_with_nyaa() as m:
+            m.tmdb_get_show_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Failing Alt"]
+            # primary succeeds; alt raises inside _try_queries via nyaa_client.search
+            m.nyaa_search.side_effect = [primary_nyaa, RuntimeError("nyaa connection refused")]
+            m.filter_rank.return_value = []
+
+            item = _make_show_item_with_tmdb(tmdb_id="301", title="Test Anime Show")
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            result: PipelineResult = await pipeline.run(session, item)
+
+        # Pipeline survived; primary result still reached filter_rank
+        assert result.action != "error"
+        call_args = m.filter_rank.call_args[0][0]
+        assert len(call_args) == 1
+
+    async def test_nyaa_no_alt_titles_single_chain_only(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no alt titles are available only the primary fallback chain runs."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = True
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_nyaa() as m:
+            m.tmdb_get_show_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = []
+            m.nyaa_search.return_value = []
+
+            item = _make_show_item_with_tmdb(tmdb_id="302", title="Test Show No Alt")
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # With no alt titles and no item.season/episode fallback queries,
+        # each _try_queries call may hit up to 3 fallback levels, but only 1
+        # title set runs (primary only).  Nyaa is called for the primary chain.
+        # The key assertion is that the pipeline does not raise.
+        assert m.nyaa_search.call_count >= 1
+
+    async def test_nyaa_overlapping_hashes_deduplicated(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Duplicate hashes from primary and alt Nyaa results are deduplicated."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = True
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        shared = "x" * 40
+        primary_nyaa = [
+            _make_nyaa_result(info_hash=shared),
+            _make_nyaa_result(info_hash="y" * 40),
+        ]
+        alt_nyaa = [
+            _make_nyaa_result(info_hash=shared),  # duplicate
+            _make_nyaa_result(info_hash="z" * 40),
+        ]
+
+        async with _all_mocks_with_nyaa() as m:
+            m.tmdb_get_show_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt Anime"]
+            m.nyaa_search.side_effect = [primary_nyaa, alt_nyaa]
+            m.filter_rank.return_value = []
+
+            item = _make_show_item_with_tmdb(tmdb_id="303", title="Dedup Show")
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # 3 unique hashes: shared + "y" + "z"
+        call_args = m.filter_rank.call_args[0][0]
+        assert len(call_args) == 3
+
+    async def test_nyaa_skipped_for_movies(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_step_nyaa returns empty list for movie items regardless of alt titles."""
+        ScrapePipeline, PipelineResult = _import_pipeline()
+
+        mock_settings = MagicMock()
+        mock_settings.tmdb.enabled = True
+        mock_settings.tmdb.api_key = "key"
+        mock_settings.filters.prefer_original_language = False
+        mock_settings.xem.enabled = False
+        mock_settings.search.cache_check_limit = 3
+        mock_settings.anidb.enabled = False
+        mock_settings.scrapers.nyaa.enabled = True
+        monkeypatch.setattr("src.core.scrape_pipeline.settings", mock_settings)
+
+        async with _all_mocks_with_nyaa() as m:
+            m.tmdb_get_movie_details.return_value.original_title = None
+            m.tmdb_get_alt_titles.return_value = ["Alt Movie Title"]
+            m.nyaa_search.return_value = []
+
+            # Movie item — Nyaa never queries for movies
+            item = _make_item_with_tmdb_id(
+                session,
+                tmdb_id="304",
+                title="Test Movie No Nyaa",
+                media_type=MediaType.MOVIE,
+            )
+            session.add(item)
+            await session.flush()
+
+            pipeline = ScrapePipeline()
+            await pipeline.run(session, item)
+
+        # Nyaa must never be called for movie items
+        m.nyaa_search.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

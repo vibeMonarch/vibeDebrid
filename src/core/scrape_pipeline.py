@@ -127,6 +127,112 @@ def filter_year_mismatches(
     ]
 
 
+def _is_latin_script(text: str) -> bool:
+    """Return True when the majority of non-whitespace characters are Latin.
+
+    Accepts Basic Latin and Latin Extended blocks (U+0000–U+024F).  Characters
+    beyond that range — CJK, Hangul, Kana, Arabic, etc. — are non-Latin.  The
+    threshold is >50% so lightly romanised strings still pass.
+
+    Args:
+        text: Title string to evaluate.
+
+    Returns:
+        True when more than half of non-whitespace code points are ≤ U+024F.
+    """
+    chars = [c for c in text if not c.isspace()]
+    if not chars:
+        return True
+    latin_count = sum(1 for c in chars if ord(c) < 0x0250)
+    return latin_count / len(chars) > 0.5
+
+
+async def collect_alt_titles(
+    session: AsyncSession,
+    tmdb_id: int | None,
+    primary_title: str,
+    media_type: MediaType,
+    tmdb_original_title: str | None = None,
+    *,
+    max_titles: int = 3,
+) -> list[str]:
+    """Collect Latin-script alternative titles for a media item.
+
+    Sources (in priority order):
+      1. ``tmdb_original_title`` — already fetched by the pipeline's Step 0.
+      2. AniDB SQLite cache — zero-latency lookup for anime shows.
+      3. TMDB ``/alternative_titles`` — filled only when more slots remain.
+
+    Non-Latin-script titles (CJK, Arabic, etc.) are excluded because scrapers
+    return 0 results for them.  Results are case-insensitively deduplicated
+    against ``primary_title`` and against each other.
+
+    Args:
+        session: Async database session (for AniDB lookup).
+        tmdb_id: TMDB numeric identifier, or None when unknown.
+        primary_title: The item's canonical title (used for dedup only).
+        media_type: MediaType enum value (determines TMDB API endpoint).
+        tmdb_original_title: Optional original-language title from the TMDB
+            detail response, which the pipeline already fetched in Step 0.
+        max_titles: Maximum number of alternative titles to return.
+
+    Returns:
+        Up to ``max_titles`` unique Latin-script alternative titles.
+    """
+    candidates: list[str] = []
+    seen_lower: set[str] = {primary_title.lower()}
+
+    def _add(title: str) -> None:
+        if not title or not _is_latin_script(title):
+            return
+        low = title.lower()
+        if low in seen_lower:
+            return
+        seen_lower.add(low)
+        candidates.append(title)
+
+    # Source 1: TMDB original title (already in memory — free)
+    if tmdb_original_title:
+        _add(tmdb_original_title)
+
+    if tmdb_id is None or len(candidates) >= max_titles:
+        return candidates[:max_titles]
+
+    # Source 2: AniDB SQLite — zero-latency, non-anime returns [] immediately
+    if settings.anidb.enabled:
+        try:
+            from src.services.anidb import anidb_client as _anidb_client
+
+            anidb_titles = await _anidb_client.get_titles_for_tmdb_id(session, tmdb_id)
+            for t in anidb_titles:
+                _add(t)
+                if len(candidates) >= max_titles:
+                    break
+        except Exception as exc:
+            logger.warning("collect_alt_titles: AniDB lookup failed tmdb_id=%d: %s", tmdb_id, exc)
+
+    if len(candidates) >= max_titles:
+        return candidates[:max_titles]
+
+    # Source 3: TMDB /alternative_titles — only when we still need more
+    if settings.tmdb.enabled and settings.tmdb.api_key:
+        try:
+            from src.services.tmdb import tmdb_client as _tmdb_client
+
+            media_type_str = "movie" if media_type == MediaType.MOVIE else "tv"
+            extra = await _tmdb_client.get_alternative_titles(tmdb_id, media_type_str)
+            for t in extra:
+                _add(t)
+                if len(candidates) >= max_titles:
+                    break
+        except Exception as exc:
+            logger.debug(
+                "collect_alt_titles: TMDB alt titles fetch failed tmdb_id=%d: %s", tmdb_id, exc
+            )
+
+    return candidates[:max_titles]
+
+
 # ---------------------------------------------------------------------------
 # ScrapePipeline
 # ---------------------------------------------------------------------------
@@ -366,13 +472,24 @@ class ScrapePipeline:
 
         # ------------------------------------------------------------------
         # Step 4 — Zilean scrape
-        # Build alt_titles list: start with original_title from TMDB detail
-        # (already fetched in Step 0).  The _step_zilean method will lazily
-        # call get_alternative_titles() if original_title also returns 0.
+        # Collect alt titles once here so both Zilean and Nyaa can query them
+        # concurrently alongside the primary title.
         # ------------------------------------------------------------------
-        _alt_titles: list[str] = []
-        if _tmdb_original_title and _tmdb_original_title.lower() != item.title.lower():
-            _alt_titles.append(_tmdb_original_title)
+        try:
+            _alt_titles = await collect_alt_titles(
+                session,
+                int(item.tmdb_id) if item.tmdb_id else None,
+                item.title,
+                item.media_type,
+                tmdb_original_title=_tmdb_original_title,
+            )
+        except Exception as exc:
+            logger.warning(
+                "scrape_pipeline: collect_alt_titles failed for item id=%d: %s",
+                item.id,
+                exc,
+            )
+            _alt_titles = []
 
         zilean_results, zilean_duration_ms = await self._step_zilean(
             session,
@@ -1113,16 +1230,16 @@ class ScrapePipeline:
         scene_episode: int | None = None,
         alt_titles: list[str] | None = None,
     ) -> tuple[list[ZileanResult], int]:
-        """Query Zilean for results, retrying with alternative titles on zero results.
+        """Query Zilean with primary title and all alt titles concurrently.
 
-        When the primary title search returns no results and ``alt_titles`` is
-        non-empty, each alternative title is tried in order (skipping any that
-        match the primary title case-insensitively).  The first title that
-        returns results wins.  If those are also exhausted, ``get_alternative_titles``
-        is lazily called from TMDB (capped at 5 additional candidates total).
+        All titles (primary + up to 3 alternatives) are queried simultaneously
+        via ``asyncio.gather``.  Results from all queries are merged and
+        deduplicated by ``info_hash`` (first occurrence wins, preserving primary
+        title precedence).
 
-        Errors are caught and logged; an empty list is returned so the pipeline
-        continues to Torrentio.
+        Errors from individual queries are caught and logged; the merged result
+        from all successful queries is returned.  An empty list is returned when
+        all queries fail or yield nothing.
 
         Args:
             session: Caller-managed async database session.
@@ -1131,14 +1248,13 @@ class ScrapePipeline:
                 not provided).
             scene_episode: Pre-resolved scene episode from XEM (or item.episode
                 if not provided).
-            alt_titles: Pre-computed alternative titles to try on zero results
-                (e.g. original_title from the TMDB detail call in Step 0).
+            alt_titles: Pre-computed alternative titles from ``collect_alt_titles``
+                (already filtered to Latin-script, deduped against primary).
 
         Returns:
             2-tuple of (results, duration_ms).
         """
         t0 = time.monotonic()
-        results: list[ZileanResult] = []
 
         # Fall back to item's original numbering when not pre-resolved.
         if scene_season is None:
@@ -1146,9 +1262,58 @@ class ScrapePipeline:
         if scene_episode is None:
             scene_episode = item.episode
 
+        titles_to_query: list[str] = [item.title] + (alt_titles or [])
+
+        async def _query_one(query: str) -> list[ZileanResult]:
+            try:
+                return await zilean_client.search(
+                    query=query,
+                    season=scene_season,
+                    episode=scene_episode,
+                    year=item.year,
+                    imdb_id=item.imdb_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scrape_pipeline: Zilean query failed for item id=%d query=%r: %s",
+                    item.id,
+                    query,
+                    exc,
+                )
+                return []
+
+        raw_results = await asyncio.gather(
+            *[_query_one(t) for t in titles_to_query]
+        )
+
+        # Merge and dedup by info_hash — primary title results come first.
+        seen_hashes: set[str] = set()
+        results: list[ZileanResult] = []
+        per_title_counts: dict[str, int] = {}
+        for title, res in zip(titles_to_query, raw_results):
+            new_count = 0
+            for r in res:
+                h = r.info_hash
+                if h and h not in seen_hashes:
+                    seen_hashes.add(h)
+                    results.append(r)
+                    new_count += 1
+            per_title_counts[title] = new_count
+
+        logger.debug(
+            "scrape_pipeline: Zilean merged %d unique results for item id=%d "
+            "(queried %d titles: %s)",
+            len(results),
+            item.id,
+            len(titles_to_query),
+            per_title_counts,
+        )
+
         query_params = json.dumps(
             {
                 "query": item.title,
+                "alt_titles": alt_titles or [],
+                "per_title_counts": per_title_counts,
                 "season": item.season,
                 "episode": item.episode,
                 "scene_season": scene_season,
@@ -1157,140 +1322,6 @@ class ScrapePipeline:
                 "imdb_id": item.imdb_id,
             }
         )
-
-        try:
-            results = await zilean_client.search(
-                query=item.title,
-                season=scene_season,
-                episode=scene_episode,
-                year=item.year,
-                imdb_id=item.imdb_id,
-            )
-            logger.debug(
-                "scrape_pipeline: Zilean returned %d results for item id=%d",
-                len(results),
-                item.id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "scrape_pipeline: Zilean search failed for item id=%d: %s",
-                item.id,
-                exc,
-            )
-
-        # Alternative title fallback: try when primary title returned nothing.
-        if not results and item.tmdb_id and settings.tmdb.enabled and settings.tmdb.api_key:
-            # Build the candidate list: caller-supplied alt_titles first, then
-            # lazily fetched from TMDB /alternative_titles.  Cap total at 5 to
-            # avoid excessive Zilean queries.
-            _MAX_ALT = 5
-            candidates: list[str] = list(alt_titles or [])
-
-            # Inject AniDB title variants (from SQLite — zero latency)
-            if settings.anidb.enabled and item.tmdb_id:
-                try:
-                    from src.services.anidb import anidb_client as _anidb_client
-                    anidb_titles = await _anidb_client.get_titles_for_tmdb_id(
-                        session, int(item.tmdb_id)
-                    )
-                    for t in anidb_titles:
-                        if t not in candidates:
-                            candidates.append(t)
-                    if anidb_titles:
-                        logger.debug(
-                            "scrape_pipeline: AniDB added %d title variants for item id=%d",
-                            len(anidb_titles), item.id,
-                        )
-                except (ValueError, TypeError, OSError) as exc:
-                    logger.debug(
-                        "scrape_pipeline: AniDB title lookup failed for item id=%d: %s",
-                        item.id, exc,
-                    )
-
-            # Lazily fetch additional alternative titles from TMDB.
-            try:
-                from src.services.tmdb import tmdb_client as _tmdb_client
-
-                tmdb_id_int = int(item.tmdb_id)
-                media_type_str = (
-                    "movie" if item.media_type == MediaType.MOVIE else "tv"
-                )
-                extra = await _tmdb_client.get_alternative_titles(
-                    tmdb_id_int, media_type_str
-                )
-                for t in extra:
-                    if t not in candidates:
-                        candidates.append(t)
-            except Exception as exc:
-                logger.debug(
-                    "scrape_pipeline: get_alternative_titles failed for item id=%d: %s",
-                    item.id,
-                    exc,
-                )
-
-            # Extend caller's alt_titles so title similarity scoring in the
-            # filter engine benefits from all discovered title variants
-            # (AniDB + TMDB alternative titles).
-            if alt_titles is not None:
-                for c in candidates:
-                    if c not in alt_titles:
-                        alt_titles.append(c)
-
-            primary_lower = item.title.lower()
-            tried: list[str] = []
-            for alt in candidates[:_MAX_ALT]:
-                if alt.lower() == primary_lower:
-                    continue  # skip if same as primary (case-insensitive)
-                tried.append(alt)
-                try:
-                    alt_results = await zilean_client.search(
-                        query=alt,
-                        season=scene_season,
-                        episode=scene_episode,
-                        year=item.year,
-                        imdb_id=item.imdb_id,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "scrape_pipeline: Zilean alt-title search failed for "
-                        "item id=%d alt=%r: %s",
-                        item.id,
-                        alt,
-                        exc,
-                    )
-                    continue
-                if alt_results:
-                    logger.info(
-                        "scrape_pipeline: Zilean alt-title hit for item id=%d — "
-                        "primary=%r alt=%r returned=%d",
-                        item.id,
-                        item.title,
-                        alt,
-                        len(alt_results),
-                    )
-                    results = alt_results
-                    query_params = json.dumps(
-                        {
-                            "query": alt,
-                            "primary_query": item.title,
-                            "season": item.season,
-                            "episode": item.episode,
-                            "scene_season": scene_season,
-                            "scene_episode": scene_episode,
-                            "year": item.year,
-                            "imdb_id": item.imdb_id,
-                        }
-                    )
-                    break
-            else:
-                if tried:
-                    logger.debug(
-                        "scrape_pipeline: Zilean alt-title fallback exhausted for "
-                        "item id=%d — tried %d titles: %s",
-                        item.id,
-                        len(tried),
-                        tried,
-                    )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
 
@@ -1365,7 +1396,6 @@ class ScrapePipeline:
 
         title = item.title
         results: list[NyaaResult] = []
-        query_used: str = title
 
         async def _try_queries(search_title: str) -> list[NyaaResult]:
             """Run the fallback query chain for a given title.
@@ -1413,36 +1443,43 @@ class ScrapePipeline:
                     return r
             return []
 
-        results = await _try_queries(title)
-        query_used = title
+        # Run primary + up to 2 alt title query chains concurrently.
+        titles_to_query: list[str] = [title] + (alt_titles or [])[:2]
 
-        # Alternative title fallback: try first alt title only when all primary
-        # queries returned nothing.
-        if not results and alt_titles:
-            primary_lower = title.lower()
-            for alt in alt_titles[:1]:
-                if alt.lower() == primary_lower:
-                    continue
-                alt_results = await _try_queries(alt)
-                if alt_results:
-                    logger.info(
-                        "scrape_pipeline: Nyaa alt-title hit for item id=%d — "
-                        "primary=%r alt=%r returned=%d",
-                        item.id,
-                        title,
-                        alt,
-                        len(alt_results),
-                    )
-                    results = alt_results
-                    query_used = alt
-                    break
+        raw_results = await asyncio.gather(
+            *[_try_queries(t) for t in titles_to_query]
+        )
+
+        # Merge and dedup by info_hash — primary title results come first.
+        seen_hashes: set[str] = set()
+        results: list[NyaaResult] = []
+        per_title_counts: dict[str, int] = {}
+        for t, res in zip(titles_to_query, raw_results):
+            new_count = 0
+            for r in res:
+                h = r.info_hash
+                if h and h not in seen_hashes:
+                    seen_hashes.add(h)
+                    results.append(r)
+                    new_count += 1
+            per_title_counts[t] = new_count
+
+        logger.debug(
+            "scrape_pipeline: Nyaa merged %d unique results for item id=%d "
+            "(queried %d titles: %s)",
+            len(results),
+            item.id,
+            len(titles_to_query),
+            per_title_counts,
+        )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         query_params = json.dumps(
             {
-                "query": query_used,
-                "primary_query": title,
+                "query": title,
+                "alt_titles": (alt_titles or [])[:2],
+                "per_title_counts": per_title_counts,
                 "season": item.season,
                 "episode": item.episode,
                 "scene_season": eff_season,

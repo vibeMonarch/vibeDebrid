@@ -1658,3 +1658,265 @@ class TestMultiSeasonFiltering:
 
         # All 3 seasonless files pass — none dropped by the multi-season guard
         assert mock_create_symlink.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Search route: alt title queries via collect_alt_titles
+# ---------------------------------------------------------------------------
+
+
+def _make_sr(info_hash: str, title: str = "Test Release 1080p") -> object:
+    """Build a minimal ZileanResult-like object for search route tests."""
+    from src.services.zilean import ZileanResult  # noqa: PLC0415
+
+    return ZileanResult(
+        info_hash=info_hash,
+        title=title,
+        resolution="1080p",
+        codec="x264",
+        quality="WEB-DL",
+        size_bytes=1 * 1024**3,
+        seeders=None,
+        release_group="GRP",
+        languages=[],
+        is_season_pack=False,
+    )
+
+
+def _make_filter_result(result: object, score: float = 70.0) -> object:
+    """Build a minimal FilteredResult-like object for search route tests."""
+    fr = MagicMock()
+    fr.result = result
+    fr.score = score
+    fr.score_breakdown = {}
+    fr.rejection_reason = None
+    return fr
+
+
+class TestSearchRouteAltTitleQueries:
+    """Verify the /api/search route collects and queries alt titles for Zilean and Nyaa.
+
+    When tmdb_id is provided in the request, collect_alt_titles is called and
+    the results are merged with the primary Zilean/Nyaa query results.
+    """
+
+    async def test_search_with_tmdb_id_queries_alt_titles(
+        self, http: AsyncClient
+    ) -> None:
+        """When tmdb_id is set, collect_alt_titles is called and alt results merged."""
+        primary = _make_sr("a" * 40)
+        alt_result = _make_sr("b" * 40)
+        fr_primary = _make_filter_result(primary)
+
+        with (
+            patch(
+                "src.api.routes.search.collect_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Alt Anime Title"],
+            ) as mock_collect,
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                new_callable=AsyncMock,
+                side_effect=[[primary], [alt_result]],
+            ) as mock_zilean,
+            patch(
+                "src.api.routes.search.filter_engine.filter_and_rank",
+                return_value=[fr_primary],
+            ),
+        ):
+            resp = await http.post(
+                "/api/search",
+                json={
+                    "query": "Test Anime Show",
+                    "tmdb_id": 12345,
+                    "media_type": "movie",
+                    "scrapers": ["zilean"],
+                },
+            )
+
+        assert resp.status_code == 200
+        # collect_alt_titles was called (tmdb_id was provided)
+        mock_collect.assert_called_once()
+        call_kwargs = mock_collect.call_args
+        assert call_kwargs[0][1] == 12345  # tmdb_id positional arg
+        # Zilean was called for both primary and alt title
+        assert mock_zilean.call_count == 2
+
+    async def test_search_without_tmdb_id_does_not_query_alt_titles(
+        self, http: AsyncClient
+    ) -> None:
+        """When tmdb_id is absent, collect_alt_titles is not called."""
+        result = _make_sr("c" * 40)
+        fr = _make_filter_result(result)
+
+        with (
+            patch(
+                "src.api.routes.search.collect_alt_titles",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_collect,
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                new_callable=AsyncMock,
+                return_value=[result],
+            ),
+            patch(
+                "src.api.routes.search.filter_engine.filter_and_rank",
+                return_value=[fr],
+            ),
+        ):
+            resp = await http.post(
+                "/api/search",
+                json={
+                    "query": "Test Show No TMDB",
+                    "media_type": "movie",
+                    "scrapers": ["zilean"],
+                },
+            )
+
+        assert resp.status_code == 200
+        # No tmdb_id → collect_alt_titles never called
+        mock_collect.assert_not_called()
+
+    async def test_search_zilean_alt_results_deduped(
+        self, http: AsyncClient
+    ) -> None:
+        """Zilean alt title results sharing hashes with primary are deduplicated."""
+        shared_hash = "d" * 40
+        unique_hash = "e" * 40
+        primary_result = _make_sr(shared_hash)
+        alt_dupe = _make_sr(shared_hash)
+        alt_unique = _make_sr(unique_hash)
+        fr = _make_filter_result(primary_result)
+
+        with (
+            patch(
+                "src.api.routes.search.collect_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Alt Title"],
+            ),
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                new_callable=AsyncMock,
+                side_effect=[[primary_result], [alt_dupe, alt_unique]],
+            ),
+            patch(
+                "src.api.routes.search.filter_engine.filter_and_rank",
+                return_value=[fr],
+            ) as mock_filter,
+        ):
+            resp = await http.post(
+                "/api/search",
+                json={
+                    "query": "Dedup Anime",
+                    "tmdb_id": 99,
+                    "media_type": "movie",
+                    "scrapers": ["zilean"],
+                },
+            )
+
+        assert resp.status_code == 200
+        # filter_rank received 2 unique hashes (shared + unique), not 3
+        filter_input = mock_filter.call_args[0][0]
+        assert len(filter_input) == 2
+        seen = {r.info_hash for r in filter_input}
+        assert shared_hash in seen
+        assert unique_hash in seen
+
+    async def test_search_collect_alt_titles_failure_graceful(
+        self, http: AsyncClient
+    ) -> None:
+        """collect_alt_titles raising does not crash the search endpoint."""
+        result = _make_sr("f" * 40)
+        fr = _make_filter_result(result)
+
+        with (
+            patch(
+                "src.api.routes.search.collect_alt_titles",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("anidb unavailable"),
+            ),
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                new_callable=AsyncMock,
+                return_value=[result],
+            ),
+            patch(
+                "src.api.routes.search.filter_engine.filter_and_rank",
+                return_value=[fr],
+            ),
+        ):
+            resp = await http.post(
+                "/api/search",
+                json={
+                    "query": "Robust Anime",
+                    "tmdb_id": 777,
+                    "media_type": "movie",
+                    "scrapers": ["zilean"],
+                },
+            )
+
+        # Endpoint survived the exception and returned primary results
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_filtered"] == 1
+
+    async def test_search_nyaa_alt_titles_queried(
+        self, http: AsyncClient
+    ) -> None:
+        """When tmdb_id is set and media_type=show, Nyaa receives alt title queries."""
+        from src.services.nyaa import NyaaResult  # noqa: PLC0415
+
+        def _nyaa_result(h: str) -> NyaaResult:
+            return NyaaResult(
+                info_hash=h,
+                title=f"Anime Title 01 1080p [{h[:4]}]",
+                source_tracker="Nyaa",
+                languages=[],
+            )
+
+        primary_nyaa = _nyaa_result("g" * 40)
+        alt_nyaa = _nyaa_result("h" * 40)
+        fr = _make_filter_result(primary_nyaa)
+
+        with (
+            patch(
+                "src.api.routes.search.collect_alt_titles",
+                new_callable=AsyncMock,
+                return_value=["Alt Romaji Title"],
+            ) as mock_collect,
+            patch(
+                "src.api.routes.search.nyaa_client.search",
+                new_callable=AsyncMock,
+                side_effect=[
+                    [primary_nyaa],   # primary title chain
+                    [alt_nyaa],       # alt title chain
+                ],
+            ) as mock_nyaa,
+            patch(
+                "src.api.routes.search.zilean_client.search",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "src.api.routes.search.filter_engine.filter_and_rank",
+                return_value=[fr],
+            ),
+        ):
+            resp = await http.post(
+                "/api/search",
+                json={
+                    "query": "Test Anime Show",
+                    "tmdb_id": 500,
+                    "media_type": "show",
+                    "season": 1,
+                    "episode": 1,
+                    "scrapers": ["nyaa"],
+                },
+            )
+
+        assert resp.status_code == 200
+        # collect_alt_titles called once for Nyaa (tmdb_id provided, show type)
+        mock_collect.assert_called_once()
+        # Nyaa called at least twice (primary + alt)
+        assert mock_nyaa.call_count >= 2

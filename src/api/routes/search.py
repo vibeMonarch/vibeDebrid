@@ -18,6 +18,7 @@ from src.api.deps import get_db
 from src.core.dedup import dedup_engine
 from src.core.filter_engine import filter_engine
 from src.core.queue_manager import queue_manager
+from src.core.scrape_pipeline import collect_alt_titles
 from src.models.media_item import MediaItem, MediaType, QueueState
 from src.models.scrape_result import ScrapeLog
 from src.models.torrent import RdTorrent, TorrentStatus
@@ -43,6 +44,7 @@ class SearchRequest(BaseModel):
 
     query: str
     imdb_id: str | None = None
+    tmdb_id: int | None = None
     media_type: str | None = None
     season: int | None = None
     episode: int | None = None
@@ -125,7 +127,10 @@ class AddResponse(BaseModel):
 
 
 @router.post("/search")
-async def search(body: SearchRequest) -> SearchResponse:
+async def search(
+    body: SearchRequest,
+    session: AsyncSession = Depends(get_db),
+) -> SearchResponse:
     """Search scrapers, filter and rank results with RD cache status.
 
     Queries Torrentio (when imdb_id is provided), Zilean, and Nyaa (shows only)
@@ -134,14 +139,41 @@ async def search(body: SearchRequest) -> SearchResponse:
     fetched lazily by the frontend via /api/check-cached so results appear
     immediately.
 
+    When ``tmdb_id`` is provided, alternative titles are collected via
+    ``collect_alt_titles`` and queried concurrently alongside the primary title
+    for both Zilean and Nyaa, increasing result coverage for anime and
+    non-English media.
+
     Args:
-        body: Search parameters including query, optional IMDB ID, media type,
-              season/episode numbers, quality profile name, and optional scraper
-              allow-list (torrentio, zilean, nyaa).
+        body: Search parameters including query, optional IMDB ID, optional
+              TMDB ID, media type, season/episode numbers, quality profile name,
+              and optional scraper allow-list (torrentio, zilean, nyaa).
+        session: Injected async database session (for AniDB alt title lookup).
 
     Returns:
         Ranked search results with cache status and scoring breakdown.
     """
+    # Collect alternative titles once, before any scraper is dispatched, so
+    # both Zilean and Nyaa can share the same pre-fetched list without
+    # concurrent AsyncSession access.
+    try:
+        _media_type_enum_for_alts = MediaType(body.media_type) if body.media_type else MediaType.MOVIE
+    except ValueError:
+        _media_type_enum_for_alts = MediaType.MOVIE
+
+    _pre_alt_titles: list[str] = []
+    if body.tmdb_id:
+        try:
+            _pre_alt_titles = await collect_alt_titles(
+                session,
+                body.tmdb_id,
+                body.query,
+                _media_type_enum_for_alts,
+                max_titles=2,
+            )
+        except Exception as exc:
+            logger.warning("search: collect_alt_titles failed: %s", exc)
+
     # Build scraper tasks to run in parallel.
     async def _scrape_torrentio() -> list:
         """Query Torrentio (requires IMDB ID)."""
@@ -187,72 +219,120 @@ async def search(body: SearchRequest) -> SearchResponse:
             return []
 
     async def _scrape_zilean() -> list:
-        """Query Zilean (works with or without IMDB ID)."""
-        try:
-            results = await zilean_client.search(
-                query=body.query,
-                season=body.season,
-                episode=body.episode,
-                imdb_id=body.imdb_id,
-            )
-            logger.debug(
-                "search: zilean returned %d results for query=%r",
-                len(results),
-                body.query,
-            )
-            return results
-        except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
-            logger.warning("search: zilean search failed: %s", exc)
-            return []
-        except Exception as exc:
-            logger.error("search: zilean unexpected error: %s", exc)
-            return []
+        """Query Zilean with primary and pre-collected alt titles concurrently.
+
+        Alt titles are supplied via ``_pre_alt_titles`` (collected once before
+        the gather to avoid concurrent AsyncSession access).  Results are merged
+        and deduped by info_hash before returning.
+        """
+        titles_to_query: list[str] = [body.query] + _pre_alt_titles
+
+        async def _query_one(query: str) -> list:
+            try:
+                return await zilean_client.search(
+                    query=query,
+                    season=body.season,
+                    episode=body.episode,
+                    imdb_id=body.imdb_id,
+                )
+            except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
+                logger.warning("search: zilean search failed for query=%r: %s", query, exc)
+                return []
+            except Exception as exc:
+                logger.error("search: zilean unexpected error for query=%r: %s", query, exc)
+                return []
+
+        raw_results = await asyncio.gather(
+            *[_query_one(t) for t in titles_to_query]
+        )
+
+        seen_hashes: set[str] = set()
+        merged: list = []
+        for res in raw_results:
+            for r in res:
+                h = r.info_hash
+                if h and h not in seen_hashes:
+                    seen_hashes.add(h)
+                    merged.append(r)
+
+        logger.debug(
+            "search: zilean merged %d results for query=%r (queried %d titles)",
+            len(merged),
+            body.query,
+            len(titles_to_query),
+        )
+        return merged
 
     async def _scrape_nyaa() -> list:
-        """Query Nyaa with a fallback chain (title-based, shows only).
+        """Query Nyaa with fallback chains for primary and pre-collected alt titles concurrently.
 
-        Tries progressively broader queries:
+        For each title (primary + up to 2 alt titles from ``_pre_alt_titles``),
+        runs the standard query fallback chain:
           1. SxxExx format (e.g. "Title S01E05") — standard Western format
           2. Bare episode number (e.g. "Title 05") — common anime format
           3. Season-only (e.g. "Title S01") — when only season is provided
           4. Title-only (e.g. "Title") — broadest fallback
-        Returns results from the first query that yields anything.
+        Results from all chains are merged and deduped by info_hash.
         """
         if body.media_type != "show":
             return []
-        try:
+
+        async def _try_queries(search_title: str) -> list:
             queries: list[str] = []
             if body.season is not None and body.episode is not None:
-                queries.append(f"{body.query} S{body.season:02d}E{body.episode:02d}")
-                queries.append(f"{body.query} {body.episode:02d}")
+                queries.append(f"{search_title} S{body.season:02d}E{body.episode:02d}")
+                queries.append(f"{search_title} {body.episode:02d}")
             elif body.season is not None:
-                queries.append(f"{body.query} S{body.season:02d}")
-            queries.append(body.query)
+                queries.append(f"{search_title} S{body.season:02d}")
+            queries.append(search_title)
 
-            results: list = []
             for q in queries:
-                results = await nyaa_client.search(q)
-                if results:
+                try:
+                    r = await nyaa_client.search(q)
+                except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
+                    logger.warning("search: nyaa search failed for query=%r: %s", q, exc)
+                    r = []
+                except Exception as exc:
+                    logger.error("search: nyaa unexpected error for query=%r: %s", q, exc)
+                    r = []
+                if r:
                     logger.debug(
                         "search: nyaa returned %d results for query=%r",
-                        len(results),
+                        len(r),
                         q,
                     )
-                    break
+                    return r
+            return []
 
-            if not results:
-                logger.debug(
-                    "search: nyaa returned 0 results for all %d query variants of %r",
-                    len(queries),
-                    body.query,
-                )
-            return results
-        except (httpx.RequestError, httpx.TimeoutException, ConnectionError, ValueError, KeyError) as exc:
-            logger.warning("search: nyaa search failed: %s", exc)
-            return []
-        except Exception as exc:
-            logger.error("search: nyaa unexpected error: %s", exc)
-            return []
+        titles_to_query: list[str] = [body.query] + _pre_alt_titles
+
+        raw_results = await asyncio.gather(
+            *[_try_queries(t) for t in titles_to_query]
+        )
+
+        seen_hashes: set[str] = set()
+        merged: list = []
+        for res in raw_results:
+            for r in res:
+                h = r.info_hash
+                if h and h not in seen_hashes:
+                    seen_hashes.add(h)
+                    merged.append(r)
+
+        if not merged:
+            logger.debug(
+                "search: nyaa returned 0 results for all %d title variants of %r",
+                len(titles_to_query),
+                body.query,
+            )
+        else:
+            logger.debug(
+                "search: nyaa merged %d results for query=%r (queried %d titles)",
+                len(merged),
+                body.query,
+                len(titles_to_query),
+            )
+        return merged
 
     # Determine which scrapers to run based on request.
     run_torrentio = body.scrapers is None or "torrentio" in body.scrapers
